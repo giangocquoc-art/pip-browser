@@ -40,6 +40,49 @@ fn site(url: &str) -> Option<String> {
     Some(uri.host()?.to_ascii_lowercase())
 }
 
+fn looks_like_gambling_host(url: &str) -> bool {
+    const TERMS: &[&str] = &[
+        "casino",
+        "casinos",
+        "gambling",
+        "poker",
+        "slot",
+        "slots",
+        "togel",
+        "judi",
+        "taruhan",
+        "baccarat",
+        "jackpot",
+        "sportsbook",
+        "bookmaker",
+        "betting",
+        "taixiu",
+        "xocdia",
+        "xoso",
+        "blackjack",
+        "roulette",
+        "lottery",
+        "lotto",
+        "keno",
+    ];
+    let Some(host) = site(url) else {
+        return false;
+    };
+    host.split('.')
+        .flat_map(|label| label.split(|ch: char| !ch.is_ascii_alphanumeric()))
+        .filter(|part| !part.is_empty())
+        .any(|part| {
+            TERMS.iter().any(|term| {
+                part == *term
+                    || part.strip_prefix(term).is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+                    })
+            }) || (part.starts_with("bet")
+                && part.len() > 3
+                && part[3..].chars().all(|ch| ch.is_ascii_digit()))
+        })
+}
+
 fn engine(rules: &str) -> Engine {
     let mut filters = FilterSet::new(false);
     filters.add_filter_list(
@@ -172,6 +215,12 @@ impl Blocker {
         };
         if self.disabled.contains(&source_host) {
             return false;
+        }
+        // Some ad redirects are reported by WebView2 as user-initiated because
+        // they piggyback on a click. Treat clear gambling brands as unwanted
+        // only in the new-window path; ordinary navigation is untouched.
+        if looks_like_gambling_host(url) {
+            return true;
         }
         if !user_initiated {
             return true;
@@ -566,6 +615,35 @@ mod tests {
             "https://ad88vip6.com/home/register?id=940814853",
             "https://news.example/article",
             true,
+        ));
+    }
+
+    #[test]
+    fn gambling_category_popup_fallback_catches_new_domains_without_blocking_normal_links() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(""),
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            bootstraps: HashMap::new(),
+        };
+        let source = "https://news.example/article";
+        assert!(blocker.should_block_popup(
+            "https://bonus-casino88.example/register",
+            source,
+            true
+        ));
+        assert!(blocker.should_block_popup("https://bet365.example/offer", source, true));
+        assert!(blocker.should_block_popup("https://slots.example/", source, true));
+        assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
+        assert!(!looks_like_gambling_host("https://sports.example/article"));
+        assert!(!blocker.should_block(
+            "https://bonus-casino88.example/register",
+            source,
+            source,
+            "document",
+            "GET"
         ));
     }
 

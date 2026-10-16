@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "evergreen-browser"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "adblock",
  "evergreen-core",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "evergreen-installer"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "evergreen-core",
  "serde_json",

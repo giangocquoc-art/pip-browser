@@ -1,6 +1,6 @@
 [package]
 name = "evergreen-browser"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Evergreen Browser Contributors"]
 description = "Ultra-lightweight, privacy-first desktop browser shell for Windows"
