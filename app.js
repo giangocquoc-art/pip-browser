@@ -1,111 +1,26 @@
 (() => {
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
-  const menu = $('#menu-pop');
-  const settings = $('#settings-pop');
-  const toast = $('#toast');
-  const storageKey = 'pip-showcase-settings';
-  let toastTimer;
-
-  function notify(message) {
-    toast.textContent = message;
-    toast.classList.add('visible');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove('visible'), 1800);
-  }
-
-  function showView(view) {
-    menu.hidden = view !== 'menu';
-    settings.hidden = view !== 'settings';
-    $('#private-preview').hidden = view !== 'private';
-    $('.browser-demo').classList.toggle('private-mode', view === 'private');
-    $$('.show-tab').forEach((tab) => {
-      const active = tab.dataset.view === view;
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-selected', String(active));
+  const previewImage = $('#app-preview-image');
+  const previews = {
+    browser: ['assets/app-home.webp', 'Ảnh chụp giao diện Pip cho Windows: thanh điều hướng, mascot, ô tìm kiếm Google và các lối tắt trang web.', 'Trang chủ Pip với tìm kiếm Google và các lối tắt quen thuộc.'],
+    private: ['assets/app-private.webp', 'Ảnh chụp cửa sổ ẩn danh Pip với mascot riêng, ô tìm kiếm ẩn danh và nút gợi ý Google DNS.', 'Cửa sổ ẩn danh Pip với nút tùy chọn Google DNS.'],
+    menu: ['assets/app-profiles.webp', 'Ảnh chụp menu hồ sơ Pip để chuyển đổi các hồ sơ duyệt web riêng.', 'Menu hồ sơ để chuyển giữa các hồ sơ Pip.'],
+    settings: ['assets/app-settings.webp', 'Ảnh chụp trang cài đặt của ứng dụng Pip trên Windows.', 'Trang cài đặt Pip.']
+  };
+  $$('.show-tab').forEach((tab) => tab.addEventListener('click', () => {
+    const view = tab.dataset.view;
+    const preview = previews[view];
+    if (!preview) return;
+    previewImage.src = preview[0];
+    previewImage.alt = preview[1];
+    $('#demo-caption').textContent = preview[2];
+    $$('.show-tab').forEach((item) => {
+      const active = item === tab;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-selected', String(active));
     });
-    $('#demo-caption').textContent = ({
-      browser: 'Trang tab mới Pip — tìm kiếm Google, lối tắt và mascot PShareHub.',
-      private: 'Trang ẩn danh Pip — mascot mới và gợi ý Google DNS trên thanh công cụ.',
-      menu: 'Menu trình duyệt Pip — các thao tác quen thuộc được gom gọn.',
-      settings: 'Bản xem trước cài đặt Pip; các tùy chọn bên dưới chỉ minh họa giao diện.'
-    })[view] || '';
-  }
-
-  const preferences = (() => {
-    try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); }
-    catch { return {}; }
-  })();
-  const provider = $('#search-provider');
-  const motionToggle = $('#motion-toggle');
-  const suggestionsToggle = $('#suggestions-toggle');
-  const save = (values) => {
-    try { localStorage.setItem(storageKey, JSON.stringify({ ...preferences, ...values })); }
-    catch { /* Preview remains usable when storage is disabled. */ }
-    Object.assign(preferences, values);
-  };
-  const shortcuts = $('.demo-tiles');
-  provider.value = preferences.provider === 'Bing' ? 'Bing' : 'Google';
-  motionToggle.checked = preferences.reduceMotion !== false;
-  suggestionsToggle.checked = preferences.showSuggestions !== false;
-  document.documentElement.classList.toggle('reduce-motion', motionToggle.checked);
-  shortcuts.hidden = !suggestionsToggle.checked;
-
-  $$('.show-tab').forEach((tab) => tab.addEventListener('click', () => showView(tab.dataset.view)));
-  $('.avatar-button').addEventListener('click', () => showView(menu.hidden ? 'menu' : 'browser'));
-  $('.dots').addEventListener('click', () => showView(menu.hidden ? 'menu' : 'browser'));
-  $('.close-menu').addEventListener('click', () => showView('browser'));
-  $('.plus-tab').addEventListener('click', () => notify('Đây là bản xem trước giao diện Pip.'));
-  $('#demo-omnibox').addEventListener('click', () => $('#download').scrollIntoView({ block: 'center' }));
-  $('.bookmark-toggle').addEventListener('click', (event) => {
-    const button = event.currentTarget;
-    const saved = button.getAttribute('aria-pressed') !== 'true';
-    button.setAttribute('aria-pressed', String(saved));
-    button.textContent = saved ? '★' : '☆';
-    button.setAttribute('aria-label', saved ? 'Xóa khỏi dấu trang' : 'Thêm vào dấu trang');
-    notify(saved ? 'Đã thêm trang xem trước vào dấu trang.' : 'Đã xóa dấu trang xem trước.');
-  });
-  $$('[data-toolbar]').forEach((button) => button.addEventListener('click', () => {
-    const messages = { back: 'Bạn đang ở trang đầu tiên trong bản xem trước.', forward: 'Chưa có trang tiếp theo trong bản xem trước.', reload: 'Đã tải lại bản xem trước Pip.' };
-    notify(messages[button.dataset.toolbar]);
   }));
-
-  const actions = {
-    newtab: 'Đây là bản xem trước trang tab mới Pip.',
-    private: 'Cửa sổ ẩn danh là tính năng của ứng dụng Pip.',
-    bookmarks: 'Dấu trang được quản lý trong ứng dụng Pip.',
-    history: 'Lịch sử duyệt web thuộc ứng dụng Pip.',
-    downloads: 'Trình quản lý tải xuống thuộc ứng dụng Pip.',
-    window: 'Tạo cửa sổ mới trong ứng dụng Pip.',
-    help: 'Trợ giúp Pip có trong ứng dụng.'
-  };
-  document.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-demo]');
-    if (!button) return;
-    const action = button.dataset.demo;
-    if (action === 'settings') showView('settings');
-    else if (action === 'private') showView('private');
-    else if (action === 'newtab') showView('browser');
-    else notify(actions[action] || 'Tính năng này chạy trong ứng dụng Pip.');
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') showView('browser');
-  });
-
-  provider.addEventListener('change', () => {
-    save({ provider: provider.value });
-    $('#settings-save').textContent = `Đã lưu ${provider.value} cho bản demo.`;
-  });
-  motionToggle.addEventListener('change', () => {
-    document.documentElement.classList.toggle('reduce-motion', motionToggle.checked);
-    save({ reduceMotion: motionToggle.checked });
-    $('#settings-save').textContent = 'Đã lưu tùy chọn chuyển động cho bản demo.';
-  });
-  suggestionsToggle.addEventListener('change', () => {
-    shortcuts.hidden = !suggestionsToggle.checked;
-    save({ showSuggestions: suggestionsToggle.checked });
-    $('#settings-save').textContent = 'Đã lưu tùy chọn lối tắt cho bản demo.';
-  });
 
   const pageVersion = $('#version').textContent.trim();
   async function fetchLatestRelease() {
@@ -153,20 +68,15 @@
       downloadUrl = new URL(release.url, location.origin);
       if (downloadUrl.protocol !== 'https:') return;
     } catch { return; }
-    if (release.downloadAvailable) {
-      const link = document.createElement('a');
-      link.className = 'download-button';
-      link.id = 'download-link';
-      link.href = downloadUrl.href;
-      link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
-      $('#download-link').replaceWith(link);
-    }
+    const link = $('#download-link');
+    link.href = downloadUrl.href;
+    link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
     if (compareVersions(release.version, pageVersion) <= 0) return;
     const note = $('#update-note');
     note.append(`Đã có Pip ${release.version}. `);
-    const link = document.createElement('a');
-    link.href = downloadUrl.href;
-    link.textContent = 'Tải bản mới';
-    note.append(link);
+    const updateLink = document.createElement('a');
+    updateLink.href = downloadUrl.href;
+    updateLink.textContent = 'Tải bản mới';
+    note.append(updateLink);
   }).catch(() => {});
 })();

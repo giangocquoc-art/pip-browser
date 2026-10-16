@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://pip.psharehub.com/sitemap.xml

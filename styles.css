@@ -7,3 +7,32 @@
 
 .browser-body{position:relative}.browser-private{position:absolute;inset:0;z-index:2;overflow:hidden;background:#101318}.browser-private[hidden]{display:none!important}.browser-private img{display:block;width:100%;height:100%;object-fit:cover}.browser-demo.private-mode .rail,.browser-demo.private-mode .browser-home{display:none!important}
 @media(max-width:600px){.show-tab{padding:8px 5px;font-size:10px}}
+
+/* Real Pip application previews and product information */
+.app-preview{border:1px solid var(--line);border-radius:18px;padding:14px;background:linear-gradient(135deg,#fff8f1,#f8f1ea);box-shadow:var(--shadow);overflow:hidden}
+.app-preview img{display:block;width:100%;height:clamp(300px,58vw,650px);object-fit:contain;object-position:center;border-radius:10px;background:#fff}
+.section-copy{max-width:480px;color:var(--muted);font-size:14px;margin:16px 0}
+.text-link{display:inline-block;margin-top:6px;color:var(--deep-orange);font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:3px}
+.features-section{align-items:start}
+.faq-section{max-width:1260px;margin:86px auto 0;padding:0 28px;display:grid;grid-template-columns:.8fr 1.2fr;gap:60px;align-items:start}
+.faq-section h2{margin:0;font-size:clamp(34px,4vw,47px);line-height:1.06;letter-spacing:-2px}
+.faq-section h2 em{font-style:normal;color:#d9530b}
+.faq-list{display:grid;gap:10px}
+.faq-list details{padding:17px 19px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.faq-list summary{cursor:pointer;font-weight:700;font-size:14px}
+.faq-list details p{margin:11px 0 0;color:var(--muted);font-size:13px}
+.security-note a{color:var(--deep-orange);text-decoration:underline;text-underline-offset:2px}
+@media(max-width:900px){.faq-section{margin:68px auto 0;padding-left:24px;padding-right:24px;gap:28px}}
+@media(max-width:600px){.app-preview{padding:7px;border-radius:13px}.app-preview img{height:auto;max-height:65vh;aspect-ratio:1280/800;object-fit:contain}.features-section{align-items:stretch}.faq-section{margin:58px auto 0;padding:0 18px;grid-template-columns:1fr;gap:18px}.faq-section h2{font-size:37px}.faq-list details{padding:14px}.faq-list summary{font-size:13px}.section-copy{font-size:13px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.hero-download{display:inline-flex;align-items:center;gap:18px;margin-top:20px;padding:13px 21px;border-radius:10px;background:var(--deep-orange);color:#fff;font-weight:750;font-size:14px;box-shadow:0 8px 20px #b84c0830}
+.hero-download:hover,.download-button:hover{background:#a84006;transform:translateY(-1px)}
+.hero-download span{font-size:18px;line-height:1}
+.info-page{max-width:900px;margin:38px auto 70px;padding:0 28px}
+.info-page h1{margin:0;font-size:clamp(36px,5vw,54px);line-height:1.08;letter-spacing:-2px}
+.info-lead{max-width:680px;color:var(--muted);font-size:17px;margin:16px 0 24px}
+.info-page section{margin:34px 0;padding-top:20px;border-top:1px solid var(--line)}
+.info-page h2{margin:0 0 9px;font-size:22px;letter-spacing:-.4px}
+.info-page section p{max-width:760px;color:var(--muted);margin:8px 0;font-size:15px}
+.info-page+footer{max-width:900px;flex-wrap:wrap}
+@media(max-width:600px){.hero-download{margin-top:15px}.info-page{margin:24px auto 50px;padding:0 18px}.info-lead{font-size:15px}.info-page h2{font-size:19px}.info-page section p{font-size:14px}}
