@@ -49,6 +49,20 @@ jobs:
         shell: pwsh
         run: ./scripts/build-installer.ps1 -SkipBrowserBuild
 
+      - name: Validate Store MSIX packaging
+        shell: pwsh
+        run: |
+          ./store/package-store-msix.ps1 `
+            -IdentityName 'PipTestPackage' `
+            -PublisherDistinguishedName 'CN=Pip Test Publisher' `
+            -PublisherDisplayName 'Pip Test Publisher'
+          $manifest = Get-Content ./store/out/unpacked-check/AppxManifest.xml -Raw
+          if ($manifest -notmatch 'Name="PipTestPackage"' -or
+              $manifest -notmatch 'Publisher="CN=Pip Test Publisher"' -or
+              $manifest -notmatch 'Executable="Pip.exe"') {
+            throw 'The generated Store test package manifest does not contain the expected test identity and app entry point.'
+          }
+
       - name: Run tests
         # GitHub-hosted Windows runners execute with an elevated token; this
         # test specifically assumes an unelevated interactive user process.
