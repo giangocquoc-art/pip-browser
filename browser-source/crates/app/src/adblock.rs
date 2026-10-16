@@ -98,13 +98,14 @@ impl Blocker {
         filters.add_filter_list(easylist.to_owned(), ParseOptions::default());
         // adblock-rust does not implement ABP popup/popunder resource types.
         // Translate those options into a dedicated engine queried only for
-        // WebView2 popup destinations. Use the bundled EasyList and uBlock
-        // Origin network filters so known popup campaigns from either list apply.
+        // WebView2 popup destinations. Use bundled popup rules, the dedicated
+        // HaGeZi popup ads domain list, and reviewed Pip overrides.
         let popup_rules = [
             popup_rules(easylist),
             popup_rules(include_str!(
                 "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
             )),
+            include_str!("../filters/popupads-hagezi.txt").to_owned(),
             include_str!("../filters/popup-overrides.txt").to_owned(),
         ]
         .join("\n");
@@ -498,6 +499,7 @@ mod tests {
             popup_rules(include_str!(
                 "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
             )),
+            include_str!("../filters/popupads-hagezi.txt").to_owned(),
         ]
         .join("\n");
         let bundled_popups = engine(&bundled_popup_rules);
@@ -510,6 +512,17 @@ mod tests {
             .check_network_request(
                 &Request::new(
                     "https://dogsprotectedfeed.info/landing",
+                    top,
+                    "other",
+                    "GET"
+                )
+                .unwrap()
+            )
+            .should_block());
+        assert!(bundled_popups
+            .check_network_request(
+                &Request::new(
+                    "https://fd01ce9a02.0012e30263.com/landing",
                     top,
                     "other",
                     "GET"

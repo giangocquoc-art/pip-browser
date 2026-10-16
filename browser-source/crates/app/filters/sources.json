@@ -4,6 +4,14 @@
     "brave/adblock-resources": "6da9b247c3368baa8b4f24cd02046e18702a6527",
     "uBlockOrigin/uAssets": "0942ffe5d4cc7ba6d905d64044a82123f1e7c6fd"
   },
+  "additional_filter_lists": {
+    "HaGeZi Pop-Up Ads": {
+      "url": "https://github.com/hagezi/dns-blocklists/blob/main/adblock/popupads.txt",
+      "version": "2026.1016.0824.06",
+      "sha256": "513ba0492c52e2d7d6b3dc5aa54aec8c23f48bc31457aafd25851bd491250380",
+      "license": "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
+    }
+  },
   "sha256": {
     "upstream/brave/adblock-resources/LICENSE": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
     "upstream/brave/adblock-resources/metadata.json": "55cee92553104a062569994c9289b24ee960f7d3041135f9ec02a2357cefd8e3",
