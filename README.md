@@ -7,8 +7,10 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 ## Cấu trúc
 
 - `index.html`: landing page ngắn, nút tải ở phần đầu trang và ảnh chụp ứng dụng thật.
-- `tinh-nang/` và `cau-hoi/`: nội dung chi tiết theo ý định tìm kiếm, liên kết từ trang chủ.
-- `robots.txt`, `sitemap.xml`: cho phép crawl và liệt kê ba URL chuẩn.
+- `tinh-nang/`, `cau-hoi/` và `huong-dan/`: nội dung theo từng ý định tìm kiếm. Tám bài hướng dẫn gom 40 cụm có liên quan vào từng chủ đề thay vì tạo 40 trang mỏng.
+- `robots.txt`, `sitemap.xml`: cho phép crawl và liệt kê các URL chuẩn của trang chính, trang tính năng, FAQ và cụm hướng dẫn.
+- `guide.css`, `assets/guides/`: bố cục hướng dẫn responsive và tám ảnh WebP có mascot Pip.
+- `marketing/seo-keyword-map.md`: bản đồ 40 cụm tìm kiếm, ý định và URL đích; gợi ý autocomplete không phải số liệu lượt tìm kiếm.
 - `assets/app-*.webp`: ảnh giao diện được chụp từ ứng dụng Pip; WebP để giảm dung lượng tải.
 - `assets/og-pip.jpg`: ảnh chia sẻ mạng xã hội.
 - `version.json`: phương án dự phòng nếu GitHub Releases không phản hồi.
