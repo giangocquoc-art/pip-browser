@@ -6,7 +6,7 @@
     browser: ['assets/app-home.webp', 'Ảnh chụp giao diện Pip cho Windows: thanh điều hướng, mascot, ô tìm kiếm Google và các lối tắt trang web.', 'Trang chủ Pip với tìm kiếm Google và các lối tắt quen thuộc.'],
     private: ['assets/app-private.webp', 'Ảnh chụp cửa sổ ẩn danh Pip với mascot riêng, ô tìm kiếm ẩn danh và nút gợi ý Google DNS.', 'Cửa sổ ẩn danh Pip với nút tùy chọn Google DNS.'],
     menu: ['assets/app-profiles.webp', 'Ảnh chụp menu hồ sơ Pip để chuyển đổi các hồ sơ duyệt web riêng.', 'Menu hồ sơ để chuyển giữa các hồ sơ Pip.'],
-    settings: ['assets/app-settings.webp', 'Ảnh chụp trang cài đặt của ứng dụng Pip trên Windows.', 'Trang cài đặt Pip.']
+    settings: ['assets/app-settings-current.webp', 'Ảnh chụp cửa sổ Pip đang mở trang Cài đặt trên Windows, gồm thanh công cụ và các tùy chọn trình duyệt.', 'Cài đặt thực tế đang mở trong cửa sổ Pip.']
   };
   $$('.show-tab').forEach((tab) => tab.addEventListener('click', () => {
     const view = tab.dataset.view;
