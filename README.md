@@ -1,5 +1,7 @@
 # Pip Browser website
 
+[![Verify Pip](https://github.com/giangocquoc-art/pip-browser/actions/workflows/verify-pip.yml/badge.svg)](https://github.com/giangocquoc-art/pip-browser/actions/workflows/verify-pip.yml)
+
 Trang giới thiệu và tải Pip cho Windows: https://pip.psharehub.com
 
 Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoài hay thư viện hoạt ảnh. Pip dùng Microsoft Edge WebView2 Runtime có sẵn trên Windows.
