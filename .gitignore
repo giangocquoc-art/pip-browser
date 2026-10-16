@@ -5,3 +5,6 @@ Pip-Setup-*.exe
 
 PipSetup.exe
 browser-source/target/
+browser-source/crates/installer/assets/
+browser-source/dist/
+browser-source/dist-pip/
