@@ -2,6 +2,7 @@
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const previewImage = $('#app-preview-image');
+  const previewDialog = $('#preview-dialog');
   const previews = {
     browser: ['assets/app-home.webp', 'Ảnh chụp giao diện Pip cho Windows: thanh điều hướng, mascot, ô tìm kiếm Google và các lối tắt trang web.', 'Trang chủ Pip với tìm kiếm Google và các lối tắt quen thuộc.'],
     private: ['assets/app-private.webp', 'Ảnh chụp cửa sổ ẩn danh Pip với mascot riêng, ô tìm kiếm ẩn danh và nút gợi ý Google DNS.', 'Cửa sổ ẩn danh Pip với nút tùy chọn Google DNS.'],
@@ -14,6 +15,8 @@
     if (!preview) return;
     previewImage.src = preview[0];
     previewImage.alt = preview[1];
+    $('#preview-dialog-image').src = previewImage.src;
+    $('#preview-dialog-image').alt = preview[1];
     $('#demo-caption').textContent = preview[2];
     $$('.show-tab').forEach((item) => {
       const active = item === tab;
@@ -21,6 +24,16 @@
       item.setAttribute('aria-selected', String(active));
     });
   }));
+
+  $('#preview-zoom').addEventListener('click', () => {
+    $('#preview-dialog-image').src = previewImage.src;
+    $('#preview-dialog-image').alt = previewImage.alt;
+    previewDialog.showModal();
+  });
+  $('#preview-close').addEventListener('click', () => previewDialog.close());
+  previewDialog.addEventListener('click', (event) => {
+    if (event.target === previewDialog) previewDialog.close();
+  });
 
   const pageVersion = $('#version').textContent.trim();
   async function fetchLatestRelease() {
