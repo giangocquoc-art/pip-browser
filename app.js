@@ -103,34 +103,39 @@
     $('#settings-save').textContent = 'Đã lưu tùy chọn lối tắt cho bản demo.';
   });
 
-  const currentVersion = $('#version').textContent.trim();
+  const pageVersion = $('#version').textContent.trim();
+  const compareVersions = (left, right) => {
+    const a = left.split('.').map(Number);
+    const b = right.split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const difference = (a[i] || 0) - (b[i] || 0);
+      if (difference) return difference;
+    }
+    return 0;
+  };
   fetch('/version.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
     if (!release?.version) return;
-    if (release.downloadAvailable && release.url) {
-      try {
-        const url = new URL(release.url, location.origin);
-        if (url.protocol !== 'https:' && url.origin !== location.origin) return;
-        const link = document.createElement('a');
-        link.className = 'download-button';
-        link.id = 'download-link';
-        link.href = url.href;
-        link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
-        $('#download-link').replaceWith(link);
-      } catch { return; }
+    $('#version').textContent = release.version;
+    if (!release.downloadAvailable || !release.url) return;
+    let downloadUrl;
+    try {
+      downloadUrl = new URL(release.url, location.origin);
+      if (downloadUrl.protocol !== 'https:') return;
+    } catch { return; }
+    if (release.downloadAvailable) {
+      const link = document.createElement('a');
+      link.className = 'download-button';
+      link.id = 'download-link';
+      link.href = downloadUrl.href;
+      link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
+      $('#download-link').replaceWith(link);
     }
-    const newer = release.version.split('.').map(Number).some((part, index, latest) =>
-      part > (Number(currentVersion.split('.')[index]) || 0) && latest.slice(0, index).every((value, i) => value === (Number(currentVersion.split('.')[i]) || 0))
-    );
-    if (!newer) return;
+    if (compareVersions(release.version, pageVersion) <= 0) return;
     const note = $('#update-note');
     note.append(`Đã có Pip ${release.version}. `);
     const link = document.createElement('a');
+    link.href = downloadUrl.href;
     link.textContent = 'Tải bản mới';
-    try {
-      const url = new URL(release.url || '/#download', location.origin);
-      if (url.protocol !== 'https:' && url.origin !== location.origin) return;
-      link.href = url.href;
-    } catch { return; }
     note.append(link);
   }).catch(() => {});
 })();

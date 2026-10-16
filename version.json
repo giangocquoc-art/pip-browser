@@ -1,7 +1,7 @@
 {
   "version": "0.1.0",
   "downloadAvailable": true,
-  "url": "/Pip-Setup-0.1.0-Windows-x64.exe",
+  "url": "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.0/Pip-Setup-0.1.0-Windows-x64.exe",
   "installer": "Pip-Setup-0.1.0-Windows-x64.exe",
   "sha256": "164d07fe426a113f2c7dc47dc4bbdc83ba33ce24bca70a17a091af8f38ab03b4",
   "size": 15121408,
