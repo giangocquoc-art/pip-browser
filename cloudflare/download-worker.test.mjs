@@ -56,10 +56,18 @@ test("serves the matching SHA-256 manifest as a direct download", async () => {
 });
 
 test("rejects unsupported paths and methods", async () => {
-  const pathResponse = await worker.fetch(new Request("https://download.pip.psharehub.com/unknown"));
-  const methodResponse = await worker.fetch(new Request("https://download.pip.psharehub.com/", { method: "POST" }));
+  const seen = [];
+  const responses = await withMockedFetch(async (input) => {
+    seen.push(String(input));
+    throw new Error("Invalid paths and methods must not contact GitHub");
+  }, async () => Promise.all([
+    worker.fetch(new Request("https://download.pip.psharehub.com/unknown")),
+    worker.fetch(new Request("https://download.pip.psharehub.com/", { method: "POST" })),
+  ]));
+  const [pathResponse, methodResponse] = responses;
   assert.equal(pathResponse.status, 404);
   assert.equal(methodResponse.status, 405);
+  assert.equal(seen.length, 0);
 });
 
 test("rejects an asset URL outside the Pip GitHub repository", async () => {

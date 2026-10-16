@@ -2,6 +2,7 @@ const RELEASE_API = "https://api.github.com/repos/giangocquoc-art/pip-browser/re
 const RELEASE_CACHE_SECONDS = 120;
 const INSTALLER_NAME = "PipSetup.exe";
 const LEGACY_INSTALLER_NAME = /^Pip-Setup-[\w.+-]+-Windows-x64\.exe$/;
+const SUPPORTED_PATHS = new Set(["/", "/installer", "/checksums"]);
 
 function textResponse(body, status) {
   return new Response(body, {
@@ -59,6 +60,10 @@ export default {
     }
 
     const { pathname } = new URL(request.url);
+    if (!SUPPORTED_PATHS.has(pathname)) {
+      return textResponse("Không tìm thấy tệp yêu cầu trong bản Pip mới nhất.", 404);
+    }
+
     try {
       const release = await getLatestRelease();
       const asset = getAsset(release, pathname);
