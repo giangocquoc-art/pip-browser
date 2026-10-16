@@ -36,8 +36,9 @@
   });
 
   const pageVersion = $('#version').textContent.trim();
+  const directDownloadUrl = 'https://download.pip.psharehub.com/';
   async function fetchLatestRelease() {
-    const cacheKey = 'pip-latest-release';
+    const cacheKey = 'pip-latest-release-v2';
     try {
       const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
       if (cached?.release && Date.now() - cached.checkedAt < 600000) return cached.release;
@@ -50,9 +51,8 @@
       if (!response.ok) throw new Error('GitHub release lookup failed');
       const metadata = await response.json();
       const version = metadata.tag_name?.replace(/^v/, '');
-      const installer = metadata.assets?.find((asset) => asset.name === `Pip-Setup-${version}-Windows-x64.exe`);
-      if (!version || !installer?.browser_download_url) throw new Error('Latest release has no Pip installer');
-      const release = { version, downloadAvailable: true, url: installer.browser_download_url };
+      if (!version) throw new Error('Latest release has no version');
+      const release = { version, downloadAvailable: true, url: directDownloadUrl };
       try { localStorage.setItem(cacheKey, JSON.stringify({ checkedAt: Date.now(), release })); }
       catch { /* The current page still uses the release response. */ }
       return release;
@@ -82,13 +82,13 @@
       if (downloadUrl.protocol !== 'https:') return;
     } catch { return; }
     const link = $('#download-link');
-    link.href = downloadUrl.href;
+    link.href = directDownloadUrl;
     link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
     if (compareVersions(release.version, pageVersion) <= 0) return;
     const note = $('#update-note');
     note.append(`Đã có Pip ${release.version}. `);
     const updateLink = document.createElement('a');
-    updateLink.href = downloadUrl.href;
+    updateLink.href = directDownloadUrl;
     updateLink.textContent = 'Tải bản mới';
     note.append(updateLink);
   }).catch(() => {});

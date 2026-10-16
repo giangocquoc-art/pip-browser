@@ -66,11 +66,36 @@ footer{font-size:13px}
   .showcase-intro,.section-copy,.info-lead{font-size:16px}
   .show-tab{font-size:13px}
   .demo-caption{font-size:13px}
-  .preview-dialog img{width:220vw;max-width:none;max-height:none}
   .feature-list small{font-size:15px}
   .download-cta>div>p:not(.eyebrow){font-size:16px}
   .download-note,.security-note{font-size:13px}
   .info-page h2{font-size:21px}
   .info-page section p,.faq-list details p{font-size:16px}
   footer{font-size:12px}
+}
+
+/* Larger, comfortable reading sizes for the website itself. */
+body{font-size:17px;line-height:1.65}
+.topbar nav{font-size:16px}
+.top-cta,.download-button,.hero-download{font-size:15px}
+.showcase-intro,.section-copy,.info-lead,.guide-index>p{font-size:19px}
+.feature-list strong,.faq-list summary{font-size:17px}
+.feature-list small,.faq-list details p,.info-page section p{font-size:17px}
+.demo-caption,.preview-zoom,.text-link,.guide-breadcrumb,.guide-meta,.guide-related a{font-size:15px}
+.download-note,.security-note,footer{font-size:14px}
+.info-page h2,.guide-content h2{font-size:26px}
+.guide-content{font-size:18px}
+.guide-content figure figcaption,.guide-image-caption,.guide-card small{font-size:15px}
+.guide-cta a{font-size:16px}
+.preview-dialog img{width:auto;max-width:calc(96vw - 24px);max-height:calc(92vh - 56px)}
+@media(max-width:600px){
+  .showcase-intro,.section-copy,.info-lead,.guide-dek,.guide-index>p{font-size:17px}
+  .top-cta,.download-button,.hero-download,.guide-cta a{font-size:15px}
+  .show-tab,.faq-list summary{font-size:14px}
+  .demo-caption,.preview-zoom,.text-link{font-size:14px}
+  .feature-list strong,.feature-list small,.faq-list details p,.info-page section p,.guide-content{font-size:16px}
+  .download-note,.security-note{font-size:14px}
+  footer{font-size:13px}
+  .info-page h2,.guide-content h2{font-size:22px}
+  .preview-dialog img{width:auto;max-width:calc(100vw - 12px);max-height:calc(100vh - 52px)}
 }
