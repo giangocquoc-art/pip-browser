@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#fff8f1">
+  <meta name="description" content="Tải Pip — trình duyệt Windows gọn nhẹ, dễ dùng, có bộ lọc quảng cáo tích hợp.">
+  <title>Pip — Trình duyệt gọn nhẹ cho Windows</title>
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#home" aria-label="Pip trang chủ">Pip<span>●</span></a>
+    <nav aria-label="Điều hướng chính"><a href="#design">Giao diện</a><a href="#features">Tính năng</a><a href="#download">Tải Pip</a></nav>
+    <a class="top-cta" href="#download">Tải Pip <span>↓</span></a>
+  </header>
+
+  <main id="home">
+    <section class="showcase" id="design">
+      <div class="showcase-head"><div><p class="eyebrow">NHẸ NHÀNG · RIÊNG TƯ · DỄ DÙNG</p><h1>Gọn mắt.<br><em>Thoải mái mỗi ngày.</em></h1><p class="showcase-intro">Lướt web theo cách của bạn, cùng Pip.</p></div><div class="showcase-tabs" role="tablist" aria-label="Xem giao diện Pip"><button class="show-tab active" role="tab" aria-selected="true" data-view="browser">Trình duyệt</button><button class="show-tab" role="tab" aria-selected="false" data-view="menu">Menu</button><button class="show-tab" role="tab" aria-selected="false" data-view="settings">Cài đặt</button></div></div>
+      <div class="browser-demo" id="browser-demo">
+        <div class="browser-frame">
+          <div class="window-top"><div class="traffic"><i></i><i></i><i></i></div><div class="tab-pill"><img src="assets/mascot-avatar.webp" alt="">Tab mới — Pip <span>×</span></div><button class="plus-tab" aria-label="Tạo tab mới">＋</button><div class="window-actions">−　□　×</div></div>
+          <div class="browser-tools"><div class="nav-icons"><button aria-label="Quay lại" data-toolbar="back">‹</button><button aria-label="Tiến tới" data-toolbar="forward">›</button><button aria-label="Tải lại" data-toolbar="reload">↻</button></div><button class="fake-omnibox" id="demo-omnibox" type="button">⌕ <span>Tìm kiếm hoặc nhập địa chỉ website</span></button><button class="bookmark-toggle" type="button" aria-label="Thêm vào dấu trang" aria-pressed="false">☆</button><button class="avatar-button" aria-label="Mở menu Pip"><img src="assets/mascot-avatar.webp" alt=""></button><button class="dots" aria-label="Mở menu khác">⋮</button></div>
+          <div class="browser-body"><aside class="rail"><b class="rail-brand">Pip</b><button class="rail-item selected" data-demo="newtab">⌂ <span>Trang chủ</span></button><button class="rail-item" data-demo="bookmarks">☆ <span>Dấu trang</span></button><button class="rail-item" data-demo="history">◷ <span>Lịch sử</span></button><button class="rail-item" data-demo="downloads">↓ <span>Tải xuống</span></button><button class="rail-item" data-demo="settings">⚙ <span>Cài đặt</span></button></aside><div class="browser-home"><div class="browser-welcome"><span class="eyebrow">NHANH · GỌN · DỄ DÙNG</span><h2>Chào bạn!</h2><p>Trình duyệt của bạn, theo cách của bạn.</p><div class="demo-search">⌕ <span>Tìm kiếm hoặc nhập địa chỉ website</span><b>→</b></div><div class="demo-tiles"><a href="https://www.google.com/"><b class="google">G</b>Google</a><a href="https://www.youtube.com/"><b class="youtube">▶</b>YouTube</a><a href="https://github.com/"><b class="github">⌘</b>GitHub</a><a href="https://psharehub.com/"><b class="psh">P</b>PShareHub</a></div></div><img class="browser-mascot" src="assets/mascot-avatar.webp" alt="Pip mascot"></div></div>
+        </div>
+        <aside class="menu-pop" id="menu-pop" hidden><div class="menu-user"><img src="assets/mascot-avatar.webp" alt=""><span><b>Chào bạn!</b><small>Đồng bộ và cá nhân hóa</small></span><button class="close-menu" aria-label="Đóng menu">×</button></div><button data-demo="newtab">▣ <span>Tab mới</span><kbd>Ctrl+T</kbd></button><button data-demo="window">▢ <span>Cửa sổ mới</span><kbd>Ctrl+N</kbd></button><button data-demo="private">◉ <span>Cửa sổ ẩn danh mới</span><kbd>Ctrl+Shift+N</kbd></button><hr><button data-demo="bookmarks">☆ <span>Dấu trang</span><b>›</b></button><button data-demo="history">◷ <span>Lịch sử</span></button><button data-demo="downloads">↓ <span>Tải xuống</span><kbd>Ctrl+J</kbd></button><button data-demo="settings">⚙ <span>Cài đặt</span></button><hr><button data-demo="help">? <span>Trợ giúp & phản hồi</span><b>›</b></button></aside>
+        <aside class="settings-pop" id="settings-pop" hidden><div class="settings-side"><b>Cài đặt</b><span class="settings-active">♙ &nbsp; Bạn và Pip</span><span>♧ &nbsp; Giao diện</span><span>⌕ &nbsp; Công cụ tìm kiếm</span><span>♧ &nbsp; Quyền riêng tư</span><span>↓ &nbsp; Tải xuống</span><span>⚙ &nbsp; Hệ thống</span></div><div class="settings-main"><h3>Cài đặt Pip</h3><label>Thanh công cụ tìm kiếm<select id="search-provider"><option>Google</option><option>Bing</option></select></label><label class="setting-toggle"><span>Giảm hoạt ảnh giao diện<small>Giữ trải nghiệm nhanh và nhẹ</small></span><input type="checkbox" checked id="motion-toggle"></label><label class="setting-toggle"><span>Gợi ý trang tab mới<small>Hiện lối tắt website quen thuộc</small></span><input type="checkbox" checked id="suggestions-toggle"></label><p class="settings-save" id="settings-save">Tùy chọn minh họa trong trang giới thiệu</p></div></aside>
+      </div>
+      <p class="demo-caption" id="demo-caption">Trang tab mới Pip — tìm kiếm Google, lối tắt và mascot PShareHub.</p>
+    </section>
+
+    <section class="features-section" id="features"><div><p class="eyebrow">ĐỦ DÙNG CHO MỖI NGÀY</p><h2>Nhẹ nhàng từ<br><em>lần mở đầu tiên.</em></h2></div><div class="feature-list"><article><b>01</b><span><strong>Tìm kiếm bằng Google</strong><small>Gõ từ khóa hoặc địa chỉ ngay trên thanh tìm kiếm.</small></span></article><article><b>02</b><span><strong>Lọc quảng cáo tích hợp</strong><small>Bộ lọc chạy nền; hiệu quả tùy trang web và nội dung.</small></span></article><article><b>03</b><span><strong>Hồ sơ riêng biệt</strong><small>Mỗi hồ sơ giữ dữ liệu duyệt web tách riêng.</small></span></article></div></section>
+
+    <section class="download-cta" id="download"><div><p class="eyebrow">PIP CHO WINDOWS · PHIÊN BẢN <span id="version">0.1.0</span></p><h2>Sẵn sàng lướt web<br><em>cùng Pip chưa?</em></h2><p>Bộ cài Windows x64 đã qua kiểm thử. Liên kết tải sẽ mở khi kho phát hành Pip được kết nối.</p><button class="download-button" type="button" disabled>Đang hoàn tất liên kết tải <span>↓</span></button><small class="download-note">Windows x64 · Cài theo tài khoản Windows của bạn.</small><p class="update-note" id="update-note" aria-live="polite"></p><small class="security-note">Bộ cài hiện chưa được ký số; Windows có thể hiện cảnh báo SmartScreen.</small></div><img src="assets/mascot-download.webp" alt="Pip sẵn sàng tải xuống"></section>
+  </main>
+  <footer><a class="brand" href="#home">Pip<span>●</span></a><span>Trình duyệt gọn nhẹ cho Windows.</span><a href="https://psharehub.com/">Mascot từ PShareHub ↗</a><span>© 2026 Pip</span></footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>
