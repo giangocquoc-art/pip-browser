@@ -19,7 +19,7 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 
 ## Tải và cập nhật
 
-Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Mỗi bản mới cần phát hành GitHub Release với tệp `PipSetup.exe`.
+Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Mỗi bản mới cần phát hành GitHub Release với tệp `PipSetup.exe`, `Pip-source-<version>.zip` và `SHA256SUMS.txt`. Liên kết GitHub trong menu dẫn tới trang Releases để người dùng thấy bộ cài, mã nguồn và checksum cùng một nơi.
 
 Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, kiểm tra trang chủ, trang phụ, ảnh OG, sitemap, liên kết tải và giao diện mobile.
 
