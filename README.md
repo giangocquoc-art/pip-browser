@@ -29,3 +29,7 @@ Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, ki�
 ## Thông tin cài đặt
 
 Pip hỗ trợ Windows 10/11 64-bit và cài riêng cho tài khoản Windows hiện tại. Bộ cài chưa ký số; SmartScreen có thể cảnh báo. Trang giới thiệu ghi rõ giới hạn của chế độ ẩn danh, DNS và bộ lọc quảng cáo.
+
+## Báo cáo bảo mật
+
+Đọc [chính sách bảo mật và cách báo cáo lỗ hổng](SECURITY.md). Không đăng chi tiết khai thác hoặc dữ liệu cá nhân trong issue công khai.
