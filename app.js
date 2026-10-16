@@ -106,6 +106,18 @@
   const currentVersion = $('#version').textContent.trim();
   fetch('/version.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
     if (!release?.version) return;
+    if (release.downloadAvailable && release.url) {
+      try {
+        const url = new URL(release.url, location.origin);
+        if (url.protocol !== 'https:' && url.origin !== location.origin) return;
+        const link = document.createElement('a');
+        link.className = 'download-button';
+        link.id = 'download-link';
+        link.href = url.href;
+        link.textContent = `Tải Pip ${release.version} cho Windows ↓`;
+        $('#download-link').replaceWith(link);
+      } catch { return; }
+    }
     const newer = release.version.split('.').map(Number).some((part, index, latest) =>
       part > (Number(currentVersion.split('.')[index]) || 0) && latest.slice(0, index).every((value, i) => value === (Number(currentVersion.split('.')[i]) || 0))
     );
