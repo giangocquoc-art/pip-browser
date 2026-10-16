@@ -13,24 +13,25 @@ Mở [pip.psharehub.com](https://pip.psharehub.com) và chọn **Tải Pip cho W
 - Nếu thiếu WebView2 Runtime, bộ cài sẽ hỏi trước khi tải trình cài chính thức của Microsoft.
 - Bộ cài chưa ký số nên Windows SmartScreen có thể hiển thị cảnh báo.
 
-SHA-256 của bản `0.1.0`:
+SHA-256 của bộ cài Pip `0.1.1` (Windows x64):
 
 ```text
-164d07fe426a113f2c7dc47dc4bbdc83ba33ce24bca70a17a091af8f38ab03b4
+dafa3f7009f4d9b77ca9950861818d8680eaa7e913e66d63f72df1f8a4889c6c
 ```
 
 ## Pip có gì?
 
 - Google là công cụ tìm kiếm mặc định.
 - Bộ lọc quảng cáo Brave Adblock Rust chạy trong ứng dụng, kèm danh sách EasyList và quy tắc dành cho YouTube. Quảng cáo YouTube thay đổi thường xuyên theo tài khoản, khu vực và thời điểm nên hiệu quả có thể khác nhau.
-- Hồ sơ người dùng lưu dữ liệu duyệt riêng; cửa sổ ẩn danh dùng phiên riêng.
+- Hồ sơ người dùng lưu dữ liệu duyệt riêng; cửa sổ ẩn danh có giao diện mascot riêng và không ghi lịch sử.
+- Gợi ý Google DNS nằm trên trang ẩn danh; bật bằng nút G DNS trên thanh công cụ. Cần khởi động lại Pip để áp dụng thay đổi.
 - WebView2 Runtime được Windows cập nhật, giúp bộ cài gọn hơn vì không phải mang theo một trình duyệt Chromium khác.
 
 ## Cách cập nhật
 
 Trang tải tự kiểm tra GitHub Releases khi mở. Nếu có phiên bản mới, nút tải trỏ đến bộ cài mới nhất và trang hiện thông báo cập nhật. Kết quả được lưu trong trình duyệt 10 phút; nếu GitHub tạm thời không phản hồi, trang dùng `version.json` làm phương án dự phòng.
 
-Để phát hành, tạo GitHub Release với tag `v0.1.1` và đính kèm file `Pip-Setup-0.1.1-Windows-x64.exe`. Nút tải và thông báo sẽ nhận bản mới tự động, không cần triển khai lại website. Khi muốn cập nhật nhãn phiên bản trên trang, sửa số trong `index.html` rồi đẩy lên `main`; Vercel tự triển khai commit đó.
+Bản phát hành hiện tại là `0.1.1`. Mỗi bản mới được phát hành bằng GitHub Release kèm bộ cài Windows và gói mã nguồn; nút tải tự nhận bản mới nhất. `version.json` giữ liên kết, SHA-256 và kích thước để dùng khi GitHub tạm thời không phản hồi. Mỗi lần cập nhật website, Vercel triển khai commit mới từ nhánh `main`.
 
 ## Mã nguồn website
 

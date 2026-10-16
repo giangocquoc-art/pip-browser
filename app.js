@@ -17,6 +17,8 @@
   function showView(view) {
     menu.hidden = view !== 'menu';
     settings.hidden = view !== 'settings';
+    $('#private-preview').hidden = view !== 'private';
+    $('.browser-demo').classList.toggle('private-mode', view === 'private');
     $$('.show-tab').forEach((tab) => {
       const active = tab.dataset.view === view;
       tab.classList.toggle('active', active);
@@ -24,6 +26,7 @@
     });
     $('#demo-caption').textContent = ({
       browser: 'Trang tab mới Pip — tìm kiếm Google, lối tắt và mascot PShareHub.',
+      private: 'Trang ẩn danh Pip — mascot mới và gợi ý Google DNS trên thanh công cụ.',
       menu: 'Menu trình duyệt Pip — các thao tác quen thuộc được gom gọn.',
       settings: 'Bản xem trước cài đặt Pip; các tùy chọn bên dưới chỉ minh họa giao diện.'
     })[view] || '';
@@ -81,6 +84,7 @@
     if (!button) return;
     const action = button.dataset.demo;
     if (action === 'settings') showView('settings');
+    else if (action === 'private') showView('private');
     else if (action === 'newtab') showView('browser');
     else notify(actions[action] || 'Tính năng này chạy trong ứng dụng Pip.');
   });
