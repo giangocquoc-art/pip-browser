@@ -1,0 +1,71 @@
+name: Verify Pip
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'browser-source/**'
+      - 'cloudflare/**'
+      - '.github/workflows/verify-pip.yml'
+  pull_request:
+    paths:
+      - 'browser-source/**'
+      - 'cloudflare/**'
+      - '.github/workflows/verify-pip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    name: Browser tests (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: browser-source
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build browser
+        run: cargo build -p evergreen-browser --release --locked
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Prepare and build installer payloads
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -SkipBrowserBuild
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  download-worker:
+    name: Download Worker tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Test download and checksum handling
+        run: node --test cloudflare/download-worker.test.mjs
