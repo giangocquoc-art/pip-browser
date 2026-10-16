@@ -1,6 +1,7 @@
 const RELEASE_API = "https://api.github.com/repos/giangocquoc-art/pip-browser/releases/latest";
 const RELEASE_CACHE_SECONDS = 120;
-const INSTALLER_NAME = /^Pip-Setup-[\w.+-]+-Windows-x64\.exe$/;
+const INSTALLER_NAME = "PipSetup.exe";
+const LEGACY_INSTALLER_NAME = /^Pip-Setup-[\w.+-]+-Windows-x64\.exe$/;
 
 function textResponse(body, status) {
   return new Response(body, {
@@ -31,7 +32,8 @@ function getAsset(release, pathname) {
     return release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
   }
   if (pathname === "/" || pathname === "/installer") {
-    return release.assets?.find((asset) => INSTALLER_NAME.test(asset.name));
+    return release.assets?.find((asset) => asset.name === INSTALLER_NAME)
+      ?? release.assets?.find((asset) => LEGACY_INSTALLER_NAME.test(asset.name));
   }
   return null;
 }
@@ -39,7 +41,7 @@ function getAsset(release, pathname) {
 function copyDownloadHeaders(upstream, asset) {
   const headers = new Headers({
     "Cache-Control": "private, no-store",
-    "Content-Disposition": `attachment; filename="${asset.name}"`,
+    "Content-Disposition": `attachment; filename="${asset.name.endsWith(".exe") ? INSTALLER_NAME : asset.name}"`,
     "Content-Type": asset.name.endsWith(".txt") ? "text/plain; charset=utf-8" : "application/octet-stream",
     "X-Content-Type-Options": "nosniff",
   });
@@ -78,6 +80,16 @@ export default {
       }
       const upstream = await fetch(assetUrl, { method: request.method, headers, redirect: "follow" });
       if (!upstream.ok) return textResponse("Chưa thể lấy bộ cài từ bản phát hành hiện tại.", 502);
+
+      if (pathname === "/checksums" && request.method === "GET") {
+        const manifest = (await upstream.text()).replace(
+          /^(\s*[a-fA-F0-9]{64}\s+)Pip-Setup-[\w.+-]+-Windows-x64\.exe$/m,
+          `$1${INSTALLER_NAME}`,
+        );
+        const checksumHeaders = copyDownloadHeaders(upstream, asset);
+        checksumHeaders.delete("Content-Length");
+        return new Response(manifest, { status: upstream.status, headers: checksumHeaders });
+      }
 
       return new Response(request.method === "HEAD" ? null : upstream.body, {
         status: upstream.status,

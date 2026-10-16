@@ -8,7 +8,8 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 
 - `index.html`: landing page ngắn, nút tải ở phần đầu trang và ảnh chụp ứng dụng thật.
 - `tinh-nang/`, `cau-hoi/` và `huong-dan/`: nội dung theo từng ý định tìm kiếm. Tám bài hướng dẫn gom 40 cụm có liên quan vào từng chủ đề thay vì tạo 40 trang mỏng.
-- `robots.txt`, `sitemap.xml`: cho phép crawl và liệt kê các URL chuẩn của trang chính, trang tính năng, FAQ và cụm hướng dẫn.
+- `robots.txt`, `sitemap.xml`: cho phép crawl và liệt kê các URL chuẩn của trang chính, trang tính năng, FAQ, chính sách quyền riêng tư và cụm hướng dẫn.
+- `quyen-rieng-tu/`: chính sách mô tả lưu trữ cục bộ, website bên thứ ba, tìm kiếm Google, DNS tùy chọn và chẩn đoán WebView2.
 - `guide.css`, `assets/guides/`: bố cục hướng dẫn responsive và tám ảnh WebP có mascot Pip.
 - `marketing/seo-keyword-map.md`: bản đồ 40 cụm tìm kiếm, ý định và URL đích; gợi ý autocomplete không phải số liệu lượt tìm kiếm.
 - `assets/app-*.webp`: ảnh giao diện được chụp từ ứng dụng Pip; WebP để giảm dung lượng tải.
@@ -18,7 +19,7 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 
 ## Tải và cập nhật
 
-Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Mỗi bản mới cần phát hành GitHub Release với tệp `Pip-Setup-<version>-Windows-x64.exe`.
+Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Mỗi bản mới cần phát hành GitHub Release với tệp `PipSetup.exe`.
 
 Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, kiểm tra trang chủ, trang phụ, ảnh OG, sitemap, liên kết tải và giao diện mobile.
 

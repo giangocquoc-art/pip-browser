@@ -2,7 +2,7 @@
   "version": "0.1.1",
   "downloadAvailable": true,
   "url": "https://download.pip.psharehub.com/",
-  "installer": "Pip-Setup-0.1.1-Windows-x64.exe",
+  "installer": "PipSetup.exe",
   "sha256": "dafa3f7009f4d9b77ca9950861818d8680eaa7e913e66d63f72df1f8a4889c6c",
   "size": 15900160,
   "updated": "2026-10-16"

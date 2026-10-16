@@ -36,7 +36,7 @@ test("streams the latest installer without redirecting the visitor to GitHub", a
   }, () => worker.fetch(new Request("https://download.pip.psharehub.com/")));
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("Content-Disposition"), 'attachment; filename="Pip-Setup-0.1.1-Windows-x64.exe"');
+  assert.equal(response.headers.get("Content-Disposition"), 'attachment; filename="PipSetup.exe"');
   assert.equal(response.headers.get("Content-Type"), "application/octet-stream");
   assert.equal(response.headers.get("Cache-Control"), "private, no-store");
   assert.equal(await response.text(), "installer-bytes");
@@ -47,12 +47,12 @@ test("streams the latest installer without redirecting the visitor to GitHub", a
 test("serves the matching SHA-256 manifest as a direct download", async () => {
   const response = await withMockedFetch(async (input) => {
     if (String(input).includes("api.github.com")) return releaseResponse();
-    return new Response("abc123  Pip-Setup-0.1.1-Windows-x64.exe");
+    return new Response(`${"a".repeat(64)}  Pip-Setup-0.1.1-Windows-x64.exe`);
   }, () => worker.fetch(new Request("https://download.pip.psharehub.com/checksums")));
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Disposition"), 'attachment; filename="SHA256SUMS.txt"');
-  assert.match(await response.text(), /abc123/);
+  assert.match(await response.text(), new RegExp(`${"a".repeat(64)}  PipSetup\\.exe`));
 });
 
 test("rejects unsupported paths and methods", async () => {
