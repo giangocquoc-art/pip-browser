@@ -50,7 +50,9 @@ jobs:
         run: ./scripts/build-installer.ps1 -SkipBrowserBuild
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        # GitHub-hosted Windows runners execute with an elevated token; this
+        # test specifically assumes an unelevated interactive user process.
+        run: cargo test --workspace --locked -- --skip test_is_process_elevated_returns_false_unelevated
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
