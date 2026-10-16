@@ -7,11 +7,13 @@ on:
       - 'browser-source/**'
       - 'cloudflare/**'
       - '.github/workflows/verify-pip.yml'
+      - '.github/workflows/release-pip.yml'
   pull_request:
     paths:
       - 'browser-source/**'
       - 'cloudflare/**'
       - '.github/workflows/verify-pip.yml'
+      - '.github/workflows/release-pip.yml'
   workflow_dispatch:
 
 permissions:

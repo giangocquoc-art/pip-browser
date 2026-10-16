@@ -22,7 +22,16 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 
 ## Tải và cập nhật
 
-Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Mỗi bản mới cần phát hành GitHub Release với tệp `PipSetup.exe`, `Pip-source-<version>.zip` và `SHA256SUMS.txt`. Liên kết GitHub trong menu dẫn tới trang Releases để người dùng thấy bộ cài, mã nguồn và checksum cùng một nơi.
+Nút tải kiểm tra GitHub Releases để lấy bản mới nhất; nếu API không phản hồi, website dùng `version.json`. Khi đẩy tag đúng dạng `v<version>` khớp với phiên bản trong Cargo, workflow `.github/workflows/release-pip.yml` sẽ build bộ cài và mã nguồn, tạo checksum, ký attestations bằng Sigstore thông qua GitHub, rồi tạo bản phát hành nháp. Người duyệt có thể xác nhận nội dung rồi mới xuất bản. Workflow không sửa các bản phát hành đã công bố.
+
+Người tải có thể cài [GitHub CLI](https://cli.github.com/) rồi kiểm tra nguồn gốc build sau khi tải file:
+
+```powershell
+gh attestation verify .\Pip-Setup-<version>-Windows-x64.exe --repo giangocquoc-art/pip-browser
+gh attestation verify .\Pip-source-<version>.zip --repo giangocquoc-art/pip-browser
+```
+
+Attestation xác nhận repository, commit và workflow đã tạo file; nó không phải chữ ký Authenticode của Windows và không tự gỡ cảnh báo SmartScreen. Để Windows nhận diện nhà phát hành khi người dùng cài đặt, Pip vẫn cần phân phối MSIX qua Microsoft Store hoặc ký Authenticode bằng chứng thư được tin cậy.
 
 Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, kiểm tra trang chủ, trang phụ, ảnh OG, sitemap, liên kết tải và giao diện mobile.
 

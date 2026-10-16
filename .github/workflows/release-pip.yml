@@ -1,0 +1,138 @@
+name: Prepare verified Pip release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: pip-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-attest:
+    name: Build and attest Windows release
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: browser-source
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Verify tag matches application versions
+        id: version
+        shell: pwsh
+        run: |
+          $app = Get-Content crates/app/Cargo.toml -Raw
+          $installer = Get-Content crates/installer/Cargo.toml -Raw
+          $version = [regex]::Match($app, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
+          $installerVersion = [regex]::Match($installer, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value
+          if (-not $version -or $version -ne $installerVersion) {
+            throw 'Browser and installer versions must both be set and match.'
+          }
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Release tag $($env:GITHUB_REF_NAME) does not match source version v$version."
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build Pip browser
+        run: cargo build -p evergreen-browser --release --locked
+
+      - name: Run tests
+        # GitHub-hosted Windows runners use an elevated token; this one test
+        # specifically assumes an unelevated interactive user process.
+        run: cargo test --workspace --locked -- --skip test_is_process_elevated_returns_false_unelevated
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build installer and package source
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -SkipBrowserBuild
+
+      - name: Prepare versioned source archive and checksums
+        shell: pwsh
+        env:
+          PIP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installer = "dist/Pip-Setup-$env:PIP_VERSION-Windows-x64.exe"
+          $sourceArchive = "dist/Pip-source-$env:PIP_VERSION.zip"
+          Copy-Item -LiteralPath crates/installer/assets/Pip-source.zip -Destination $sourceArchive -Force
+          $paths = @($installer, $sourceArchive)
+          foreach ($path in $paths) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Release asset is missing: $path" }
+          }
+          $lines = foreach ($path in $paths) {
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($path))"
+          }
+          Set-Content -LiteralPath dist/SHA256SUMS.txt -Value $lines -Encoding ascii
+
+      - name: Attest installer
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: browser-source/dist/Pip-Setup-${{ steps.version.outputs.version }}-Windows-x64.exe
+
+      - name: Attest source archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: browser-source/dist/Pip-source-${{ steps.version.outputs.version }}.zip
+
+      - name: Create or update draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $repository = $env:GITHUB_REPOSITORY
+          $setup = "dist/Pip-Setup-$env:PIP_VERSION-Windows-x64.exe"
+          $source = "dist/Pip-source-$env:PIP_VERSION.zip"
+          $checksums = 'dist/SHA256SUMS.txt'
+          $notes = @"
+          Pip $env:PIP_VERSION candidate built from tag $tag.
+
+          The installer and source archive have GitHub artifact attestations. After downloading them, verify their source and build provenance with GitHub CLI:
+
+          ````powershell
+          gh attestation verify .\Pip-Setup-$env:PIP_VERSION-Windows-x64.exe --repo $repository
+          gh attestation verify .\Pip-source-$env:PIP_VERSION.zip --repo $repository
+          ````
+
+          Compare downloaded file hashes with ``SHA256SUMS.txt`` as an additional integrity check. Artifact attestations establish where and how the files were built; they are not Windows Authenticode signatures and do not remove SmartScreen warnings.
+          "@
+          $notesPath = 'dist/RELEASE_NOTES.md'
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+
+          $existing = gh release view $tag --repo $repository --json isDraft --jq .isDraft 2>$null
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -eq 0) {
+            if ($existing.Trim() -ne 'true') { throw "Refusing to modify already-published release $tag." }
+            gh release upload $tag $setup $source $checksums --repo $repository --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Could not upload assets to the draft release.' }
+            gh release edit $tag --repo $repository --title "Pip $env:PIP_VERSION" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw 'Could not update draft release notes.' }
+          } else {
+            gh release create $tag $setup $source $checksums --repo $repository --draft --title "Pip $env:PIP_VERSION" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release.' }
+          }
