@@ -154,8 +154,9 @@ jobs:
           $setup = "dist/Pip-Setup-$env:PIP_VERSION-Windows-x64.exe"
           $source = "dist/Pip-source-$env:PIP_VERSION.zip"
           $checksums = 'dist/SHA256SUMS.txt'
-          $notes = @"
-          Pip $env:PIP_VERSION candidate built from tag $tag.
+          $productNotes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Raw
+          $verificationNotes = @"
+          ## Verify this release
 
           The installer and source archive have GitHub artifact attestations. After downloading them, verify their source and build provenance with GitHub CLI:
 
@@ -166,6 +167,7 @@ jobs:
 
           Compare downloaded file hashes with ``SHA256SUMS.txt`` as an additional integrity check. Artifact attestations establish where and how the files were built; they are not Windows Authenticode signatures and do not remove SmartScreen warnings.
           "@
+          $notes = "$productNotes`n`n$verificationNotes"
           $notesPath = 'dist/RELEASE_NOTES.md'
           Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
 
