@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="vi" data-preview-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tab mới — Pip</title>
+  <style>
+    :root{color-scheme:light;--accent:#f97316;--accent-dark:#e85d0d;--bg:#fffaf6;--surface:#fff;--soft:#fff0e5;--ink:#101c2b;--muted:#637084;--line:#f1e2d5;--shadow:0 8px 24px rgba(98,57,28,.07)}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}body{min-height:100vh}
+    .layout{min-height:100vh;display:grid;grid-template-columns:160px minmax(0,1fr)}
+    .rail{position:sticky;top:0;height:100vh;padding:24px 14px 18px;background:#fffdfa;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:24px}
+    .brand{display:flex;align-items:center;gap:9px;padding:0 9px;color:var(--accent);font-size:23px;font-weight:800;letter-spacing:-1px}.brand img{width:27px;height:27px;object-fit:contain}
+    .rail-nav{display:grid;gap:6px}.rail-link{width:100%;height:38px;padding:0 10px;border:0;border-radius:10px;background:transparent;color:#46556a;font:inherit;font-size:12px;font-weight:600;text-align:left;display:flex;align-items:center;gap:10px;cursor:pointer}.rail-link:hover,.rail-link.active{background:#fff0e5;color:#d9510a}.rail-link svg{width:17px;height:17px;stroke:currentColor;stroke-width:1.8;fill:none;flex:none}
+    .main{min-width:0}.hero{position:relative;min-height:100vh;padding:48px 32px;isolation:isolate;background:#fff0e3 url('data:image/webp;base64,{{HERO_BASE64}}') center/cover no-repeat;display:flex;align-items:center;justify-content:center}
+    .hero::before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(180deg,rgba(255,250,246,.06),rgba(255,250,246,.38) 48%,rgba(255,250,246,.72))}
+    .hero-copy{width:min(820px,100%);text-align:center;padding:32px 0}.eyebrow{text-transform:uppercase;color:#ad400b;letter-spacing:1.7px;font-size:11px;font-weight:750;margin:0 0 12px}h1{font-size:clamp(38px,5vw,60px);letter-spacing:-2px;line-height:1.08;margin:0 0 28px;font-weight:800;text-shadow:0 1px 18px #fffaf6}
+    .search{height:76px;width:100%;display:flex;align-items:center;gap:16px;padding:8px 9px 8px 24px;background:#fff;border:1px solid #e4bfa1;border-radius:22px;box-shadow:0 8px 32px rgba(83,52,31,.16)}.search:focus-within{outline:3px solid #f97316;outline-offset:3px}.search svg{width:25px;height:25px;stroke:#d9510a;stroke-width:2;fill:none;flex:none}.search input{min-width:0;flex:1;height:100%;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:clamp(17px,1.7vw,21px)}.search input::placeholder{color:#637084}.search button{width:56px;height:56px;flex:none;border:0;border-radius:15px;background:#cf4b06;color:#fff;font-size:28px;cursor:pointer}.search button:hover{background:#ad400b}
+    .shortcuts{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:24px}.shortcut{display:flex;align-items:center;gap:10px;min-width:120px;padding:13px 17px;border-radius:14px;background:rgba(255,255,255,.96);border:1px solid #efdfd3;box-shadow:0 4px 12px rgba(83,52,31,.06);color:#182235;text-decoration:none;font-size:13px;font-weight:650}.shortcut:hover{border-color:#d9510a}.shortcut-icon{width:26px;height:26px;border-radius:7px;background:#fff0e5;color:#b84006;display:grid;place-items:center;font-size:16px;font-weight:800}.shortcut-icon svg{width:21px;height:21px;fill:currentColor}
+    .guide{margin:24px auto 0;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--surface);max-width:680px;overflow:hidden}.guide summary{padding:13px 18px;cursor:pointer;color:var(--ink);font-weight:650}.guide-content{padding:0 18px 18px;display:grid;gap:14px}.guide-content p{margin:0;color:var(--muted);font-size:13px}.guide-content b{color:var(--ink)}kbd{font:12px "Segoe UI",sans-serif;white-space:nowrap;padding:2px 5px;background:var(--soft);border:1px solid var(--line);border-radius:5px}button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #d9510a;outline-offset:3px}
+    .state-view{display:none;min-height:calc(100vh - 195px);align-items:center;justify-content:center}.state-card{width:min(760px,100%);min-height:340px;padding:26px 34px;border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:var(--shadow);display:grid;grid-template-columns:minmax(0,1fr) 270px;align-items:center;gap:22px;overflow:hidden}.state-card h2{margin:0 0 8px;font-size:27px;letter-spacing:-.8px}.state-card p{margin:0;color:var(--muted);max-width:360px}.state-card button{margin-top:20px;padding:10px 18px;border:0;border-radius:20px;background:var(--accent);color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.state-card img{width:100%;max-height:285px;object-fit:contain}.state-card.empty img{max-height:290px}.state-card.history{grid-template-columns:1fr 220px}.state-card.history img{max-height:230px}
+    .state-view{flex-direction:column;gap:18px}.library-list{width:min(760px,100%);display:grid;gap:8px}.library-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border:1px solid var(--line);border-radius:12px;background:white}.library-row a{min-width:0;flex:1;color:var(--ink);text-decoration:none;overflow:hidden}.library-row strong,.library-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row small{color:var(--muted);font-size:11px;margin-top:3px}.library-row button,.library-heading button{border:1px solid var(--line);border-radius:8px;background:white;color:#b84b08;padding:7px 12px;cursor:pointer}.library-heading{display:flex;width:min(760px,100%);align-items:center;justify-content:space-between}.library-heading h2{font-size:22px}[hidden]{display:none!important}
+    *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;backdrop-filter:none!important}
+    .state-view{padding:28px 24px;min-height:100vh}.library-heading{gap:16px}.library-row a:focus-visible{outline-offset:5px}
+    @media(max-width:900px){.layout{grid-template-columns:62px minmax(0,1fr)}.rail{padding:17px 7px;align-items:center}.brand{padding:0;font-size:0}.brand img{width:31px;height:31px}.rail-link{width:42px;padding:0;justify-content:center;font-size:0}.rail-link span{display:none}.hero{padding:32px 24px;background-position:65% center}.hero::before{background:rgba(255,250,246,.48)}.hero-copy{padding:24px 0}.state-card,.state-card.history{grid-template-columns:1fr;text-align:center;padding:24px;gap:10px}.state-card p{margin:auto}.state-card img,.state-card.empty img,.state-card.history img{grid-row:1;max-height:210px}.state-card button{margin-top:15px}}
+    @media(max-width:480px){.hero{padding:28px 16px}.search{height:66px;padding-left:14px;gap:10px;border-radius:17px}.search button{width:46px;height:46px;border-radius:11px}.search svg{width:20px;height:20px}.shortcuts{gap:8px}.shortcut{min-width:calc(50% - 4px);justify-content:center;padding:12px 8px;font-size:12px}.guide summary{font-size:13px;padding:12px}.guide-content{padding:0 12px 14px}.state-view{padding:20px 12px}.library-row{flex-wrap:wrap;padding:12px}h1{font-size:38px}.library-heading{flex-wrap:wrap}.state-card{min-height:0}}
+    @media(prefers-color-scheme:dark){:root{color-scheme:dark;--accent:#fb923c;--accent-dark:#fdba74;--bg:#171719;--surface:#222327;--soft:#3a291f;--ink:#f5f2ef;--muted:#c1b8b0;--line:#39383a;--shadow:0 8px 24px rgba(0,0,0,.24)}.rail{background:#1e1e20;border-color:#39383a}.rail-link{color:#e8ddd4}.rail-link:hover,.rail-link.active{background:#3a291f;color:#fdba74}.hero::before{background:rgba(20,17,15,.6)}h1{text-shadow:none}.search{background:#252529;border-color:#8e674c}.search input{color:#f5f2ef}.search input::placeholder{color:#c1b8b0}.shortcut,.library-row,.library-row button,.library-heading button,.state-card{background:#222327;border-color:#39383a;color:#f5f2ef}.shortcut:hover{border-color:#fdba74}.shortcut-icon{background:#3a291f;color:#fdba74}.library-row a{color:#f5f2ef}.eyebrow{color:#fdba74}}
+    .private-home{display:none;position:relative;isolation:isolate;min-height:100vh;padding:48px clamp(22px,7vw,108px);align-items:center;background:#111318 url('data:image/webp;base64,{{PRIVATE_HERO_BASE64}}') center/cover no-repeat;color:#fff}
+    .private-home::before{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(90deg,rgba(11,13,18,.92) 0%,rgba(11,13,18,.78) 37%,rgba(11,13,18,.12) 72%,rgba(11,13,18,.08))}
+    .private-copy{width:min(680px,58%)}.private-mark{display:inline-flex;align-items:center;gap:9px;padding:8px 13px;border:1px solid rgba(249,115,22,.65);border-radius:24px;color:#ff9b50;background:rgba(20,20,24,.74);font-weight:700}.private-mark svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none}.private-copy h1{margin:25px 0 8px;color:#fff;font-size:clamp(42px,6vw,72px);letter-spacing:-2.5px;text-shadow:none}.private-copy>p{margin:0 0 28px;color:#d2d4dc;font-size:clamp(17px,2vw,23px)}.private-copy .search{height:76px;background:#1d2029;border-color:#555c6a;box-shadow:0 12px 36px rgba(0,0,0,.3)}.private-copy .search input{color:#fff}.private-copy .search input::placeholder{color:#aeb4c2}.private-copy .search svg{stroke:#fb923c}.private-copy .search button{background:#f97316}.private-recommendation{display:flex;align-items:center;gap:12px;width:max-content;max-width:100%;margin-top:18px;padding:10px 14px;border:1px solid rgba(249,115,22,.55);border-radius:13px;background:rgba(30,25,23,.92);color:#f7f5f2}.private-recommendation svg{width:22px;height:22px;flex:none;stroke:#fb923c;stroke-width:1.8;fill:none}.private-recommendation strong,.private-recommendation small{display:block}.private-recommendation strong{font-size:13px}.private-recommendation small{margin-top:2px;color:#c1bdc0;font-size:12px}
+    body.private .layout{display:block;min-height:0}body.private .rail,body.private .main{display:none}body.private .private-home{display:flex}body.private .private-copy{position:relative}
+    @media(max-width:700px){.private-home{align-items:flex-start;padding:clamp(36px,10vh,90px) 22px;background-position:62% center}.private-home::before{background:linear-gradient(90deg,rgba(11,13,18,.9),rgba(11,13,18,.65) 65%,rgba(11,13,18,.28))}.private-copy{width:100%;max-width:560px}.private-copy h1{font-size:clamp(42px,12vw,62px)}.private-dns{align-items:flex-start}}
+  </style>
+</head>
+<body class="{{PRIVATE_CLASS}}">
+  <div class="layout">
+    <aside class="rail" aria-label="Điều hướng Pip">
+      <div class="brand"><img src="data:image/png;base64,{{FEATHER_ICON_BASE64}}" alt=""><span>Pip</span></div>
+      <nav class="rail-nav">
+        <button class="rail-link active" data-view="home" aria-label="Trang chủ"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-6v-7h-4v7H4a1 1 0 0 1-1-1z"/></svg><span>Trang chủ</span></button>
+        <button class="rail-link" data-view="bookmarks" aria-label="Dấu trang"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></svg><span>Dấu trang</span></button>
+        <button class="rail-link" data-view="history" aria-label="Lịch sử"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5m4-1v5l3 2"/></svg><span>Lịch sử</span></button>
+        <button class="rail-link" data-action="OpenDownloads" aria-label="Tải xuống"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4m4-5 5 5 5-5m-5 5V3"/></svg><span>Tải xuống</span></button>
+        <button class="rail-link" data-action="OpenSettings" aria-label="Cài đặt"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.2 1-1.4 2.4-1.5-.5a7 7 0 0 1-1.4.8l-.3 1.6h-2.8L13 19a7 7 0 0 1-1.5-.2l-1.3.9-2-2 1-1.4a6 6 0 0 1-.4-1.5l-1.5-.6v-2.8l1.6-.4a7 7 0 0 1 .6-1.4l-.6-1.5 2.4-1.4 1.1 1.2a7 7 0 0 1 1.6-.1l.8-1.4h2.8l.3 1.6a7 7 0 0 1 1.3.8l1.5-.5 1.4 2.4-1.2 1.1a7 7 0 0 1 .1 1.5z"/></svg><span>Cài đặt</span></button>
+      </nav>
+    </aside>
+    <main class="main">
+      <section class="hero" id="homeView">
+        <div class="hero-copy"><h1>Chào bạn!</h1>
+          <form class="search" id="searchForm" aria-label="Tìm kiếm và điều hướng"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><input id="homeSearch" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Tìm với {{SEARCH_ENGINE_NAME}} hoặc nhập địa chỉ" aria-label="Tìm kiếm hoặc nhập địa chỉ website"><button type="submit" aria-label="Đi">→</button></form>
+          <nav class="shortcuts" aria-label="Truy cập nhanh"><a class="shortcut" href="https://www.google.com/"><span class="shortcut-icon">G</span>Google</a><a class="shortcut" href="https://www.youtube.com/"><span class="shortcut-icon">▶</span>YouTube</a><a class="shortcut" href="https://github.com/"><span class="shortcut-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.86c-2.78.6-3.37-1.18-3.37-1.18-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg></span>GitHub</a><a class="shortcut" href="https://psharehub.com/"><span class="shortcut-icon">P</span>Psharehub</a></nav>
+          <details class="guide"><summary>Lần đầu dùng Pip? Xem hướng dẫn nhanh</summary><div class="guide-content">
+            <p><b>Tìm kiếm &amp; mở trang:</b> nhập từ khóa để tìm với {{SEARCH_ENGINE_NAME}}, hoặc nhập địa chỉ như youtube.com. <kbd>Ctrl+L</kbd> chuyển đến thanh địa chỉ.</p>
+            <p><b>Hồ sơ riêng:</b> bấm tên hồ sơ cạnh thanh địa chỉ để tạo hoặc mở cửa sổ khác. Mỗi hồ sơ có đăng nhập, cookie, lịch sử và dấu trang riêng trên máy.</p>
+            <p><b>Dấu trang &amp; lịch sử:</b> bấm ngôi sao để lưu trang. <kbd>Ctrl+Shift+O</kbd> xem dấu trang; <kbd>Ctrl+H</kbd> xem lịch sử; <kbd>Ctrl+J</kbd> xem tệp tải trong cửa sổ này.</p>
+            <p><b>Chặn quảng cáo:</b> nút khiên đổi chặn quảng cáo cho trang hiện tại. Nhấn F5 sau khi đổi. Một số quảng cáo YouTube có thể vẫn xuất hiện.</p>
+            <p><b>Google DNS:</b> nút G DNS bảo mật việc tra cứu tên miền qua Google. Mở lại Pip sau khi đổi; DNS không ẩn địa chỉ IP như VPN.</p>
+            <p><b>Nhiều tab:</b> <kbd>Ctrl+T</kbd> mở tab; <kbd>Ctrl+Tab</kbd> chuyển tab; <kbd>Ctrl+W</kbd> đóng; <kbd>Ctrl+Shift+T</kbd> mở lại. Tab khôi phục chỉ tải khi được chọn. Các tab đã mở vẫn giữ nội dung khi chuyển qua lại.</p>
+            <p><b>Ẩn danh:</b> <kbd>Ctrl+Shift+N</kbd> mở cửa sổ không ghi lịch sử. Tệp tải xuống và dấu trang bạn lưu vẫn còn; website và nhà mạng vẫn có thể nhận biết kết nối.</p>
+          </div></details>
+        </div>
+      </section>
+      <section class="state-view" id="bookmarksView"><div class="library-heading"><h2>Dấu trang của bạn</h2></div><div class="library-list" id="bookmarksList"></div><div class="state-card empty"><div><p class="eyebrow">Dấu trang</p><h2>Chưa có gì ở đây</h2><p>Bấm ngôi sao cạnh thanh địa chỉ hoặc Ctrl+D để lưu trang đang xem. Dấu trang được lưu riêng trong hồ sơ hiện tại.</p><button data-view="home">Về trang chủ</button></div><img src="data:image/webp;base64,{{EMPTY_BASE64}}" loading="lazy" decoding="async" alt="Mascot Pip ngồi cầm tờ giấy trống"></div></section>
+      <section class="state-view" id="historyView"><div class="library-heading"><h2>Trang đã xem</h2><button id="clearHistoryButton" data-action="ClearHistory">Xóa lịch sử</button></div><div class="library-list" id="historyList"></div><div class="state-card history"><div><p class="eyebrow">Lịch sử</p><h2>Chưa có trang đã xem</h2><p>Các trang đã xem sẽ xuất hiện ở đây. Pip không lưu lịch sử trong cửa sổ ẩn danh.</p><button data-view="home">Về trang chủ</button></div><img id="historyMascot" loading="lazy" decoding="async" alt="Mascot Pip cầm tờ giấy"></div></section>
+    </main>
+  </div>
+  <section class="private-home" aria-label="Trang chủ ẩn danh" {{PRIVATE_HIDDEN}}>
+    <div class="private-copy">
+      <span class="private-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3m12 0h3M6 12a4 4 0 1 1 8 0m4 0a4 4 0 1 0-8 0"/><path d="M2 8h20"/></svg> CỬA SỔ ẨN DANH</span>
+      <h1>Pip ẩn danh.</h1><p>Duyệt web riêng tư, gọn gàng.</p>
+      <form class="search" id="privateSearchForm" aria-label="Tìm kiếm ẩn danh"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><input id="privateSearch" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Tìm kiếm ẩn danh…" aria-label="Tìm kiếm hoặc nhập địa chỉ"><button type="submit" aria-label="Tìm kiếm">→</button></form>
+      <aside class="private-recommendation" aria-label="Khuyến nghị Google DNS"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 5 7.5 9.5 7.5 9.5s7.5-4.5 7.5-9.5V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><span><strong>Khuyến nghị nên bật</strong><small>Google DNS · dùng nút G DNS trên thanh công cụ</small></span></aside>
+    </div>
+  </section>
+  <script>
+    (()=>{
+      const home=document.getElementById('homeView');
+      document.getElementById('historyMascot').src=document.querySelector('#bookmarksView .state-card img').src;
+      function view(name){const isHome=name==='home';home.style.display=isHome?'flex':'none';document.getElementById('bookmarksView').style.display=name==='bookmarks'?'flex':'none';document.getElementById('historyView').style.display=name==='history'?'flex':'none';document.querySelectorAll('.rail-link[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===name));}
+      function send(action,payload){if(window.ipc&&typeof window.ipc.postMessage==='function')window.ipc.postMessage(JSON.stringify({action,payload:payload||null}));}
+      window.__renderLibrary = data => {
+        for (const kind of ['bookmarks','history']) {
+          const pages=Array.isArray(data[kind])?data[kind]:[],section=document.getElementById(kind+'View'),list=document.getElementById(kind+'List');
+          list.replaceChildren();section.querySelector('.state-card').hidden=pages.length>0;
+          for (const page of pages) {
+            if (!/^https?:\/\//i.test(page.url)) continue;
+            const row=document.createElement('div');row.className='library-row';
+            const link=document.createElement('a');link.href=page.url;
+            const name=document.createElement('strong');name.textContent=page.title||page.url;
+            const url=document.createElement('small');url.textContent=page.url;link.append(name,url);
+            link.onclick=e=>{e.preventDefault();send('Navigate',{url:page.url});};row.append(link);
+            if (kind==='bookmarks') {const remove=document.createElement('button');remove.textContent='Xóa';remove.setAttribute('aria-label','Xóa dấu trang '+(page.title||page.url));remove.onclick=()=>send('RemoveBookmark',{url:page.url});row.append(remove);}
+            list.append(row);
+          }
+        }
+        document.getElementById('clearHistoryButton').hidden=!!data.private||!data.history?.length;
+      };
+      view('{{INITIAL_VIEW}}');
+      send('GetLibrary');
+      document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
+      document.querySelectorAll('[data-action]').forEach(b=>b.addEventListener('click',()=>send(b.dataset.action)));
+      document.querySelectorAll('.shortcut').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();send('Navigate',{url:a.href});}));
+      document.querySelectorAll('.rail-link').forEach(b=>b.title=b.getAttribute('aria-label'));
+      const form=document.getElementById('searchForm'),input=document.getElementById('homeSearch');
+      // The host uses the same validated URL/search handling as the address bar.
+      form.addEventListener('submit',e=>{e.preventDefault();const url=input.value.trim();if(url)send('Navigate',{url});});
+      const privateForm=document.getElementById('privateSearchForm'),privateInput=document.getElementById('privateSearch');
+      privateForm.addEventListener('submit',e=>{e.preventDefault();const url=privateInput.value.trim();if(url)send('Navigate',{url});});
+    })();
+  </script>
+</body>
+</html>

@@ -15,6 +15,7 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 - `assets/app-*.webp`: ảnh giao diện được chụp từ ứng dụng Pip; WebP để giảm dung lượng tải.
 - `assets/og-pip.jpg`: ảnh chia sẻ mạng xã hội.
 - `version.json`: phương án dự phòng nếu GitHub Releases không phản hồi.
+- `browser-source/`: snapshot mã trình duyệt Pip 0.1.1 có thể duyệt trực tiếp trên GitHub; mỗi bản phát hành cũng đính kèm ZIP mã nguồn và SHA-256 tương ứng.
 - `marketing/launch-kit.md`: định vị và bản nháp nội dung marketing.
 
 ## Tải và cập nhật
