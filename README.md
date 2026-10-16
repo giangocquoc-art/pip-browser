@@ -28,13 +28,9 @@ SHA-256 của bản `0.1.0`:
 
 ## Cách cập nhật
 
-Trang tải đọc `version.json` khi mở. Khi có phiên bản mới, trang hiện thông báo và nút tải bản mới. Để phát hành cập nhật:
+Trang tải tự kiểm tra GitHub Releases khi mở. Nếu có phiên bản mới, nút tải trỏ đến bộ cài mới nhất và trang hiện thông báo cập nhật. Kết quả được lưu trong trình duyệt 10 phút; nếu GitHub tạm thời không phản hồi, trang dùng `version.json` làm phương án dự phòng.
 
-1. Đăng bộ cài mới trong một GitHub Release, với tag dạng `v0.1.1`.
-2. Cập nhật `version`, `url`, `sha256`, `size` và `updated` trong `version.json`.
-3. Đặt phiên bản phát hành mới trong trang, rồi đẩy thay đổi lên nhánh `main`.
-
-Vercel tự triển khai thay đổi của website sau mỗi lần push lên `main`. Không cần tải lại trang hoặc phát hành lại website bằng tay.
+Để phát hành, tạo GitHub Release với tag `v0.1.1` và đính kèm file `Pip-Setup-0.1.1-Windows-x64.exe`. Nút tải và thông báo sẽ nhận bản mới tự động, không cần triển khai lại website. Khi muốn cập nhật nhãn phiên bản trên trang, sửa số trong `index.html` rồi đẩy lên `main`; Vercel tự triển khai commit đó.
 
 ## Mã nguồn website
 

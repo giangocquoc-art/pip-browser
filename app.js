@@ -104,6 +104,33 @@
   });
 
   const pageVersion = $('#version').textContent.trim();
+  async function fetchLatestRelease() {
+    const cacheKey = 'pip-latest-release';
+    try {
+      const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+      if (cached?.release && Date.now() - cached.checkedAt < 600000) return cached.release;
+    } catch { /* Fetch the release when browser storage is unavailable. */ }
+    try {
+      const response = await fetch('https://api.github.com/repos/giangocquoc-art/pip-browser/releases/latest', {
+        headers: { Accept: 'application/vnd.github+json' },
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error('GitHub release lookup failed');
+      const metadata = await response.json();
+      const version = metadata.tag_name?.replace(/^v/, '');
+      const installer = metadata.assets?.find((asset) => asset.name === `Pip-Setup-${version}-Windows-x64.exe`);
+      if (!version || !installer?.browser_download_url) throw new Error('Latest release has no Pip installer');
+      const release = { version, downloadAvailable: true, url: installer.browser_download_url };
+      try { localStorage.setItem(cacheKey, JSON.stringify({ checkedAt: Date.now(), release })); }
+      catch { /* The current page still uses the release response. */ }
+      return release;
+    } catch {
+      try {
+        const response = await fetch('/version.json', { cache: 'no-store' });
+        return response.ok ? response.json() : null;
+      } catch { return null; }
+    }
+  }
   const compareVersions = (left, right) => {
     const a = left.split('.').map(Number);
     const b = right.split('.').map(Number);
@@ -113,7 +140,7 @@
     }
     return 0;
   };
-  fetch('/version.json', { cache: 'no-store' }).then((response) => response.ok ? response.json() : null).then((release) => {
+  fetchLatestRelease().then((release) => {
     if (!release?.version) return;
     $('#version').textContent = release.version;
     if (!release.downloadAvailable || !release.url) return;
