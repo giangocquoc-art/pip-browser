@@ -166,10 +166,10 @@ jobs:
 
           The installer and source archive have GitHub artifact attestations. After downloading them, verify their source and build provenance with GitHub CLI:
 
-          ````powershell
+          ``````powershell
           gh attestation verify .\Pip-Setup-$env:PIP_VERSION-Windows-x64.exe --repo $repository
           gh attestation verify .\Pip-source-$env:PIP_VERSION.zip --repo $repository
-          ````
+          ``````
 
           Compare downloaded file hashes with ``SHA256SUMS.txt`` as an additional integrity check. Artifact attestations establish where and how the files were built; they are not Windows Authenticode signatures and do not remove SmartScreen warnings.
           "@
@@ -188,4 +188,17 @@ jobs:
           } else {
             gh release create $tag $setup $source $checksums --repo $repository --draft --title "Pip $env:PIP_VERSION" --notes-file $notesPath
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release.' }
+          }
+
+          $release = gh release view $tag --repo $repository --json tagName,isDraft,body,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.tagName -ne $tag -or -not $release.isDraft) {
+            throw "Draft release validation failed for $tag."
+          }
+          $expectedAssets = @("Pip-Setup-$env:PIP_VERSION-Windows-x64.exe", "Pip-source-$env:PIP_VERSION.zip", 'SHA256SUMS.txt')
+          $actualAssets = @($release.assets | ForEach-Object { $_.name })
+          foreach ($assetName in $expectedAssets) {
+            if ($assetName -notin $actualAssets) { throw "Draft release is missing asset $assetName." }
+          }
+          if (-not $release.body.Contains($productNotes.Trim())) {
+            throw 'Draft release is missing the product release notes.'
           }
