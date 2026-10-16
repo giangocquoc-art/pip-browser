@@ -5,26 +5,28 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
 
 concurrency:
   group: pip-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-and-attest:
-    name: Build and attest Windows release
+  build:
+    name: Build and test Windows release
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     defaults:
       run:
         working-directory: browser-source
     steps:
       - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
@@ -88,21 +90,64 @@ jobs:
           }
           Set-Content -LiteralPath dist/SHA256SUMS.txt -Value $lines -Encoding ascii
 
+      - name: Upload release assets for attestation and publishing
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pip-release-assets
+          path: |
+            browser-source/dist/Pip-Setup-${{ steps.version.outputs.version }}-Windows-x64.exe
+            browser-source/dist/Pip-source-${{ steps.version.outputs.version }}.zip
+            browser-source/dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: Attest release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pip-release-assets
+          path: browser-source/dist
+
       - name: Attest installer
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: browser-source/dist/Pip-Setup-${{ steps.version.outputs.version }}-Windows-x64.exe
+          subject-path: browser-source/dist/Pip-Setup-${{ needs.build.outputs.version }}-Windows-x64.exe
 
       - name: Attest source archive
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: browser-source/dist/Pip-source-${{ steps.version.outputs.version }}.zip
+          subject-path: browser-source/dist/Pip-source-${{ needs.build.outputs.version }}.zip
+
+  publish-draft:
+    name: Create draft release
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: browser-source
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pip-release-assets
+          path: browser-source/dist
 
       - name: Create or update draft release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          PIP_VERSION: ${{ steps.version.outputs.version }}
+          PIP_VERSION: ${{ needs.build.outputs.version }}
         run: |
           $tag = $env:GITHUB_REF_NAME
           $repository = $env:GITHUB_REPOSITORY
