@@ -60,6 +60,10 @@ jobs:
       - name: Build Pip browser
         run: cargo build -p evergreen-browser --release --locked
 
+      - name: Build installer payloads and source archive
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -SkipBrowserBuild
+
       - name: Run tests
         # GitHub-hosted Windows runners use an elevated token; this one test
         # specifically assumes an unelevated interactive user process.
@@ -68,10 +72,6 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Build installer and package source
-        shell: pwsh
-        run: ./scripts/build-installer.ps1 -SkipBrowserBuild
-
       - name: Prepare versioned source archive and checksums
         shell: pwsh
         env:
@@ -79,6 +79,7 @@ jobs:
         run: |
           $installer = "dist/Pip-Setup-$env:PIP_VERSION-Windows-x64.exe"
           $sourceArchive = "dist/Pip-source-$env:PIP_VERSION.zip"
+          Copy-Item -LiteralPath 'dist/PipSetup.exe' -Destination $installer -Force
           Copy-Item -LiteralPath crates/installer/assets/Pip-source.zip -Destination $sourceArchive -Force
           $paths = @($installer, $sourceArchive)
           foreach ($path in $paths) {
