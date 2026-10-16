@@ -14,6 +14,8 @@ pub fn default_window_attributes() -> WindowAttributes {
             DEFAULT_WINDOW_WIDTH,
             DEFAULT_WINDOW_HEIGHT,
         ))
+        .with_decorations(false)
+        .with_resizable(true)
         .with_theme(Some(winit::window::Theme::Light));
 
     if let Ok(icon) = Icon::from_rgba(APP_ICON_RGBA.to_vec(), 64, 64) {

@@ -24,6 +24,11 @@ pub enum UiToHostMessage {
     },
     /// Request opening a new browser window
     OpenNewWindow,
+    /// Native custom titlebar controls and drag region
+    WindowMinimize,
+    WindowToggleMaximize,
+    WindowClose,
+    WindowDrag,
     OpenPrivateWindow,
     OpenProfile {
         id: String,

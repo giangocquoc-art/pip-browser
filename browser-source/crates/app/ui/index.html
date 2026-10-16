@@ -61,7 +61,7 @@
       padding: 5px 8px 0 8px;
       gap: 4px;
       background: var(--bg-chrome);
-      overflow-x: auto;
+      overflow: hidden;
       scrollbar-width: none;
     }
 
@@ -73,8 +73,13 @@
       display: flex;
       align-items: center;
       gap: 4px;
-      flex-shrink: 0;
+      min-width: 0;
+      flex: 1 1 auto;
+      overflow-x: auto;
+      scrollbar-width: none;
     }
+
+    #tabsContainer::-webkit-scrollbar { display: none; }
 
     .tab {
       display: flex;
@@ -198,6 +203,31 @@
       width: 16px;
       height: 16px;
     }
+
+    .window-controls {
+      display: flex;
+      align-items: stretch;
+      align-self: stretch;
+      flex: 0 0 auto;
+      margin: -5px -8px 0 4px;
+      padding-top: 5px;
+      gap: 0;
+      background: transparent;
+    }
+    .window-control {
+      display: grid;
+      place-items: center;
+      width: 46px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--text-main);
+      cursor: pointer;
+      padding: 0;
+    }
+    .window-control svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+    .window-control:hover { background: rgba(30, 41, 59, .09); }
+    .window-control.close:hover { background: #c42b1c; color: white; }
 
     /* Navigation Bar */
     .nav-bar {
@@ -643,6 +673,9 @@
 .omnibox {color:var(--text-main);}
 .nav-btn,.new-tab-btn {border-radius:9px;}
 .tab-strip{height:40px;padding-top:5px;background:linear-gradient(100deg,#ffe1c8,#fff0e5 76%);flex-shrink:0}
+  .window-controls{background:transparent}
+  .window-control:hover{background:#ffffff80}
+  .window-control.close:hover{background:#c42b1c;color:white}
 .tab{min-width:136px;height:34px;background:#ffecde;color:#536071}
 .tab.active{background:#fff;color:#152033;box-shadow:0 -1px 5px rgba(108,62,31,.08)}
 .nav-bar{height:48px;gap:8px;background:linear-gradient(100deg,#fff9f4,#fff0e5);border-top:1px solid #f3d9c7;box-shadow:0 2px 8px rgba(80,48,28,.035);flex-shrink:0}
@@ -682,7 +715,7 @@
     --accent-blue: #fb923c;
     --accent-green: #4ade80;
   }
-  .tab-strip{background:linear-gradient(100deg,#3c281f,#2e2521)}.nav-bar{background:#292420;border-color:#614131}.tab{background:#3b2c24;color:#cbbcaf}.tab.active{background:#302822;color:#fff4e9}.omnibox-container{border-color:#614131}.connection-btn{background:#38291f;color:#f2c4a1;border-color:#795139}.connection-btn[aria-pressed="true"]{background:#55321d;color:#ffb77e;border-color:#b8672c}.nav-btn:hover,.new-tab-btn:hover{background:#4a3020;color:#ffb77e}
+  .tab-strip{background:linear-gradient(100deg,#3c281f,#2e2521)}.nav-bar{background:#292420;border-color:#614131}.tab{background:#3b2c24;color:#cbbcaf}.tab.active{background:#302822;color:#fff4e9}.omnibox-container{border-color:#614131}.connection-btn{background:#38291f;color:#f2c4a1;border-color:#795139}.connection-btn[aria-pressed="true"]{background:#55321d;color:#ffb77e;border-color:#b8672c}.nav-btn:hover,.new-tab-btn:hover{background:#4a3020;color:#ffb77e}.window-control{color:#f5eee8}.window-control:hover{background:#ffffff18}.window-control.close:hover{background:#c42b1c;color:#fff}
   .zoom-dialog{background:#292420;border-color:#614131}.zoom-dialog-btn,.zoom-dialog-reset,.find-input{background:#302822;border-color:#614131;color:#f5eee8}.zoom-dialog-btn:hover,.zoom-dialog-reset:hover,.find-btn:hover{background:#4a3020;color:#ffb77e}.permission-bar{background:#292420;border-color:#614131}.permission-btn.block{background:#3b2c24;color:#f5eee8}.permission-btn.block:hover{background:#4a3020}.find-count{color:#d0c0b4}#statusPreviewBar{background:#292420!important;color:#f5eee8!important;border-color:#614131!important}
 }
 
@@ -697,7 +730,21 @@
     <button class="new-tab-btn" id="newTabBtn" onclick="createNewTab()" title="Tab mới (Ctrl+T)" aria-label="Tab mới">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
+    <div class="window-controls" role="group" aria-label="Điều khiển cửa sổ">
+      <button class="window-control" onclick="postIpc('WindowMinimize')" title="Thu nhỏ" aria-label="Thu nhỏ cửa sổ"><svg viewBox="0 0 12 12"><path d="M2 9.5h8"/></svg></button>
+      <button class="window-control" onclick="postIpc('WindowToggleMaximize')" title="Phóng to hoặc khôi phục" aria-label="Phóng to hoặc khôi phục cửa sổ"><svg viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx=".5"/></svg></button>
+      <button class="window-control close" onclick="postIpc('WindowClose')" title="Đóng" aria-label="Đóng cửa sổ"><svg viewBox="0 0 12 12"><path d="m2.5 2.5 7 7m0-7-7 7"/></svg></button>
+    </div>
   </div>
+
+  <script>
+    document.getElementById('tabStrip').addEventListener('pointerdown', event => {
+      if (event.button === 0 && !event.target.closest('.tab,button')) postIpc('WindowDrag');
+    });
+    document.getElementById('tabStrip').addEventListener('dblclick', event => {
+      if (!event.target.closest('.tab,button')) postIpc('WindowToggleMaximize');
+    });
+  </script>
 
   <!-- Navigation Bar -->
   <div class="nav-bar" role="toolbar" aria-label="Điều hướng">

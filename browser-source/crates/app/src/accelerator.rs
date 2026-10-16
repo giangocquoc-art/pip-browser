@@ -384,6 +384,7 @@ pub fn attach_navigation_events(
     tab_id: evergreen_core::tabs::TabId,
     proxy: EventLoopProxy<crate::BrowserEvent>,
     allowed_cert_hosts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
 ) {
     use webview2_com::{
         DocumentTitleChangedEventHandler, HistoryChangedEventHandler, SourceChangedEventHandler,
@@ -511,13 +512,32 @@ pub fn attach_navigation_events(
 
         // 4. New Window Requested (target="_blank" link clicks, e.g. Garry Tan YC profile)
         let proxy_new_win = proxy.clone();
+        let popup_blocker = blocker.clone();
         let new_window_handler =
-            webview2_com::NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
+            webview2_com::NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
                     let mut uri_pwstr = windows::core::PWSTR::null();
                     if unsafe { args.Uri(&mut uri_pwstr) }.is_ok() && !uri_pwstr.is_null() {
                         let uri_str = webview2_com::take_pwstr(uri_pwstr);
                         if !uri_str.is_empty() {
+                            let source = sender
+                                .and_then(|sender| {
+                                    let mut raw = windows::core::PWSTR::null();
+                                    unsafe { sender.Source(&mut raw) }.ok()?;
+                                    (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
+                                })
+                                .unwrap_or_default();
+                            let mut user_initiated = windows::core::BOOL(0);
+                            let _ = unsafe { args.IsUserInitiated(&mut user_initiated) };
+                            if popup_blocker.borrow().should_block_popup(
+                                &uri_str,
+                                &source,
+                                user_initiated.as_bool(),
+                            ) {
+                                let _ = unsafe { args.SetHandled(true) };
+                                popup_blocker.borrow_mut().blocked += 1;
+                                return Ok(());
+                            }
                             let _ = unsafe { args.SetHandled(true) };
                             let _ = proxy_new_win.send_event(crate::BrowserEvent::Ipc(
                                 window_id,
@@ -717,5 +737,6 @@ pub fn attach_navigation_events(
     _tab_id: evergreen_core::tabs::TabId,
     _proxy: EventLoopProxy<crate::BrowserEvent>,
     _allowed_cert_hosts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    _blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
 ) {
 }

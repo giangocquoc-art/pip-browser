@@ -145,6 +145,8 @@ async function main() {
   await page.locator('#privateSearch').fill('youtube.com');
   await page.locator('#privateSearchForm button[type="submit"]').click();
   check((await ipc(page)).some(item => item.action === 'Navigate' && item.payload.url === 'youtube.com'), 'Private search did not use the native navigation handler');
+  await page.locator('#privateSearch').fill('');
+  await page.locator('#privateSearch').blur();
   await page.screenshot({path:path.join(outputDir,'private-home.png'),fullPage:true});
   await auditAccessibility('private-home');
 

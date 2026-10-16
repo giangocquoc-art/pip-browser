@@ -52,8 +52,11 @@ impl Check {
         {
             return Err("A test window became visible".into());
         }
+        if self.app.windows.values().any(|w| w.window.is_decorated()) {
+            return Err("The native title bar is still separate from the Pip tab strip".into());
+        }
         match self.step {
-            0=>self.query(id,true,"(()=>{const okay=document.querySelector('.tab-strip').offsetHeight===40&&document.querySelector('.nav-bar').offsetHeight===48;const button=document.getElementById('profileButton');button.click();const menu=document.getElementById('profilePopover');const menuOkay=!menu.hidden&&document.querySelectorAll('#profileList .profile-choice').length===1&&document.getElementById('profileCurrentName').textContent==='Cá nhân';showProfileCreate();document.getElementById('profileCreateName').value='Kiểm thử';document.getElementById('profileCreateForm').requestSubmit();document.getElementById('googleDnsButton').click();return okay&&menuOkay&&menu.hidden})()"),
+            0=>self.query(id,true,"(()=>{const okay=document.querySelector('.tab-strip').offsetHeight===40&&document.querySelector('.nav-bar').offsetHeight===48&&document.querySelectorAll('.window-controls .window-control').length===3;const button=document.getElementById('profileButton');button.click();const menu=document.getElementById('profilePopover');const menuOkay=!menu.hidden&&document.querySelectorAll('#profileList .profile-choice').length===1&&document.getElementById('profileCurrentName').textContent==='Cá nhân';showProfileCreate();document.getElementById('profileCreateName').value='Kiểm thử';document.getElementById('profileCreateForm').requestSubmit();document.getElementById('googleDnsButton').click();return okay&&menuOkay&&menu.hidden})()"),
             1=>{
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
                 self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('Mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");

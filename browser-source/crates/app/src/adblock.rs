@@ -20,6 +20,7 @@ use wry::WebViewExtWindows;
 
 pub struct Blocker {
     engine: Engine,
+    popup_engine: Engine,
     disabled: HashSet<String>,
     exceptions_path: PathBuf,
     pub blocked: u64,
@@ -39,7 +40,6 @@ fn site(url: &str) -> Option<String> {
     Some(uri.host()?.to_ascii_lowercase())
 }
 
-#[cfg(test)]
 fn engine(rules: &str) -> Engine {
     let mut filters = FilterSet::new(false);
     filters.add_filter_list(
@@ -50,6 +50,37 @@ fn engine(rules: &str) -> Engine {
         },
     );
     Engine::new_with_filter_set(filters)
+}
+
+fn popup_rules(list: &str) -> String {
+    list.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
+                return None;
+            }
+            let (pattern, options) = line.split_once('$')?;
+            let options = options.split(',').map(str::trim).collect::<Vec<_>>();
+            if !options
+                .iter()
+                .any(|option| matches!(*option, "popup" | "popunder"))
+            {
+                return None;
+            }
+            let remaining = options
+                .into_iter()
+                // Every request reaching this engine is a popup document, so
+                // `$doc` is implicit and must not be checked against `other`.
+                .filter(|option| !matches!(*option, "popup" | "popunder" | "doc" | "document"))
+                .collect::<Vec<_>>();
+            if remaining.is_empty() {
+                Some(pattern.to_string())
+            } else {
+                Some(format!("{pattern}${}", remaining.join(",")))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl Blocker {
@@ -63,10 +94,21 @@ impl Blocker {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut filters = FilterSet::new(false);
-        filters.add_filter_list(
-            include_str!("../filters/easylist.txt").to_owned(),
-            ParseOptions::default(),
-        );
+        let easylist = include_str!("../filters/easylist.txt");
+        filters.add_filter_list(easylist.to_owned(), ParseOptions::default());
+        // adblock-rust does not implement ABP popup/popunder resource types.
+        // Translate those options into a dedicated engine queried only for
+        // WebView2 popup destinations. Use the bundled EasyList and uBlock
+        // Origin network filters so known popup campaigns from either list apply.
+        let popup_rules = [
+            popup_rules(easylist),
+            popup_rules(include_str!(
+                "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
+            )),
+            include_str!("../filters/popup-overrides.txt").to_owned(),
+        ]
+        .join("\n");
+        let popup_engine = engine(&popup_rules);
         // Only pinned, reviewed upstream lists can invoke trusted scriptlets.
         filters.add_filter_list(
             include_str!("../filters/youtube.txt").to_owned(),
@@ -82,6 +124,7 @@ impl Blocker {
         engine.use_resources(resources);
         Self {
             engine,
+            popup_engine,
             disabled,
             exceptions_path,
             blocked: 0,
@@ -120,6 +163,28 @@ impl Blocker {
         Request::new(url, source, kind, method)
             .ok()
             .is_some_and(|r| self.engine.check_network_request(&r).should_block())
+    }
+
+    pub(crate) fn should_block_popup(&self, url: &str, source: &str, user_initiated: bool) -> bool {
+        let Some(source_host) = site(source) else {
+            return !user_initiated;
+        };
+        if self.disabled.contains(&source_host) {
+            return false;
+        }
+        if !user_initiated {
+            return true;
+        }
+        // This engine is consulted only for NewWindowRequested destinations.
+        // Use `other` so generic network rules apply; adblock-rust separates
+        // document navigations from ordinary filterable resources.
+        Request::new(url, source, "other", "GET")
+            .ok()
+            .is_some_and(|request| {
+                self.popup_engine
+                    .check_network_request(&request)
+                    .should_block()
+            })
     }
 
     fn cosmetic_script(&self, url: &str) -> Option<String> {
@@ -384,6 +449,7 @@ mod tests {
     fn blocking_exceptions_and_video() {
         let mut b = Blocker {
             engine: engine("||ads.example^\n@@||ads.example/allowed.js$script"),
+            popup_engine: engine(""),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
@@ -427,6 +493,67 @@ mod tests {
                     .unwrap()
             )
             .should_block());
+        let bundled_popup_rules = [
+            popup_rules(include_str!("../filters/easylist.txt")),
+            popup_rules(include_str!(
+                "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
+            )),
+        ]
+        .join("\n");
+        let bundled_popups = engine(&bundled_popup_rules);
+        assert!(bundled_popups
+            .check_network_request(
+                &Request::new("https://adsession.com/redirect", top, "other", "GET").unwrap()
+            )
+            .should_block());
+        assert!(bundled_popups
+            .check_network_request(
+                &Request::new(
+                    "https://dogsprotectedfeed.info/landing",
+                    top,
+                    "other",
+                    "GET"
+                )
+                .unwrap()
+            )
+            .should_block());
+    }
+
+    #[test]
+    fn popup_filters_block_listed_or_automatic_popups_only() {
+        let source = "https://news.example/article";
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(&popup_rules(
+                "||casino.example^$popup\n||tracker.example^$popup,third-party\n@@||trusted.example^$popup,domain=news.example",
+            )),
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            bootstraps: HashMap::new(),
+        };
+        assert!(blocker.should_block_popup("https://random.example/", source, false));
+        assert!(blocker.should_block_popup("https://casino.example/", source, true));
+        assert!(blocker.should_block_popup("https://tracker.example/", source, true));
+        assert!(!blocker.should_block_popup("https://trusted.example/", source, true));
+        assert!(!blocker.should_block_popup("https://login.example/", source, true));
+    }
+
+    #[test]
+    fn known_gambling_popup_domain_is_blocked_even_when_webview_marks_it_user_initiated() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            bootstraps: HashMap::new(),
+        };
+        assert!(blocker.should_block_popup(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "https://news.example/article",
+            true,
+        ));
     }
 
     #[test]
@@ -435,6 +562,7 @@ mod tests {
             engine: engine(
                 "news.example##.sponsored\nnews.example#@#.allowed\nnews.example##.allowed",
             ),
+            popup_engine: engine(""),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,

@@ -1317,6 +1317,7 @@ impl BrowserApp {
             tab_id,
             self.proxy.clone(),
             self.allowed_cert_hosts.clone(),
+            self.adblock.clone(),
         );
 
         // Register interception before the first remote navigation, including restored tabs.
@@ -1788,6 +1789,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 UiToHostMessage::OpenNewWindow => {
                     let private = self.windows.get(&win_id).is_some_and(|w| w.private);
                     self.open_related_window(event_loop, win_id, private);
+                }
+                UiToHostMessage::WindowMinimize => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        win.window.set_minimized(true);
+                    }
+                }
+                UiToHostMessage::WindowToggleMaximize => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        win.window.set_maximized(!win.window.is_maximized());
+                    }
+                }
+                UiToHostMessage::WindowClose => {
+                    self.save_session(win_id);
+                    self.windows.remove(&win_id);
+                    if self.windows.is_empty() {
+                        event_loop.exit();
+                    }
+                }
+                UiToHostMessage::WindowDrag => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        let _ = win.window.drag_window();
+                    }
                 }
                 UiToHostMessage::OpenPrivateWindow => {
                     self.open_related_window(event_loop, win_id, true)
@@ -3200,6 +3223,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(v) => v,
         None => {
             eprintln!("Microsoft WebView2 Runtime is required but was not found.");
+            #[cfg(target_os = "windows")]
+            {
+                use windows::core::w;
+                use windows::Win32::UI::Shell::ShellExecuteW;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_YESNO, SW_SHOWNORMAL,
+                };
+                unsafe {
+                    let choice = MessageBoxW(
+                        None,
+                        w!("Pip cần Microsoft Edge WebView2 Runtime để mở trang web.\n\nBạn muốn mở trang tải chính thức của Microsoft? Sau khi cài đặt, hãy mở lại Pip."),
+                        w!("Cần cài WebView2 Runtime"),
+                        MB_YESNO | MB_ICONINFORMATION,
+                    );
+                    if choice == IDYES {
+                        let _ = ShellExecuteW(
+                            None,
+                            w!("open"),
+                            w!("https://developer.microsoft.com/microsoft-edge/webview2/"),
+                            None,
+                            None,
+                            SW_SHOWNORMAL,
+                        );
+                    }
+                }
+            }
             std::process::exit(1);
         }
     };
