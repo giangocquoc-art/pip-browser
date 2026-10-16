@@ -8,7 +8,7 @@ Chạy bộ cài `PipSetup.exe` bằng tài khoản thường. Bộ cài tạo l
 - **Cài đặt → Bộ nhớ và dữ liệu → Xóa bộ nhớ đệm** dọn cache đĩa của hồ sơ hiện tại, giữ đăng nhập, lịch sử, dấu trang và tệp tải xuống.
 - Nút **G DNS** trên thanh công cụ đổi Google DNS bảo mật. Viền nét đứt báo lựa chọn cần mở lại Pip để áp dụng. DNS không thay thế VPN hoặc mở được mọi loại chặn mạng.
 - Nút **khiên** bật/tắt chặn quảng cáo cho hostname hiện tại; phím tắt `Ctrl+Shift+A`. Bấm F5 khi muốn áp dụng thay đổi cho trang đang mở. Pip giữ nội dung đang nhập, không tự tải lại trang.
-- Brave xử lý yêu cầu mạng; EasyList và uBlock Origin cung cấp bộ lọc và CSS ẩn quảng cáo. Pip chặn cửa sổ tự bật, đồng thời dùng rule popup/popunder cho địa chỉ đích trong bộ lọc. Scriptlet YouTube từ uBlock/Brave chạy trước script trang để lọc cấu hình và phản hồi trình phát. Bộ lọc nhúng sẵn, không tải mã thực thi từ Internet khi duyệt web.
+- Brave xử lý yêu cầu mạng; EasyList và uBlock Origin cung cấp bộ lọc và CSS ẩn quảng cáo. Khi bộ lọc đang bật, Pip chặn cửa sổ tự bật và dùng rule popup/popunder cho địa chỉ đích trong bộ lọc. Scriptlet YouTube từ uBlock/Brave chạy trước script trang để lọc cấu hình và phản hồi trình phát. Bộ lọc nhúng sẵn, không tải mã thực thi từ Internet khi duyệt web.
 - Nút **ngôi sao** lưu/bỏ dấu trang. Dấu trang và lịch sử có màn hình xem, xóa; lưu riêng theo hồ sơ. Lịch sử tối đa 500 trang gần nhất; dấu trang tối đa 200 mục.
 - Hồ sơ trong Cài đặt tách cookie, đăng nhập và dữ liệu website. Đây là hồ sơ trên thiết bị, chưa có đồng bộ đám mây.
 - `Ctrl+Shift+N` mở ẩn danh. Pip không ghi lịch sử/phiên tab của cửa sổ ẩn danh. Đóng toàn bộ cửa sổ ẩn danh của hồ sơ để WebView2 dọn dữ liệu phiên; tệp tải xuống và dấu trang bạn chủ động lưu vẫn được giữ.

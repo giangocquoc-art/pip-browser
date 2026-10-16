@@ -6,7 +6,7 @@ Pip là trình duyệt Windows 10/11 x64 dựa trên Microsoft Edge WebView2, v�
 
 - Tab, thanh địa chỉ, trang tab mới và menu theo giao diện Pip.
 - Hồ sơ riêng lưu dữ liệu website độc lập; cửa sổ ẩn danh không lưu lịch sử duyệt web.
-- Brave Adblock Rust xử lý bộ lọc EasyList và uBlock Origin được đóng gói sẵn. Tự động chặn cửa sổ popup; YouTube và các website khác có thể thay đổi cách phân phối quảng cáo nên không thể cam kết chặn mọi quảng cáo.
+- Brave Adblock Rust xử lý bộ lọc EasyList và uBlock Origin được đóng gói sẵn. Khi bộ lọc bật cho website, Pip chặn popup tự mở và các địa chỉ đích khớp rule popup. YouTube và các website khác có thể thay đổi cách phân phối quảng cáo nên không thể cam kết chặn mọi quảng cáo.
 - Google DNS bảo mật là tùy chọn. DNS không ẩn địa chỉ IP và không thay thế VPN.
 - Dùng WebView2 Runtime do Microsoft cập nhật; Pip không mang theo một bản Chromium riêng.
 
