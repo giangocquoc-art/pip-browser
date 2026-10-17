@@ -688,7 +688,7 @@
 .permission-bar{background:#fff;border-color:#f1e2d5}.permission-btn.block{background:#fff4ec;color:#596779}.permission-btn.block:hover{background:#ffeadb;color:#344054}
 #statusPreviewBar{background:#fff!important;color:#344054!important;border-color:#f1e2d5!important;box-shadow:0 4px 14px rgba(98,57,28,.12)}
 .connection-btn{display:flex;align-items:center;gap:5px;height:28px;padding:0 9px;flex-shrink:0;border:1px solid #efcdb3;border-radius:16px;background:#fffaf6;color:#7d6757;font:600 11px "Segoe UI",system-ui,sans-serif;cursor:pointer}
-.connection-btn svg{width:14px;height:14px;color:currentColor}.connection-btn[aria-pressed="true"]{color:#b84b08;background:#fff0dc;border-color:#ffb77e}.connection-btn[data-pending="true"]{border-style:dashed}.connection-btn:disabled{opacity:.6;cursor:wait}
+.connection-btn svg{width:14px;height:14px;color:currentColor}.connection-btn[aria-pressed="true"]{color:#b84b08;background:#fff0dc;border-color:#ffb77e}.connection-btn[data-pending="true"]{border-style:dashed}.connection-btn[data-failed="true"]{color:#a53b18;background:#fff2ed;border-color:#e9a18b}.connection-btn:disabled{opacity:.6;cursor:wait}
 .profile-trigger{width:auto!important;max-width:150px;padding:0 8px;gap:6px;white-space:nowrap}.profile-trigger svg{width:17px;height:17px;color:#e85d0d}.profile-trigger-label{max-width:104px;overflow:hidden;text-overflow:ellipsis}
 .profile-popover{position:absolute;z-index:50;top:44px;right:8px;width:min(320px,calc(100vw - 20px));max-height:340px;overflow:auto;padding:12px;background:#fffdfb;border:1px solid #f1e2d5;border-radius:16px;box-shadow:0 12px 32px rgba(56,36,22,.22);color:#17202e}
 .profile-current{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:linear-gradient(120deg,#fff4eb,#fffaf6);border:1px solid #f3e0d2}.profile-current-avatar{width:46px;height:46px;display:grid;place-items:center;flex:0 0 auto;border-radius:50%;background:#ffead8;color:#c44d08}.profile-current-avatar svg{width:25px;height:25px}.profile-current-copy{min-width:0}.profile-current-copy strong,.profile-current-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.profile-current-copy strong{font-size:13px}.profile-current-copy span{margin-top:3px;font-size:11px;color:#687589}
@@ -1437,15 +1437,25 @@
       document.getElementById('googleDnsButton').disabled = true;
       postIpc('SetGoogleDns', {enabled: !googleDnsEnabled});
     }
-    window.__renderGoogleDns = function(enabled, active) {
+    window.__renderGoogleDns = function(enabled, active, failed = false, routeOk = null) {
       googleDnsEnabled = enabled;
       const button = document.getElementById('googleDnsButton');
       button.disabled = false;
       button.setAttribute('aria-pressed', String(enabled));
-      button.dataset.pending = String(enabled !== active);
-      button.title = enabled !== active
-        ? 'Google DNS: đã lưu lựa chọn bật/tắt. Đóng rồi mở lại Pip để áp dụng.'
-        : 'Google DNS: ' + (active ? 'đã cấu hình cho phiên Pip này' : 'đang tắt') + '. Vào Cài đặt > Kết nối để kiểm tra tuyến DNS.';
+      const routeFailed = active && routeOk === false;
+      button.dataset.failed = String(enabled && (failed || routeFailed));
+      button.dataset.pending = String(!failed && enabled !== active);
+      button.title = failed && enabled
+        ? 'Google DNS không khởi động được: Pip hiện đang dùng DNS Windows. Mở Cài đặt > Kết nối để xem hướng dẫn.'
+        : enabled !== active
+          ? 'Google DNS: đã lưu lựa chọn bật/tắt. Đóng rồi mở lại Pip để áp dụng.'
+          : routeFailed
+            ? 'Google DNS chưa kết nối được: proxy đang chạy nhưng tuyến HTTPS chưa qua kiểm tra. Mở Cài đặt > Kết nối để thử lại.'
+            : active && routeOk === null
+              ? 'Google DNS: proxy đang chạy; Pip đang kiểm tra khả năng phân giải tên miền và tải trang.'
+              : active && routeOk === true
+                ? 'Google DNS: đã xác minh phân giải tên miền và tải trang qua proxy HTTPS của Pip.'
+                : 'Google DNS: ' + (active ? 'đã cấu hình cho phiên Pip này' : 'đang tắt') + '. Vào Cài đặt > Kết nối để kiểm tra tuyến DNS.';
       button.setAttribute('aria-label', button.title);
     };
 

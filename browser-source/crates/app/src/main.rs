@@ -115,6 +115,7 @@ pub(crate) enum BrowserEvent {
     CommandDone(String, bool, String),
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
     GoogleDnsCheckDone(WindowId, Result<(), String>),
+    GoogleDnsHealthCheckDone(Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -647,6 +648,8 @@ struct BrowserApp {
     settings: evergreen_core::settings::Settings,
     active_google_dns: bool,
     google_dns_start_failed: bool,
+    google_dns_health_check_started: bool,
+    google_dns_route_ok: Option<bool>,
     doh_proxy: Option<doh_proxy::DohProxy>,
     restart_requested: bool,
     restart_profiles: Vec<String>,
@@ -806,10 +809,14 @@ impl BrowserApp {
         let enabled = self.settings.google_dns;
         let active = self.active_google_dns;
         let failed = self.google_dns_start_failed;
+        let route_ok = self
+            .google_dns_route_ok
+            .map(|ok| ok.to_string())
+            .unwrap_or_else(|| "null".into());
         for win in self.windows.values() {
             if let Some(chrome) = &win.chrome_webview {
                 let _ = chrome.evaluate_script(&format!(
-                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
+                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok});"
                 ));
             }
             for (id, view) in &win.tabs {
@@ -819,11 +826,38 @@ impl BrowserApp {
                     .is_some_and(|tab| tab.url == "evergreen://settings")
                 {
                     let _ = view.evaluate_script(&format!(
-                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
+                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok});"
                     ));
                 }
             }
         }
+    }
+
+    fn start_google_dns_health_check(&mut self) {
+        if !self.active_google_dns || self.google_dns_health_check_started {
+            return;
+        }
+        let Some(port) = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port) else {
+            return;
+        };
+        self.google_dns_health_check_started = true;
+        let proxy = self.proxy.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("pip-google-dns-startup-check".into())
+            .spawn(move || {
+                let result = doh_proxy::test_google_doh_through_proxy(port);
+                let _ = proxy.send_event(BrowserEvent::GoogleDnsHealthCheckDone(result));
+            })
+        {
+            self.google_dns_route_ok = Some(false);
+            eprintln!("Could not start Pip Google DNS route check: {error}");
+            self.sync_google_dns();
+        }
+    }
+
+    fn record_google_dns_health(&mut self, result: &Result<(), String>) {
+        self.google_dns_route_ok = Some(result.is_ok());
+        self.sync_google_dns();
     }
 
     fn notify_settings(&self, win_id: WindowId, message: &str) {
@@ -935,6 +969,8 @@ impl BrowserApp {
                 && std::env::args().any(|a| a == "--portable"),
             active_google_dns: doh_proxy.is_some(),
             google_dns_start_failed,
+            google_dns_health_check_started: false,
+            google_dns_route_ok: None,
             doh_proxy,
             restart_requested: false,
             restart_profiles,
@@ -1204,6 +1240,7 @@ impl BrowserApp {
         let profile_id = context.profile_id.clone();
         let google_dns_active = self.active_google_dns;
         let google_dns_failed = self.google_dns_start_failed;
+        let google_dns_route_ok = self.google_dns_route_ok;
 
         let mut builder = WebViewBuilder::new()
             .with_additional_browser_args(dns_proxy_browser_args(context.dns_proxy_port))
@@ -1256,6 +1293,7 @@ impl BrowserApp {
                         &settings_clone,
                         google_dns_active,
                         google_dns_failed,
+                        google_dns_route_ok,
                     )
                     .replace("{{CURRENT_PROFILE}}", &protocol_profile)
                     .replace(
@@ -1316,6 +1354,7 @@ impl BrowserApp {
                     &self.settings,
                     google_dns_active,
                     google_dns_failed,
+                    google_dns_route_ok,
                 )
                 .replace("{{CURRENT_PROFILE}}", &profile_id)
                 .replace(
@@ -1882,6 +1921,7 @@ impl BrowserApp {
 
 impl ApplicationHandler<BrowserEvent> for BrowserApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.start_google_dns_health_check();
         if self.windows.is_empty() {
             self.create_browser_window(event_loop, None);
             let profiles = std::mem::take(&mut self.restart_profiles);
@@ -2742,6 +2782,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 self.notify_settings(win_id, message);
             }
             BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
+                self.record_google_dns_health(&result);
                 let message = match result {
                     Ok(()) => {
                         "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".to_string()
@@ -2753,6 +2794,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 };
                 self.notify_settings(win_id, &message);
+            }
+            BrowserEvent::GoogleDnsHealthCheckDone(result) => {
+                self.record_google_dns_health(&result);
+                if let Err(error) = result {
+                    eprintln!("Pip Google DNS startup route check failed: {error}");
+                }
             }
             BrowserEvent::DownloadRequested(win_id, id) => {
                 downloads::start(win_id, id, self.proxy.clone(), &self.settings);

@@ -703,18 +703,22 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       document.getElementById('clearCacheButton').disabled=isPrivateProfile;
     };
     window.__renderProfiles({{PROFILES_JSON}});
-    window.__renderGoogleDns = (enabled, active=enabled, failed=false) => {
+    window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null) => {
       document.getElementById('googleDnsToggle').checked=enabled;
       document.getElementById('googleDnsRestartRow').hidden=enabled===active;
       document.getElementById('googleDnsHint').textContent=failed&&enabled&&!active
         ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối rồi thử khởi động lại Pip.'
         : enabled!==active
           ? 'Đã lưu lựa chọn nhưng tuyến chưa đổi. Nhấn “Khởi động lại Pip” để áp dụng, sau đó kiểm tra lại.'
-          : active
-            ? 'Google DNS đang chạy qua proxy HTTPS riêng trong Pip. Kiểm tra sẽ xác nhận tra cứu tên miền và tải trang qua đúng tuyến. DNS Windows không đổi; địa chỉ IP không được ẩn.'
+          : active&&routeOk===false
+            ? 'Proxy Google DNS đã chạy nhưng Pip không tải được trang kiểm tra qua tuyến này. Website có thể không mở được; kiểm tra mạng hoặc tường lửa rồi bấm “Kiểm tra tuyến đang dùng”. DNS Windows không đổi.'
+            : active&&routeOk===null
+              ? 'Proxy Google DNS đang chạy. Pip đang tự kiểm tra phân giải tên miền và tải trang qua tuyến HTTPS. Chưa xác minh xong thì trạng thái này chưa khẳng định DNS đang hoạt động.'
+              : active
+                ? 'Google DNS đã được xác minh: Pip phân giải được tên miền và tải trang qua proxy HTTPS riêng. DNS Windows không đổi; địa chỉ IP không được ẩn.'
             : 'Đang dùng DNS Windows. Bật Google DNS để dùng tuyến HTTPS riêng cho kết nối web của Pip.';
     };
-    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}});
+    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}},{{GOOGLE_DNS_ROUTE_OK}});
 
     function sendAction(action) {
       if (window.ipc) {
@@ -821,6 +825,7 @@ pub fn get_settings_html(
     settings: &Settings,
     google_dns_active: bool,
     google_dns_failed: bool,
+    google_dns_route_ok: Option<bool>,
 ) -> String {
     let download_dir_str = settings.downloads.default_folder.to_string_lossy();
     let mut html = SETTINGS_TEMPLATE
@@ -845,6 +850,12 @@ pub fn get_settings_html(
         .replace(
             "{{GOOGLE_DNS_FAILED}}",
             if google_dns_failed { "true" } else { "false" },
+        )
+        .replace(
+            "{{GOOGLE_DNS_ROUTE_OK}}",
+            &google_dns_route_ok
+                .map(|ok| ok.to_string())
+                .unwrap_or_else(|| "null".into()),
         );
 
     let engine = settings.search_engine.to_lowercase();

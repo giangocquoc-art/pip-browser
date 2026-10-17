@@ -1,3 +1,11 @@
+# Pip 0.1.10
+
+Google DNS now runs a startup check through the same local HTTPS proxy used by Pip's tabs. The toolbar and settings distinguish an open proxy from a verified route, show an actionable failure state, and never claim the route works before a real page loads. The check only affects Pip; Windows DNS is unchanged.
+
+The website adds a trust and verification guide for official downloads, SHA-256, GitHub build attestations, and the current Authenticode signing status. Website CI now checks local links, sitemap routes, the download button, and required trust disclosures.
+
+The Windows installer remains unsigned with Authenticode. GitHub build attestations and SHA-256 checks help verify release origin and integrity but do not remove SmartScreen warnings. Pip is preparing Microsoft Store distribution, which requires the account owner's identity verification and app certification.
+
 # Pip 0.1.9
 
 Google DNS settings now show whether the route is active and provide a one-click restart that saves and restores regular tabs and profile windows. Private windows close during restart. The DNS proxy disables QUIC so supported web traffic uses the configured HTTPS route. Live DNS-over-HTTPS and proxy route checks passed against Google.

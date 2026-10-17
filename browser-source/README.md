@@ -10,7 +10,7 @@ Pip là trình duyệt Windows 10/11 x64 dựa trên Microsoft Edge WebView2, v�
 - Google DNS bảo mật là tùy chọn. DNS không ẩn địa chỉ IP và không thay thế VPN.
 - Dùng WebView2 Runtime do Microsoft cập nhật; Pip không mang theo một bản Chromium riêng.
 
-Xem [hướng dẫn sử dụng](PIP_README.md), [ghi chú Pip 0.1.9](RELEASE_NOTES.md), [nguồn và giấy phép bên thứ ba](THIRD_PARTY.md), cùng thư mục `licenses/`.
+Xem [hướng dẫn sử dụng](PIP_README.md), [ghi chú Pip 0.1.10](RELEASE_NOTES.md), [nguồn và giấy phép bên thứ ba](THIRD_PARTY.md), cùng thư mục `licenses/`.
 
 ## Build trên Windows
 
