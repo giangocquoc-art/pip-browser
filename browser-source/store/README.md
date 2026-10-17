@@ -22,7 +22,7 @@ From the `Pip` repository root, run:
   -PublisherDisplayName 'YOUR_STORE_PUBLISHER_NAME'
 ```
 
-The script creates `store/out/Pip_<version>_x64.msix` and a Partner Center `.msixupload` archive, then unpacks the MSIX and verifies that the packaged executable is byte-for-byte identical to the selected build. `store/out` is ignored by Git. Any package built with placeholder or test identity values is only a packaging preflight and must not be submitted or distributed. Microsoft signs the Store release after certification.
+The script creates `store/out/Pip_<version>_x64.msix` and a Partner Center `.msixupload` archive, then unpacks the MSIX and verifies that the packaged executable is byte-for-byte identical to the selected build. `store/out` is ignored by Git. Known placeholder identity values are rejected unless `-AllowTestIdentity` is passed for CI or local preflight; those test packages receive adjacent `DO_NOT_SUBMIT` marker files. Microsoft signs the Store release after certification.
 
 ## Runtime and certification notes
 
