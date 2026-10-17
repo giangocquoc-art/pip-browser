@@ -1,3 +1,7 @@
+# Unreleased
+
+Broadened gambling pop-up detection for rotating domains: Pip now recognizes common numeric `bet` and `vip` host patterns and gambling terms in popup paths and query strings. These checks apply only to newly opened windows; normal navigation is unchanged. The bundled HaGeZi snapshots remain the primary broad domain coverage, and no filter can guarantee every newly created redirect is caught.
+
 # Pip 0.1.5
 
 Pip now checks popup destinations against HaGeZi's bundled Gambling Mini domain snapshot, in addition to clear gambling-name signals and ad/pop-up lists. Matching the registered domain also catches its subdomains, including newly encountered hostnames. These protections apply only to popup destinations; ordinary page navigation and URLs entered in the address bar remain available. The bundled list is pinned and versioned, so coverage updates with a future Pip release.
@@ -13,3 +17,4 @@ Pip 0.1.3 broadens popup blocking beyond individual domains by adding the pinned
 The source archive includes the Microsoft Store packaging scripts and manifest template, but excludes generated MSIX files and test packages. The browser remains unsigned with Authenticode; GitHub release assets are built by the repository workflow and receive Sigstore artifact attestations after CI passes.
 
 Ad and popup filtering is based on pinned filter snapshots and has limits. It does not guarantee that every advertisement or redirect on every website will be blocked.
+
