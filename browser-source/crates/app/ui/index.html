@@ -1433,22 +1433,39 @@
     window.__renderBookmark = saved => {const b=document.getElementById('bookmarkButton');b.setAttribute('aria-pressed',String(saved));b.querySelector('svg').style.fill=saved?'#f97316':'none';};
     window.__renderAdblock = enabled => {const b=document.getElementById('adblockButton');b.disabled=enabled===null;b.setAttribute('aria-pressed',String(enabled===true));b.style.color=enabled===true?'#e85d0d':'';b.title=enabled===null?'Chặn quảng cáo áp dụng cho trang web':('Chặn quảng cáo: '+(enabled?'bật':'tắt')+' trên trang này. Bấm để đổi; nhấn F5 để áp dụng.');};
     let googleDnsEnabled = false;
+    let googleDnsActive = false;
+    let googleDnsFailed = false;
     function toggleGoogleDns() {
+      if (googleDnsEnabled !== googleDnsActive) {
+        if (googleDnsFailed && googleDnsEnabled) {
+          postIpc('OpenSettings');
+          return;
+        }
+        if (confirm('Khởi động lại Pip để áp dụng Google DNS? Tab thường sẽ được lưu và khôi phục; cửa sổ ẩn danh sẽ đóng.')) {
+          postIpc('RestartBrowser');
+        }
+        return;
+      }
       document.getElementById('googleDnsButton').disabled = true;
       postIpc('SetGoogleDns', {enabled: !googleDnsEnabled});
     }
     window.__renderGoogleDns = function(enabled, active, failed = false, routeOk = null) {
       googleDnsEnabled = enabled;
+      googleDnsActive = active;
+      googleDnsFailed = failed;
       const button = document.getElementById('googleDnsButton');
       button.disabled = false;
       button.setAttribute('aria-pressed', String(enabled));
       const routeFailed = active && routeOk === false;
       button.dataset.failed = String(enabled && (failed || routeFailed));
       button.dataset.pending = String(!failed && enabled !== active);
+      button.querySelector('span').textContent = failed && enabled && !active
+        ? 'Cài đặt'
+        : enabled !== active ? 'Áp dụng' : 'G DNS';
       button.title = failed && enabled
-        ? 'Google DNS không khởi động được: Pip hiện đang dùng DNS Windows. Mở Cài đặt > Kết nối để xem hướng dẫn.'
+        ? 'Google DNS không khởi động được: Pip hiện đang dùng DNS Windows. Bấm để mở Cài đặt > Kết nối.'
         : enabled !== active
-          ? 'Google DNS: đã lưu lựa chọn bật/tắt. Đóng rồi mở lại Pip để áp dụng.'
+          ? 'Google DNS: đã lưu lựa chọn bật/tắt nhưng chưa áp dụng. Bấm để khởi động lại Pip và áp dụng.'
           : routeFailed
             ? 'Google DNS chưa kết nối được: proxy đang chạy nhưng tuyến HTTPS chưa qua kiểm tra. Mở Cài đặt > Kết nối để thử lại.'
             : active && routeOk === null

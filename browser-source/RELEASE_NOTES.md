@@ -1,6 +1,6 @@
 # Pip 0.1.10
 
-Google DNS now runs a startup check through the same local HTTPS proxy used by Pip's tabs. The toolbar and settings distinguish an open proxy from a verified route, show an actionable failure state, and never claim the route works before a real page loads. The check only affects Pip; Windows DNS is unchanged.
+Google DNS now runs a startup check through the same local HTTPS proxy used by Pip's tabs. The toolbar and settings distinguish an open proxy from a verified route, show an actionable failure state, and never claim the route works before a real page loads. When a saved DNS change needs a restart, the toolbar button now changes to “Áp dụng” and can restart Pip directly after confirmation. The check only affects Pip; Windows DNS is unchanged.
 
 The website adds a trust and verification guide for official downloads, SHA-256, GitHub build attestations, and the current Authenticode signing status. Website CI now checks local links, sitemap routes, the download button, and required trust disclosures.
 
