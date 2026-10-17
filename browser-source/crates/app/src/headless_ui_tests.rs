@@ -70,7 +70,7 @@ impl Check {
             }
             4=>self.query(id,false,"(()=>{if(document.title!=='Pip native test')return false;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';return typeof window.__pipSend==='undefined'})()"),
             5=>self.query(id,true,"(()=>{document.getElementById('bookmarkButton').click();postIpc('OpenLibrary',{view:'bookmarks'});return true})()"),
-            6=>self.query(id,false,"document.getElementById('bookmarksList')?.textContent.includes('Pip native test')===true"),
+            6=>self.query(id,false,"(()=>{const check=kind=>{const input=document.getElementById(kind+'Search'),list=document.getElementById(kind+'List'),empty=document.getElementById(kind+'NoResults');if(!input||!list.textContent.includes('Pip native test'))return false;input.value='pip native';input.dispatchEvent(new Event('input'));const matched=list.querySelectorAll('.library-row').length===1;input.value='not found';input.dispatchEvent(new Event('input'));const emptyState=empty.hidden===false&&list.querySelectorAll('.library-row').length===0;input.value='';input.dispatchEvent(new Event('input'));return matched&&emptyState&&list.querySelectorAll('.library-row').length===1};const bookmarks=check('bookmarks');document.querySelector('.rail-link[data-view=history]').click();return bookmarks&&check('history')})()"),
             7=>self.query(id,true,"(()=>{postIpc('OpenPrivateWindow');return true})()"),
             8=>{
                 let private=self.app.windows.values().find(|w|w.private).ok_or("Private window missing")?.id;
