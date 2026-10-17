@@ -12,9 +12,9 @@ Please do not post exploit details, proof-of-concept code, private browsing data
 
 Không đăng chi tiết khai thác, mã thử nghiệm, dữ liệu duyệt web riêng tư hoặc thông tin cá nhân trong issue công khai.
 
-Use GitHub's private vulnerability reporting from the repository's **Security** tab when that option is available. If GitHub does not show a private reporting option, open a public issue with only a brief request for a private reporting channel; do not include technical details until the maintainer provides one.
+Use the repository's **Security → Advisories → Report a vulnerability** form to submit details privately. Private vulnerability reporting is enabled for this repository. If you cannot access that form, open a public issue only to request a private reporting channel; do not include technical details until the maintainer provides one.
 
-Khi GitHub cung cấp tính năng báo cáo riêng tư trong thẻ **Security**, hãy dùng tính năng đó. Nếu không thấy lựa chọn báo cáo riêng tư, chỉ mở issue công khai để xin kênh liên hệ riêng; không gửi chi tiết kỹ thuật cho đến khi người duy trì cung cấp kênh an toàn.
+Hãy dùng biểu mẫu **Security → Advisories → Report a vulnerability** để gửi chi tiết riêng tư. Repo đã bật tính năng báo cáo lỗ hổng riêng tư. Nếu không truy cập được biểu mẫu, chỉ mở issue công khai để xin kênh báo cáo riêng; không đăng chi tiết kỹ thuật.
 
 Include the affected Pip version, Windows version, steps to reproduce, and the impact you observed. Remove account names, URLs containing tokens, cookies, and other private data from logs or screenshots.
 
