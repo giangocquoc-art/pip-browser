@@ -4,8 +4,8 @@ Pip is a Win32/WebView2 application, so the Store distribution path that include
 
 ## Before packaging
 
-1. Create a free individual developer account from [Microsoft Store Developer](https://storedeveloper.microsoft.com/) using the personal Microsoft account that should own Pip. Microsoft currently requires identity verification with a government-issued ID and selfie; the account owner must complete this step.
-2. In Partner Center, create a new MSIX product and reserve the name `Pip` (or the closest available name).
+1. Start at [Microsoft Store Developer](https://storedeveloper.microsoft.com/) using the personal Microsoft account that should own Pip. As of 2026-10-17, the new individual account flow has no registration fee. Start from this page; Microsoft says direct Partner Center entry can show the legacy flow. The account owner must complete identity verification using their government-issued ID and selfie.
+2. After verification, open Partner Center, create a new MSIX product, and reserve the name `Pip` (or the closest available name).
 3. Open Product identity and copy the exact Package/Identity/Name and Publisher values. The publisher display name is also part of the public Store identity.
 4. Build the current browser binary with `cargo build -p evergreen-browser --release --locked`.
 
@@ -22,7 +22,7 @@ From the `Pip` repository root, run:
   -PublisherDisplayName 'YOUR_STORE_PUBLISHER_NAME'
 ```
 
-The script creates `store/out/Pip_<version>_x64.msix` and a Partner Center `.msixupload` archive, then unpacks the MSIX and verifies that the packaged executable is byte-for-byte identical to the selected build. `store/out` is ignored by Git. The package is unsigned for local upload; Microsoft signs the Store release after certification.
+The script creates `store/out/Pip_<version>_x64.msix` and a Partner Center `.msixupload` archive, then unpacks the MSIX and verifies that the packaged executable is byte-for-byte identical to the selected build. `store/out` is ignored by Git. Any package built with placeholder or test identity values is only a packaging preflight and must not be submitted or distributed. Microsoft signs the Store release after certification.
 
 ## Runtime and certification notes
 

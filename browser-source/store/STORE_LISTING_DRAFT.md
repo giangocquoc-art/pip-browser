@@ -28,7 +28,7 @@ Pip là trình duyệt Windows tập trung vào trải nghiệm gọn gàng và 
 - Tách dữ liệu duyệt web theo hồ sơ trên cùng thiết bị.
 - Dùng cửa sổ ẩn danh khi không muốn lưu phiên duyệt vào lịch sử thông thường của Pip.
 - Bật Google DNS-over-HTTPS tùy chọn để mã hóa truy vấn DNS trên đường truyền.
-- Lọc một số yêu cầu quảng cáo và theo dõi; khi bật, Pip cũng chặn popup tự mở và đối chiếu địa chỉ popup với các danh sách EasyList, uBlock Origin và HaGeZi Pop-Up Ads.
+- Lọc một số yêu cầu quảng cáo và theo dõi; khi bật, Pip cũng chặn popup tự mở và đối chiếu địa chỉ popup với EasyList, uBlock Origin, HaGeZi Pop-Up Ads và snapshot domain cá cược HaGeZi.
 - Lưu dấu trang, lịch sử và tệp tải xuống trên thiết bị.
 
 Pip dùng Microsoft Edge WebView2 để hiển thị trang web. Bộ lọc quảng cáo không chặn được mọi quảng cáo; kết quả, đặc biệt trên YouTube, có thể thay đổi theo website và cập nhật của website. Google DNS không phải VPN và không ẩn địa chỉ IP. Xem chính sách quyền riêng tư để biết dữ liệu nào được lưu trên máy và dịch vụ bên ngoài nào nhận dữ liệu khi bạn duyệt web.
@@ -47,7 +47,7 @@ Pip is a Windows browser focused on a simple browsing experience and clear priva
 - Keep browsing data in separate profiles on the same device.
 - Use an InPrivate window to keep that session out of Pip's normal browsing history.
 - Optionally enable Google DNS-over-HTTPS to encrypt DNS queries in transit.
-- Filter some advertising and tracking requests; when enabled, Pip also blocks automatic popups and checks popup destinations against bundled EasyList, uBlock Origin, and HaGeZi Pop-Up Ads rules.
+- Filter some advertising and tracking requests; when enabled, Pip also blocks automatic popups and checks popup destinations against bundled EasyList, uBlock Origin, HaGeZi Pop-Up Ads, and a HaGeZi gambling domain snapshot.
 - Keep bookmarks, history, and downloads on your device.
 
 Pip uses Microsoft Edge WebView2 to display websites. Ad filtering does not block every ad, and results—especially on YouTube—can vary with the website and its updates. Google DNS is not a VPN and does not hide your IP address. See the privacy policy for details about on-device data and external services used while browsing.
