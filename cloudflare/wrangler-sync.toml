@@ -1,0 +1,16 @@
+name = "pip-browser-sync"
+main = "sync-worker.mjs"
+compatibility_date = "2026-10-18"
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "VAULTS"
+class_name = "PipSyncVault"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PipSyncVault"]
+
+[[routes]]
+pattern = "sync.pip.psharehub.com"
+custom_domain = true
