@@ -12,12 +12,13 @@ Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoà
 - `tinh-nang/`, `cau-hoi/` và `huong-dan/`: nội dung theo từng ý định tìm kiếm. Tám bài hướng dẫn gom 40 cụm có liên quan vào từng chủ đề thay vì tạo 40 trang mỏng.
 - `robots.txt`, `sitemap.xml`: cho phép crawl và liệt kê các URL chuẩn của trang chính, trang tính năng, FAQ, chính sách quyền riêng tư và cụm hướng dẫn.
 - `quyen-rieng-tu/`: chính sách mô tả lưu trữ cục bộ, website bên thứ ba, tìm kiếm Google, DNS tùy chọn và chẩn đoán WebView2.
+- `tin-cay/`: hướng dẫn kiểm tra SHA-256, GitHub build attestation và trạng thái Authenticode hiện tại.
 - `guide.css`, `assets/guides/`: bố cục hướng dẫn responsive và tám ảnh WebP có mascot Pip.
 - `marketing/seo-keyword-map.md`: bản đồ 40 cụm tìm kiếm, ý định và URL đích; gợi ý autocomplete không phải số liệu lượt tìm kiếm.
 - `assets/app-*.webp`: ảnh giao diện được chụp từ ứng dụng Pip; WebP để giảm dung lượng tải.
 - `assets/og-pip.jpg`: ảnh chia sẻ mạng xã hội.
 - `version.json`: phương án dự phòng nếu GitHub Releases không phản hồi.
-- `browser-source/`: snapshot ứng viên Pip 0.1.2 có thể duyệt trực tiếp trên GitHub; mỗi bản phát hành cũng đính kèm ZIP mã nguồn và SHA-256 tương ứng.
+- `browser-source/`: mã nguồn ứng dụng Pip; mỗi bản phát hành đính kèm ZIP mã nguồn và SHA-256 tương ứng. Mã phiên bản mới nhất được hiển thị trên trang tải.
 - `marketing/launch-kit.md`: định vị và bản nháp nội dung marketing.
 
 ## Tải và cập nhật

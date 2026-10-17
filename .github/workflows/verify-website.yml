@@ -1,0 +1,57 @@
+name: Verify Pip website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.html'
+      - '*.css'
+      - '*.js'
+      - '*.xml'
+      - '*.txt'
+      - 'assets/**'
+      - 'cau-hoi/**'
+      - 'huong-dan/**'
+      - 'quyen-rieng-tu/**'
+      - 'tin-cay/**'
+      - 'tinh-nang/**'
+      - 'scripts/website.test.mjs'
+      - '.github/workflows/verify-website.yml'
+  pull_request:
+    paths:
+      - '*.html'
+      - '*.css'
+      - '*.js'
+      - '*.xml'
+      - '*.txt'
+      - 'assets/**'
+      - 'cau-hoi/**'
+      - 'huong-dan/**'
+      - 'quyen-rieng-tu/**'
+      - 'tin-cay/**'
+      - 'tinh-nang/**'
+      - 'scripts/website.test.mjs'
+      - '.github/workflows/verify-website.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  website:
+    name: Check public routes and trust disclosures
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out website
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Verify links, sitemap, download and trust disclosures
+        run: node --test scripts/website.test.mjs
