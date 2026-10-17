@@ -1,3 +1,7 @@
+# Pip 0.1.9
+
+Google DNS settings now show whether the route is active and provide a one-click restart that saves and restores regular tabs and profile windows. Private windows close during restart. The DNS proxy disables QUIC so supported web traffic uses the configured HTTPS route. Live DNS-over-HTTPS and proxy route checks passed against Google.
+
 # Pip 0.1.8
 
 Updated Pip's bundled HaGeZi Gambling Mini popup destination list to pinned upstream version 2026.1017.1606.06. The refreshed snapshot adds 234 domains and removes 20 stale entries. These matches apply to popup destinations only; normal page navigation is unchanged. The bundled list works offline and is not sent any browsing URLs.
