@@ -806,8 +806,16 @@ mod tests {
         let source = "https://news.example/article";
         assert!(blocker.should_block_popup("https://bet365.com.au/", source, true));
         assert!(blocker.should_block_popup("https://www.bet365.com.au/", source, true));
+        assert!(blocker.should_block_popup("https://promo.12betsports.best/", source, true));
         assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
         assert!(!blocker.should_block("https://bet365.com.au/", source, source, "document", "GET"));
+        assert!(!blocker.should_block(
+            "https://12betsports.best/",
+            source,
+            source,
+            "document",
+            "GET"
+        ));
     }
 
     #[test]
