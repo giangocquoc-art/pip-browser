@@ -83,26 +83,6 @@ impl DohProxy {
     }
 }
 
-pub fn test_google_doh() -> Result<(), String> {
-    let client = Client::builder()
-        .resolve_to_addrs(
-            "dns.google",
-            &[
-                "8.8.8.8:443".parse().expect("Google DNS bootstrap address"),
-                "8.8.4.4:443".parse().expect("Google DNS bootstrap address"),
-            ],
-        )
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let (addresses, _) = query_google_json(&client, "example.com", "A")?;
-    if addresses.is_empty() {
-        return Err("Google DNS returned no IPv4 addresses".to_string());
-    }
-    Ok(())
-}
-
 /// Exercise the same local HTTP CONNECT proxy used by Pip's WebViews. A direct
 /// DoH request only proves Google's resolver is reachable; this also proves
 /// Pip can resolve a real destination through that resolver and reach it.
