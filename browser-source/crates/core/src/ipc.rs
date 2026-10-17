@@ -59,6 +59,7 @@ pub enum UiToHostMessage {
     },
     ClearSavedPasswords,
     ClearCache,
+    ClearSiteData,
     /// Switch active tab
     SwitchTab {
         id: TabId,

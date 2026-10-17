@@ -61,7 +61,7 @@ impl Check {
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
                 self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('Mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
             }
-            2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle');if(!input)return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
+            2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton');if(!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData'))return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
             3=>{
                 if self.app.settings.downloads.ask_where_to_save {return Err("Settings checkbox did not reach native storage".into());}
                 let disk=evergreen_core::settings::Settings::load_from_path(&get_settings_path()).map_err(|e|e.to_string())?;

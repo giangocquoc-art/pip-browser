@@ -113,7 +113,7 @@ pub(crate) enum BrowserEvent {
     TabNavigated(WindowId, TabId, String),
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
-    BrowsingDataClearDone(WindowId, bool, bool),
+    BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
     GoogleDnsCheckDone(WindowId, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
@@ -138,6 +138,13 @@ pub(crate) enum BrowserEvent {
         request_uri: String,
         error_status: i32,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BrowsingDataClearKind {
+    Cache,
+    Passwords,
+    SiteData,
 }
 
 struct WindowContext {
@@ -2032,8 +2039,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
-                action @ (UiToHostMessage::ClearSavedPasswords | UiToHostMessage::ClearCache) => {
-                    let cache = matches!(action, UiToHostMessage::ClearCache);
+                action @ (UiToHostMessage::ClearSavedPasswords
+                | UiToHostMessage::ClearCache
+                | UiToHostMessage::ClearSiteData) => {
+                    let kind = match action {
+                        UiToHostMessage::ClearCache => BrowsingDataClearKind::Cache,
+                        UiToHostMessage::ClearSiteData => BrowsingDataClearKind::SiteData,
+                        _ => BrowsingDataClearKind::Passwords,
+                    };
                     use webview2_com::Microsoft::Web::WebView2::Win32::*;
                     use windows::core::Interface;
                     use wry::WebViewExtWindows;
@@ -2058,22 +2071,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                                 let _ = proxy.send_event(
                                                     BrowserEvent::BrowsingDataClearDone(
                                                         win_id,
-                                                        cache,
+                                                        kind,
                                                         result.is_ok(),
                                                     ),
                                                 );
                                                 Ok(())
                                             }),
                                         );
-                                    let kind = if cache {
-                                        COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
-                                    } else {
-                                        COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE
+                                    let data_kind = match kind {
+                                        BrowsingDataClearKind::Cache => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
+                                        }
+                                        BrowsingDataClearKind::Passwords => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE
+                                        }
+                                        BrowsingDataClearKind::SiteData => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE
+                                        }
                                     };
-                                    if profile.ClearBrowsingData(kind, &callback).is_err() {
+                                    if profile.ClearBrowsingData(data_kind, &callback).is_err() {
                                         let _ = self.proxy.send_event(
                                             BrowserEvent::BrowsingDataClearDone(
-                                                win_id, cache, false,
+                                                win_id, kind, false,
                                             ),
                                         );
                                     }
@@ -2622,28 +2641,27 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     output.trim()
                 );
             }
-            BrowserEvent::BrowsingDataClearDone(win_id, cache, success) => {
-                let item = if cache {
-                    "bộ nhớ đệm"
-                } else {
-                    "mật khẩu đã lưu"
-                };
-                self.notify_settings(
-                    win_id,
-                    &format!(
-                        "{} {item}{}",
-                        if success {
-                            "Đã xóa"
-                        } else {
-                            "Không thể xóa"
-                        },
-                        if success && cache {
-                            "; đăng nhập và lịch sử được giữ lại."
-                        } else {
-                            "."
+            BrowserEvent::BrowsingDataClearDone(win_id, kind, success) => {
+                let message = if success {
+                    match kind {
+                        BrowsingDataClearKind::Cache => {
+                            "Đã xóa bộ nhớ đệm; đăng nhập và lịch sử được giữ lại."
                         }
-                    ),
-                );
+                        BrowsingDataClearKind::Passwords => "Đã xóa mật khẩu đã lưu của hồ sơ.",
+                        BrowsingDataClearKind::SiteData => {
+                            "Đã xóa cookie và dữ liệu website của hồ sơ; bạn đã đăng xuất."
+                        }
+                    }
+                } else {
+                    match kind {
+                        BrowsingDataClearKind::Cache => "Không thể xóa bộ nhớ đệm.",
+                        BrowsingDataClearKind::Passwords => "Không thể xóa mật khẩu đã lưu.",
+                        BrowsingDataClearKind::SiteData => {
+                            "Không thể xóa cookie và dữ liệu website."
+                        }
+                    }
+                };
+                self.notify_settings(win_id, message);
             }
             BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
                 self.notify_settings(
