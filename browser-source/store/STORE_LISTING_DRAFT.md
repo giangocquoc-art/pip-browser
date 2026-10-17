@@ -5,7 +5,7 @@ Use this copy only after reserving the Pip product name and confirming the final
 ## Product details
 
 - Product name: Pip
-- Version: 0.1.7
+- Version: 0.1.8
 - Supported architecture: x64
 - Minimum Windows version: Windows 10, version 2004 (build 19041)
 - Runtime: Microsoft Edge WebView2 Evergreen Runtime

@@ -1,3 +1,7 @@
+# Pip 0.1.8
+
+Updated Pip's bundled HaGeZi Gambling Mini popup destination list to pinned upstream version 2026.1017.1606.06. The refreshed snapshot adds 234 domains and removes 20 stale entries. These matches apply to popup destinations only; normal page navigation is unchanged. The bundled list works offline and is not sent any browsing URLs.
+
 # Pip 0.1.7
 
 Google DNS diagnostics now test a real Google page through Pip's local DNS-over-HTTPS proxy, rather than checking only whether Google's resolver responds directly. The toolbar and settings distinguish a running route from a saved change that still needs a Pip restart. This setting affects Pip only; it does not change Windows DNS or hide the user's IP address.

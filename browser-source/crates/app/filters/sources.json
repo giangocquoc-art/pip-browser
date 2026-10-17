@@ -12,14 +12,14 @@
       "license": "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
     },
     "HaGeZi Gambling Mini": {
-      "url": "https://github.com/hagezi/dns-blocklists/blob/c45fad4320045893c0fb4299aef1ba94101b31c1/wildcard/gambling.mini-onlydomains.txt",
-      "version": "2026.1017.0953.34",
-      "sha256": "c6f56aa509f9efd1df7727b38572a2ebe6a12f71145fa7b3444bc075658fcbbb",
+      "url": "https://github.com/hagezi/dns-blocklists/blob/6da44f958499cb4e1b9d98768e341cb9a4b6d485/wildcard/gambling.mini-onlydomains.txt",
+      "version": "2026.1017.1606.06",
+      "sha256": "23dc1d3849500b936b889f5ad0a5ede843cd04f09232144ce1840426028e5741",
       "license": "https://github.com/hagezi/dns-blocklists/blob/main/LICENSE"
     }
   },
   "sha256": {
-    "gambling-hagezi-mini-domains.txt": "c6f56aa509f9efd1df7727b38572a2ebe6a12f71145fa7b3444bc075658fcbbb",
+    "gambling-hagezi-mini-domains.txt": "23dc1d3849500b936b889f5ad0a5ede843cd04f09232144ce1840426028e5741",
     "upstream/brave/adblock-resources/LICENSE": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
     "upstream/brave/adblock-resources/metadata.json": "55cee92553104a062569994c9289b24ee960f7d3041135f9ec02a2357cefd8e3",
     "upstream/brave/adblock-resources/resources/async-sugarcoat-04394153a7ce417b88e3fe1790a4e6a269bfebe5.js": "be13107a328041cba97a68af21d83806b166285f1a4136154c894bdd7e7d81ee",
