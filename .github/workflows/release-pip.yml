@@ -184,7 +184,7 @@ jobs:
           $verificationNotes = @"
           ## Verify this release
 
-          The installer and source archive have GitHub artifact attestations. After downloading them, verify their source and build provenance with GitHub CLI:
+          The installer and source archive have GitHub artifact attestations. Install GitHub CLI and sign in once with `gh auth login`, then verify their source and build provenance:
 
           ``````powershell
           gh attestation verify .\Pip-Setup-$env:PIP_VERSION-Windows-x64.exe --repo $repository
