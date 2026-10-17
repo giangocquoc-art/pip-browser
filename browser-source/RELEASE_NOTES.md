@@ -1,6 +1,8 @@
-# Pip 0.1.4
+# Pip 0.1.5
 
-Pip now blocks popup destinations whose host clearly identifies common gambling categories (casino, betting, slots, togel, tài xỉu, xóc đĩa, and related terms). This catches some newly rotated gambling domains even when WebView2 reports that an ad redirect followed a click. The rule is popup-only; ordinary navigation and URLs typed into the address bar are unaffected. EasyList, uBlock Origin, and HaGeZi popup rules continue to cover other known destinations.
+Pip now checks popup destinations against HaGeZi's bundled Gambling Mini domain snapshot, in addition to clear gambling-name signals and ad/pop-up lists. Matching the registered domain also catches its subdomains, including newly encountered hostnames. These protections apply only to popup destinations; ordinary page navigation and URLs entered in the address bar remain available. The bundled list is pinned and versioned, so coverage updates with a future Pip release.
+
+The gambling list is embedded as a compact domain index and checked only when a new popup is requested. The app does not download the list or submit browsing URLs to a filtering service.
 
 Ad and popup filtering uses bundled snapshots and conservative domain signals. It does not guarantee that every advertisement or redirect on every website will be blocked.
 

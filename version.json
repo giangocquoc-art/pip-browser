@@ -1,9 +1,9 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "downloadAvailable": true,
   "url": "https://download.pip.psharehub.com/",
   "installer": "PipSetup.exe",
-  "sha256": "1c249a047dd2adc689c10be57895bcaf16993a8f4e04c4af1b5418660a7253c0",
-  "size": 17859584,
-  "updated": "2026-10-16"
+  "sha256": "1f73b3d4033588636dc1d3362efee29647784b31a61b5e3266f0b7d64be7f33c",
+  "size": 20795392,
+  "updated": "2026-10-17"
 }

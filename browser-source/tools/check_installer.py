@@ -54,6 +54,7 @@ with zipfile.ZipFile(install / "Pip-source.zip") as archive:
     assert archive.testzip() is None
     assert "crates/app/filters/upstream/brave/uBlock/LICENSE.txt" in archive.namelist()
     assert "crates/app/filters/youtube.txt" in archive.namelist()
+    assert "crates/app/filters/gambling-hagezi-mini-domains.txt" in archive.namelist()
     assert not any(n.lower().endswith((".exe", ".dll")) or "/user_data/" in n for n in archive.namelist())
 
 # A suspended process locks its own image without running app code or showing UI.

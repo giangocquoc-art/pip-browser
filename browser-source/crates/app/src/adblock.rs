@@ -21,6 +21,7 @@ use wry::WebViewExtWindows;
 pub struct Blocker {
     engine: Engine,
     popup_engine: Engine,
+    gambling_domains: GamblingDomains,
     disabled: HashSet<String>,
     exceptions_path: PathBuf,
     pub blocked: u64,
@@ -32,6 +33,44 @@ struct Bootstrap {
     id: Option<String>,
 }
 
+const GAMBLING_DOMAIN_SOURCE: &str = include_str!("../filters/gambling-hagezi-mini-domains.txt");
+
+struct GamblingDomains {
+    offsets: Vec<u32>,
+}
+
+impl GamblingDomains {
+    fn bundled() -> Self {
+        let mut offsets = Vec::new();
+        let mut offset = 0usize;
+        for line in GAMBLING_DOMAIN_SOURCE.split_inclusive('\n') {
+            let domain = line.trim();
+            if !domain.is_empty() && !domain.starts_with('#') {
+                offsets.push(u32::try_from(offset).expect("bundled filter list is under 4 GiB"));
+            }
+            offset += line.len();
+        }
+        offsets.sort_unstable_by(|left, right| domain_at(*left).cmp(domain_at(*right)));
+        offsets.dedup_by(|left, right| domain_at(*left) == domain_at(*right));
+        Self { offsets }
+    }
+
+    #[cfg(test)]
+    fn empty() -> Self {
+        Self {
+            offsets: Vec::new(),
+        }
+    }
+}
+
+fn domain_at(offset: u32) -> &'static str {
+    GAMBLING_DOMAIN_SOURCE[offset as usize..]
+        .lines()
+        .next()
+        .expect("offset points to a domain")
+        .trim()
+}
+
 fn site(url: &str) -> Option<String> {
     let uri = url.parse::<wry::http::Uri>().ok()?;
     if !matches!(uri.scheme_str(), Some("http" | "https")) {
@@ -40,7 +79,7 @@ fn site(url: &str) -> Option<String> {
     Some(uri.host()?.to_ascii_lowercase())
 }
 
-fn looks_like_gambling_host(url: &str) -> bool {
+fn looks_like_gambling_host(host: &str) -> bool {
     const TERMS: &[&str] = &[
         "casino",
         "casinos",
@@ -65,9 +104,6 @@ fn looks_like_gambling_host(url: &str) -> bool {
         "lotto",
         "keno",
     ];
-    let Some(host) = site(url) else {
-        return false;
-    };
     host.split('.')
         .flat_map(|label| label.split(|ch: char| !ch.is_ascii_alphanumeric()))
         .filter(|part| !part.is_empty())
@@ -81,6 +117,23 @@ fn looks_like_gambling_host(url: &str) -> bool {
                 && part.len() > 3
                 && part[3..].chars().all(|ch| ch.is_ascii_digit()))
         })
+}
+
+fn matches_gambling_domain(host: &str, domains: &GamblingDomains) -> bool {
+    let mut start = 0;
+    loop {
+        if domains
+            .offsets
+            .binary_search_by(|offset| domain_at(*offset).cmp(&host[start..]))
+            .is_ok()
+        {
+            return true;
+        }
+        let Some(dot) = host[start..].find('.') else {
+            return false;
+        };
+        start += dot + 1;
+    }
 }
 
 fn engine(rules: &str) -> Engine {
@@ -169,6 +222,7 @@ impl Blocker {
         Self {
             engine,
             popup_engine,
+            gambling_domains: GamblingDomains::bundled(),
             disabled,
             exceptions_path,
             blocked: 0,
@@ -219,10 +273,13 @@ impl Blocker {
         // Some ad redirects are reported by WebView2 as user-initiated because
         // they piggyback on a click. Treat clear gambling brands as unwanted
         // only in the new-window path; ordinary navigation is untouched.
-        if looks_like_gambling_host(url) {
+        if !user_initiated {
             return true;
         }
-        if !user_initiated {
+        if site(url).is_some_and(|host| {
+            looks_like_gambling_host(&host)
+                || matches_gambling_domain(&host, &self.gambling_domains)
+        }) {
             return true;
         }
         // This engine is consulted only for NewWindowRequested destinations.
@@ -500,6 +557,7 @@ mod tests {
         let mut b = Blocker {
             engine: engine("||ads.example^\n@@||ads.example/allowed.js$script"),
             popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
@@ -589,6 +647,7 @@ mod tests {
             popup_engine: engine(&popup_rules(
                 "||casino.example^$popup\n||tracker.example^$popup,third-party\n@@||trusted.example^$popup,domain=news.example",
             )),
+            gambling_domains: GamblingDomains::empty(),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
@@ -606,6 +665,7 @@ mod tests {
         let blocker = Blocker {
             engine: engine(""),
             popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
+            gambling_domains: GamblingDomains::empty(),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
@@ -623,6 +683,7 @@ mod tests {
         let blocker = Blocker {
             engine: engine(""),
             popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
@@ -637,7 +698,7 @@ mod tests {
         assert!(blocker.should_block_popup("https://bet365.example/offer", source, true));
         assert!(blocker.should_block_popup("https://slots.example/", source, true));
         assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
-        assert!(!looks_like_gambling_host("https://sports.example/article"));
+        assert!(!looks_like_gambling_host("sports"));
         assert!(!blocker.should_block(
             "https://bonus-casino88.example/register",
             source,
@@ -648,12 +709,31 @@ mod tests {
     }
 
     #[test]
+    fn bundled_gambling_domains_block_popup_hosts_and_subdomains_only() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::bundled(),
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            bootstraps: HashMap::new(),
+        };
+        let source = "https://news.example/article";
+        assert!(blocker.should_block_popup("https://bet365.com.au/", source, true));
+        assert!(blocker.should_block_popup("https://www.bet365.com.au/", source, true));
+        assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
+        assert!(!blocker.should_block("https://bet365.com.au/", source, source, "document", "GET"));
+    }
+
+    #[test]
     fn cosmetic_rules_respect_site_exceptions() {
         let mut b = Blocker {
             engine: engine(
                 "news.example##.sponsored\nnews.example#@#.allowed\nnews.example##.allowed",
             ),
             popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
