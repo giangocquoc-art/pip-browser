@@ -4,7 +4,7 @@ Pip is a Win32/WebView2 application, so the Store distribution path that include
 
 ## Before packaging
 
-1. Start at [Microsoft Store Developer](https://storedeveloper.microsoft.com/) using the personal Microsoft account that should own Pip. As of 2026-10-17, the new individual account flow has no registration fee. Start from this page; Microsoft says direct Partner Center entry can show the legacy flow. The account owner must complete identity verification using their government-issued ID and selfie.
+1. Start at [Microsoft Store Developer](https://storedeveloper.microsoft.com/) using the personal Microsoft account that should own Pip. As of 2026-10-18, Microsoft's [new individual account flow](https://learn.microsoft.com/en-us/windows/apps/publish/whats-new-individual-developer) waives the registration fee in nearly 200 markets. Start from the Store Developer page; Microsoft says direct Partner Center entry can show the legacy flow. The account owner must complete identity verification using their government-issued ID and selfie.
 2. After verification, open Partner Center, create a new MSIX product, and reserve the name `Pip` (or the closest available name).
 3. Open Product identity and copy the exact Package/Identity/Name and Publisher values. The publisher display name is also part of the public Store identity.
 4. Build the current browser binary with `cargo build -p evergreen-browser --release --locked`.
