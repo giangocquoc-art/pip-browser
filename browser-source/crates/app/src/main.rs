@@ -564,9 +564,15 @@ fn get_settings_path() -> std::path::PathBuf {
 fn dns_proxy_browser_args(port: Option<u16>) -> String {
     let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
     if let Some(port) = port {
-        args.push_str(&format!(" --proxy-server=http://127.0.0.1:{port}"));
+        args.push_str(&format!(
+            " --proxy-server=http://127.0.0.1:{port} --disable-quic"
+        ));
     }
     args
+}
+
+fn restart_profiles_path() -> std::path::PathBuf {
+    get_data_directory().join("restart-profiles.json")
 }
 
 fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
@@ -642,6 +648,8 @@ struct BrowserApp {
     active_google_dns: bool,
     google_dns_start_failed: bool,
     doh_proxy: Option<doh_proxy::DohProxy>,
+    restart_requested: bool,
+    restart_profiles: Vec<String>,
     next_tab_id: AtomicU64,
     allowed_cert_hosts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -907,6 +915,10 @@ impl BrowserApp {
             None
         };
         let google_dns_start_failed = settings.google_dns && doh_proxy.is_none();
+        let restart_profiles = std::fs::read(restart_profiles_path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+            .unwrap_or_default();
         Self {
             windows: HashMap::new(),
             internal_ipc_token: format!("{:?}", unsafe {
@@ -924,6 +936,8 @@ impl BrowserApp {
             active_google_dns: doh_proxy.is_some(),
             google_dns_start_failed,
             doh_proxy,
+            restart_requested: false,
+            restart_profiles,
             settings,
             next_tab_id: AtomicU64::new(1),
             allowed_cert_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
@@ -1870,6 +1884,20 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.windows.is_empty() {
             self.create_browser_window(event_loop, None);
+            let profiles = std::mem::take(&mut self.restart_profiles);
+            for profile_id in profiles {
+                if profile_id != "Default"
+                    && evergreen_core::settings::valid_profile_id(&profile_id)
+                    && self
+                        .settings
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.id == profile_id)
+                {
+                    self.create_profile_window(event_loop, None, profile_id, false);
+                }
+            }
+            let _ = std::fs::remove_file(restart_profiles_path());
         }
     }
 
@@ -2156,6 +2184,35 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             let _ =
                                 proxy.send_event(BrowserEvent::GoogleDnsCheckDone(win_id, result));
                         });
+                }
+                UiToHostMessage::RestartBrowser => {
+                    let profiles: std::collections::HashSet<String> = self
+                        .windows
+                        .values()
+                        .filter(|win| !win.private)
+                        .map(|win| win.profile_id.clone())
+                        .collect();
+                    for open_win_id in self.windows.keys().copied().collect::<Vec<_>>() {
+                        self.save_session(open_win_id);
+                    }
+                    let profiles: Vec<String> = profiles.into_iter().collect();
+                    let saved = serde_json::to_vec(&profiles)
+                        .map_err(std::io::Error::other)
+                        .and_then(|data| std::fs::write(restart_profiles_path(), data));
+                    match saved {
+                        Ok(()) => {
+                            self.restart_requested = true;
+                            self.windows.clear();
+                            event_loop.exit();
+                        }
+                        Err(error) => {
+                            eprintln!("Could not save Pip windows before restart: {error}");
+                            self.notify_settings(
+                                win_id,
+                                "Không thể lưu các tab trước khi khởi động lại Pip.",
+                            );
+                        }
+                    }
                 }
                 UiToHostMessage::DuplicateTab => {
                     let url = self
@@ -3459,6 +3516,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = event_loop.create_proxy();
     let mut app = BrowserApp::new(proxy, runtime_version);
     event_loop.run_app(&mut app)?;
+    let restart_requested = app.restart_requested;
+    drop(app);
+    if restart_requested {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let executable = std::env::current_exe()?;
+        let mut command = std::process::Command::new(executable);
+        command.args(args.iter().skip(1));
+        command.spawn()?;
+    }
 
     Ok(())
 }
@@ -3475,6 +3541,7 @@ mod google_dns_preferences_tests {
 
         let enabled = dns_proxy_browser_args(Some(43210));
         assert!(enabled.contains("--proxy-server=http://127.0.0.1:43210"));
+        assert!(enabled.contains("--disable-quic"));
         assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
     }
 

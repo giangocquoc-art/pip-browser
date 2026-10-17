@@ -59,13 +59,15 @@ impl Check {
             0=>self.query(id,true,"(()=>{const okay=document.querySelector('.tab-strip').offsetHeight===40&&document.querySelector('.nav-bar').offsetHeight===48&&document.querySelectorAll('.window-controls .window-control').length===3;const button=document.getElementById('profileButton');button.click();const menu=document.getElementById('profilePopover');const menuOkay=!menu.hidden&&document.querySelectorAll('#profileList .profile-choice').length===1&&document.getElementById('profileCurrentName').textContent==='Cá nhân';showProfileCreate();document.getElementById('profileCreateName').value='Kiểm thử';document.getElementById('profileCreateForm').requestSubmit();document.getElementById('googleDnsButton').click();return okay&&menuOkay&&menu.hidden})()"),
             1=>{
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
-                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
+                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('mở lại Pip');postIpc('OpenSettings');return okay})()");
             }
-            2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton');if(!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData'))return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
+            2=>self.query(id,false,"(()=>{const dnsRow=document.getElementById('googleDnsRestartRow'),hint=document.getElementById('googleDnsHint'),dns=document.getElementById('googleDnsToggle'),input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton');if(!dnsRow||dnsRow.hidden||getComputedStyle(dnsRow).display==='none'||!hint.textContent.includes('tuyến chưa đổi')||!dns||!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData'))return false;dns.checked=false;dns.onchange();const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
             3=>{
                 if self.app.settings.downloads.ask_where_to_save {return Err("Settings checkbox did not reach native storage".into());}
+                if self.app.settings.google_dns {return Err("Google DNS setting did not return to its original state".into());}
                 let disk=evergreen_core::settings::Settings::load_from_path(&get_settings_path()).map_err(|e|e.to_string())?;
                 if disk.downloads.ask_where_to_save {return Err("Nested settings were not persisted".into());}
+                if disk.google_dns {return Err("Google DNS setting was not persisted".into());}
                 self.app.handle_navigate(id,&self.url);self.step+=1;
             }
             4=>self.query(id,false,"(()=>{if(document.title!=='Pip native test')return false;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';return typeof window.__pipSend==='undefined'})()"),

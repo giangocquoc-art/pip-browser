@@ -85,6 +85,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       padding: 18px 24px;
       border-bottom: 1px solid var(--border-separator);
     }
+    .row[hidden] { display: none; }
 
     .row:last-child {
       border-bottom: none;
@@ -636,7 +637,8 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google trong Pip. Cần khởi động lại Pip để áp dụng; nút kiểm tra chỉ báo thành công khi thử được tuyến DNS đang chạy.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra tuyến đang dùng</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google trong Pip. Sau khi đổi, hãy khởi động lại để áp dụng.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra tuyến đang dùng</button></div>
+      <div class="row" id="googleDnsRestartRow" hidden><div class="row-info"><span class="row-label">Cần khởi động lại</span><span class="row-desc">Tab thường được lưu và khôi phục. Cửa sổ ẩn danh sẽ đóng để bảo vệ riêng tư.</span></div><button type="button" class="btn btn-secondary" onclick="if(confirm('Khởi động lại Pip để áp dụng Google DNS? Tab thường sẽ được lưu và khôi phục; cửa sổ ẩn danh sẽ đóng.')) sendAction('RestartBrowser')">Khởi động lại Pip</button></div>
     </div>
 
     <div class="section-title">Hồ sơ và riêng tư</div>
@@ -703,13 +705,14 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     window.__renderProfiles({{PROFILES_JSON}});
     window.__renderGoogleDns = (enabled, active=enabled, failed=false) => {
       document.getElementById('googleDnsToggle').checked=enabled;
+      document.getElementById('googleDnsRestartRow').hidden=enabled===active;
       document.getElementById('googleDnsHint').textContent=failed&&enabled&&!active
-        ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối mạng rồi mở lại Pip.'
+        ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối rồi thử khởi động lại Pip.'
         : enabled!==active
-          ? 'Đã lưu lựa chọn. Đóng rồi mở lại Pip để áp dụng. Sau đó, kiểm tra sẽ thử tải Google qua đúng tuyến DNS của Pip.'
+          ? 'Đã lưu lựa chọn nhưng tuyến chưa đổi. Nhấn “Khởi động lại Pip” để áp dụng, sau đó kiểm tra lại.'
           : active
-            ? 'Đã cấu hình tuyến DNS Google cho Pip trong phiên này. Nhấn “Kiểm tra tuyến đang dùng” để thử tải Google qua proxy đó. DNS Windows không đổi và địa chỉ IP không được ẩn.'
-            : 'Đang dùng DNS Windows. Bật Google DNS rồi mở lại Pip để chuyển kết nối web của Pip qua tuyến HTTPS.';
+            ? 'Google DNS đang chạy qua proxy HTTPS riêng trong Pip. Kiểm tra sẽ xác nhận tra cứu tên miền và tải trang qua đúng tuyến. DNS Windows không đổi; địa chỉ IP không được ẩn.'
+            : 'Đang dùng DNS Windows. Bật Google DNS để dùng tuyến HTTPS riêng cho kết nối web của Pip.';
     };
     window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}});
 

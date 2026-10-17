@@ -49,6 +49,7 @@ pub enum UiToHostMessage {
         enabled: bool,
     },
     TestGoogleDns,
+    RestartBrowser,
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,
