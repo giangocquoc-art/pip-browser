@@ -60,7 +60,7 @@
         </div>
       </section>
       <section class="state-view" id="bookmarksView"><div class="library-heading"><h2>Dấu trang của bạn</h2><input id="bookmarksSearch" class="library-search" type="search" aria-label="Tìm trong dấu trang" placeholder="Tìm theo tên hoặc địa chỉ"></div><div class="library-list" id="bookmarksList"></div><p class="library-empty" id="bookmarksNoResults" hidden>Không tìm thấy dấu trang phù hợp.</p><div class="state-card empty"><div><p class="eyebrow">Dấu trang</p><h2>Chưa có gì ở đây</h2><p>Bấm ngôi sao cạnh thanh địa chỉ hoặc Ctrl+D để lưu trang đang xem. Dấu trang được lưu riêng trong hồ sơ hiện tại.</p><button data-view="home">Về trang chủ</button></div><img src="data:image/webp;base64,{{EMPTY_BASE64}}" loading="lazy" decoding="async" alt="Mascot Pip ngồi cầm tờ giấy trống"></div></section>
-      <section class="state-view" id="historyView"><div class="library-heading"><h2>Trang đã xem</h2><input id="historySearch" class="library-search" type="search" aria-label="Tìm trong lịch sử" placeholder="Tìm theo tên hoặc địa chỉ"><button id="clearHistoryButton" data-action="ClearHistory">Xóa lịch sử</button></div><div class="library-list" id="historyList"></div><p class="library-empty" id="historyNoResults" hidden>Không tìm thấy trang phù hợp.</p><div class="state-card history"><div><p class="eyebrow">Lịch sử</p><h2>Chưa có trang đã xem</h2><p>Các trang đã xem sẽ xuất hiện ở đây. Pip không lưu lịch sử trong cửa sổ ẩn danh.</p><button data-view="home">Về trang chủ</button></div><img id="historyMascot" loading="lazy" decoding="async" alt="Mascot Pip cầm tờ giấy"></div></section>
+      <section class="state-view" id="historyView"><div class="library-heading"><h2>Trang đã xem</h2><input id="historySearch" class="library-search" type="search" aria-label="Tìm trong lịch sử" placeholder="Tìm theo tên hoặc địa chỉ"><button id="clearHistoryButton" onclick="if(confirm('Xóa toàn bộ lịch sử trong hồ sơ này?'))send('ClearHistory')">Xóa lịch sử</button></div><div class="library-list" id="historyList"></div><p class="library-empty" id="historyNoResults" hidden>Không tìm thấy trang phù hợp.</p><div class="state-card history"><div><p class="eyebrow">Lịch sử</p><h2>Chưa có trang đã xem</h2><p>Các trang đã xem sẽ xuất hiện ở đây. Pip không lưu lịch sử trong cửa sổ ẩn danh.</p><button data-view="home">Về trang chủ</button></div><img id="historyMascot" loading="lazy" decoding="async" alt="Mascot Pip cầm tờ giấy"></div></section>
     </main>
   </div>
   <section class="private-home" aria-label="Trang chủ ẩn danh" {{PRIVATE_HIDDEN}}>
@@ -91,7 +91,11 @@
           const name=document.createElement('strong');name.textContent=page.title||page.url;
           const url=document.createElement('small');url.textContent=page.url;link.append(name,url);
           link.onclick=e=>{e.preventDefault();send('Navigate',{url:page.url});};row.append(link);
-          if(kind==='bookmarks'){const remove=document.createElement('button');remove.textContent='Xóa';remove.setAttribute('aria-label','Xóa dấu trang '+(page.title||page.url));remove.onclick=()=>send('RemoveBookmark',{url:page.url});row.append(remove);}
+          const remove=document.createElement('button');
+          remove.textContent='Xóa';
+          remove.setAttribute('aria-label',`${kind==='bookmarks'?'Xóa dấu trang':'Xóa khỏi lịch sử'} ${page.title||page.url}`);
+          remove.onclick=()=>send(kind==='bookmarks'?'RemoveBookmark':'RemoveHistory',{url:page.url});
+          row.append(remove);
           list.append(row);
         }
       }

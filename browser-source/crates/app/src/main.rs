@@ -1757,8 +1757,15 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 UiToHostMessage::RemoveBookmark { url } => {
                     self.edit_library(win_id, |library| library.bookmarks.retain(|p| p.url != url))
                 }
+                UiToHostMessage::RemoveHistory { url } => {
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        self.edit_library(win_id, |library| library.remove_history(&url));
+                    }
+                }
                 UiToHostMessage::ClearHistory => {
-                    self.edit_library(win_id, |library| library.history.clear())
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        self.edit_library(win_id, |library| library.history.clear());
+                    }
                 }
                 UiToHostMessage::OpenLibrary { view } => {
                     if matches!(view.as_str(), "bookmarks" | "history") {

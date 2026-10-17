@@ -62,6 +62,10 @@ impl Library {
             self.bookmarks.truncate(200);
         }
     }
+
+    pub fn remove_history(&mut self, url: &str) {
+        self.history.retain(|page| page.url != url);
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +91,12 @@ mod tests {
         assert_eq!(restored.bookmarks[0].title, "<untrusted>");
         restored.toggle_bookmark("https://example.com/", "Page");
         assert!(restored.bookmarks.is_empty());
+        restored.visit("https://example.com/history", "History", false);
+        restored.remove_history("https://example.com/history");
+        assert!(!restored
+            .history
+            .iter()
+            .any(|page| page.url == "https://example.com/history"));
         std::fs::remove_file(path).unwrap();
     }
 }

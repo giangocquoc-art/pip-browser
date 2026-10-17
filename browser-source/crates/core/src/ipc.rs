@@ -13,6 +13,9 @@ pub enum UiToHostMessage {
     RemoveBookmark {
         url: String,
     },
+    RemoveHistory {
+        url: String,
+    },
     ClearHistory,
     OpenLibrary {
         view: String,
