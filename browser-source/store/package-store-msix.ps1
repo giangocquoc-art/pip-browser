@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$PublisherDistinguishedName,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$PublisherDisplayName,
     [string]$BrowserExe,
-    [string]$Version
+    [string]$Version,
+    [switch]$AllowTestIdentity
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,14 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $out = Join-Path $PSScriptRoot 'out'
 $content = Join-Path $out 'package'
 $unpacked = Join-Path $out 'unpacked-check'
+$isTestIdentity = (
+    $IdentityName -eq 'PipTestPackage' -or
+    $PublisherDistinguishedName -eq 'CN=Pip Test Publisher' -or
+    $PublisherDisplayName -eq 'Pip Test Publisher'
+)
+if ($isTestIdentity -and -not $AllowTestIdentity) {
+    throw 'Refusing to package the placeholder test identity. Use -AllowTestIdentity only for CI or local preflight; never submit that package.'
+}
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $cargo = Get-Content (Join-Path $repo 'crates/app/Cargo.toml') -Raw
@@ -42,8 +51,6 @@ foreach ($path in @($content, $unpacked)) {
     if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
 New-Item -ItemType Directory -Path (Join-Path $content 'Assets') -Force | Out-Null
-$testWarning = Join-Path $out 'DO_NOT_SUBMIT.txt'
-if (Test-Path -LiteralPath $testWarning) { Remove-Item -LiteralPath $testWarning -Force }
 Copy-Item -LiteralPath $BrowserExe -Destination (Join-Path $content 'Pip.exe')
 
 Add-Type -AssemblyName System.Drawing
@@ -102,6 +109,20 @@ New-Item -ItemType Directory -Path $uploadStage | Out-Null
 Copy-Item -LiteralPath $packagePath -Destination $uploadStage
 [System.IO.Compression.ZipFile]::CreateFromDirectory($uploadStage, $uploadPath)
 Remove-Item -LiteralPath $uploadStage -Recurse -Force
+foreach ($artifact in @($packagePath, $uploadPath)) {
+    $warningPath = "$artifact.DO_NOT_SUBMIT.txt"
+    if ($isTestIdentity) {
+        @(
+            'DO NOT SUBMIT OR DISTRIBUTE THIS PACKAGE.',
+            'It uses placeholder identity values for packaging preflight only.',
+            "Identity Name: $IdentityName",
+            "Publisher: $PublisherDistinguishedName",
+            "Publisher Display Name: $PublisherDisplayName"
+        ) | Set-Content -LiteralPath $warningPath -Encoding utf8
+    } elseif (Test-Path -LiteralPath $warningPath) {
+        Remove-Item -LiteralPath $warningPath -Force
+    }
+}
 Write-Host "Store MSIX package created and payload hash verified: $packagePath" -ForegroundColor Green
 Write-Host "Partner Center upload package: $uploadPath" -ForegroundColor Green
 Write-Host 'The Microsoft Store signs the MSIX after certification. This package is not signed for sideloading.' -ForegroundColor Yellow

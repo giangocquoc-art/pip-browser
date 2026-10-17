@@ -57,12 +57,19 @@ jobs:
           ./store/package-store-msix.ps1 `
             -IdentityName 'PipTestPackage' `
             -PublisherDistinguishedName 'CN=Pip Test Publisher' `
-            -PublisherDisplayName 'Pip Test Publisher'
+            -PublisherDisplayName 'Pip Test Publisher' `
+            -AllowTestIdentity
           $manifest = Get-Content ./store/out/unpacked-check/AppxManifest.xml -Raw
           if ($manifest -notmatch 'Name="PipTestPackage"' -or
               $manifest -notmatch 'Publisher="CN=Pip Test Publisher"' -or
               $manifest -notmatch 'Executable="Pip.exe"') {
             throw 'The generated Store test package manifest does not contain the expected test identity and app entry point.'
+          }
+          $version = [regex]::Match((Get-Content ./crates/app/Cargo.toml -Raw), '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"').Groups[1].Value + '.0'
+          foreach ($artifact in @("./store/out/Pip_$($version)_x64.msix", "./store/out/Pip_$($version)_x64.msixupload")) {
+            if (-not (Test-Path -LiteralPath "$artifact.DO_NOT_SUBMIT.txt")) {
+              throw "The placeholder package was not marked as test-only: $artifact"
+            }
           }
 
       - name: Run tests
