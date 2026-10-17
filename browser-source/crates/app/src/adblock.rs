@@ -831,4 +831,3 @@ mod tests {
         assert!(b.cosmetic_script("https://news.example/").is_none());
     }
 }
-
