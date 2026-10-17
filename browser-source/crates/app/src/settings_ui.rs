@@ -636,7 +636,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google. Cần khởi động lại Pip để áp dụng. Có thể giúp với chặn DNS, không đảm bảo mở được mọi trang hoặc tăng tốc.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google. Cần khởi động lại Pip để áp dụng. Có thể giúp với chặn DNS, không đảm bảo mở được mọi trang hoặc tăng tốc.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra DNS</button></div>
     </div>
 
     <div class="section-title">Hồ sơ và riêng tư</div>

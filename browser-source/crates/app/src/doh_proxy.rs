@@ -82,6 +82,26 @@ impl DohProxy {
     }
 }
 
+pub fn test_google_doh() -> Result<(), String> {
+    let client = Client::builder()
+        .resolve_to_addrs(
+            "dns.google",
+            &[
+                "8.8.8.8:443".parse().expect("Google DNS bootstrap address"),
+                "8.8.4.4:443".parse().expect("Google DNS bootstrap address"),
+            ],
+        )
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let (addresses, _) = query_google_json(&client, "example.com", "A")?;
+    if addresses.is_empty() {
+        return Err("Google DNS returned no IPv4 addresses".to_string());
+    }
+    Ok(())
+}
+
 impl Drop for DohProxy {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);

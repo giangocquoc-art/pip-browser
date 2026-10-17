@@ -43,6 +43,7 @@ pub enum UiToHostMessage {
     SetGoogleDns {
         enabled: bool,
     },
+    TestGoogleDns,
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,

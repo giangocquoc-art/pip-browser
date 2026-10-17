@@ -114,6 +114,7 @@ pub(crate) enum BrowserEvent {
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
     BrowsingDataClearDone(WindowId, bool, bool),
+    GoogleDnsCheckDone(WindowId, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -1959,6 +1960,17 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.sync_google_dns();
                     }
                 }
+                UiToHostMessage::TestGoogleDns => {
+                    self.notify_settings(win_id, "Đang kiểm tra phản hồi Google DNS qua HTTPS...");
+                    let proxy = self.proxy.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("pip-google-dns-check".to_string())
+                        .spawn(move || {
+                            let result = doh_proxy::test_google_doh();
+                            let _ =
+                                proxy.send_event(BrowserEvent::GoogleDnsCheckDone(win_id, result));
+                        });
+                }
                 UiToHostMessage::DuplicateTab => {
                     let url = self
                         .windows
@@ -2485,6 +2497,16 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             "."
                         }
                     ),
+                );
+            }
+            BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
+                self.notify_settings(
+                    win_id,
+                    if result.is_ok() {
+                        "Google DNS đã phản hồi qua HTTPS. Website vẫn cần kết nối mạng bình thường."
+                    } else {
+                        "Chưa kết nối được Google DNS qua HTTPS. Kiểm tra mạng hoặc tường lửa; nếu đang bật G DNS, trang web có thể chưa tải được."
+                    },
                 );
             }
             BrowserEvent::DownloadRequested(win_id, id) => {
