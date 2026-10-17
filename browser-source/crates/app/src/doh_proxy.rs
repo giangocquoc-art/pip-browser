@@ -119,9 +119,18 @@ struct CachedAnswers {
 }
 
 fn handle_client(
-    mut client_stream: TcpStream,
+    client_stream: TcpStream,
     client: Client,
     cache: Arc<Mutex<HashMap<String, CachedAnswers>>>,
+) {
+    handle_client_with_resolver(client_stream, move |host| {
+        resolve_google_doh(host, &client, &cache).ok()
+    });
+}
+
+fn handle_client_with_resolver(
+    mut client_stream: TcpStream,
+    resolve: impl Fn(&str) -> Option<Vec<IpAddr>>,
 ) {
     let _ = client_stream.set_read_timeout(Some(Duration::from_secs(20)));
     let _ = client_stream.set_write_timeout(Some(Duration::from_secs(20)));
@@ -142,7 +151,7 @@ fn handle_client(
             respond_error(&mut client_stream, "400 Bad Request");
             return;
         };
-        let Some(upstream) = connect_to_host(&host, port, &client, &cache) else {
+        let Some(upstream) = connect_to_host(&host, port, &resolve) else {
             respond_error(&mut client_stream, "502 Bad Gateway");
             return;
         };
@@ -164,7 +173,7 @@ fn handle_client(
         respond_error(&mut client_stream, "400 Bad Request");
         return;
     };
-    let Some(mut upstream) = connect_to_host(&host, port, &client, &cache) else {
+    let Some(mut upstream) = connect_to_host(&host, port, &resolve) else {
         respond_error(&mut client_stream, "502 Bad Gateway");
         return;
     };
@@ -342,13 +351,12 @@ fn parse_http_target(target: &str, request: &str) -> Option<(String, u16, String
 fn connect_to_host(
     host: &str,
     port: u16,
-    client: &Client,
-    cache: &Arc<Mutex<HashMap<String, CachedAnswers>>>,
+    resolve: &impl Fn(&str) -> Option<Vec<IpAddr>>,
 ) -> Option<TcpStream> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(4)).ok();
     }
-    let addresses = resolve_google_doh(host, client, cache).ok()?;
+    let addresses = resolve(host)?;
     addresses.into_iter().find_map(|ip| {
         TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(3)).ok()
     })
@@ -604,6 +612,52 @@ mod tests {
         let mut answer = [0; 4];
         client.read_exact(&mut answer).unwrap();
         assert_eq!(&answer, b"pong");
+        origin_thread.join().unwrap();
+    }
+
+    #[test]
+    fn local_proxy_resolves_connect_hostname_before_tunneling() {
+        let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        let origin_thread = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let mut input = [0; 4];
+            stream.read_exact(&mut input).unwrap();
+            assert_eq!(&input, b"ping");
+            stream.write_all(b"pong").unwrap();
+        });
+
+        let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let proxy_thread = thread::spawn(move || {
+            let (stream, _) = proxy.accept().unwrap();
+            handle_client_with_resolver(stream, |host| {
+                assert_eq!(host, "dns.fixture.test");
+                Some(vec!["127.0.0.1".parse().unwrap()])
+            });
+        });
+
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+        write!(
+            client,
+            "CONNECT dns.fixture.test:{origin_port} HTTP/1.1\r\nHost: dns.fixture.test:{origin_port}\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        let mut byte = [0; 1];
+        while !response.ends_with(b"\r\n\r\n") {
+            client.read_exact(&mut byte).unwrap();
+            response.push(byte[0]);
+        }
+        assert!(String::from_utf8(response)
+            .unwrap()
+            .starts_with("HTTP/1.1 200"));
+        client.write_all(b"ping").unwrap();
+        let mut answer = [0; 4];
+        client.read_exact(&mut answer).unwrap();
+        assert_eq!(&answer, b"pong");
+        drop(client);
+        proxy_thread.join().unwrap();
         origin_thread.join().unwrap();
     }
 
