@@ -103,6 +103,10 @@ fn looks_like_gambling_host(host: &str) -> bool {
         "lottery",
         "lotto",
         "keno",
+        "nhacai",
+        "nohu",
+        "gamebai",
+        "cacuoc",
     ];
     host.split('.')
         .flat_map(|label| label.split(|ch: char| !ch.is_ascii_alphanumeric()))
@@ -113,9 +117,28 @@ fn looks_like_gambling_host(host: &str) -> bool {
                     || part.strip_prefix(term).is_some_and(|suffix| {
                         !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
                     })
+                    // Gambling brands commonly put the stake/bonus number before
+                    // "bet" (for example, 789bet). Check this only in popup
+                    // destinations so ordinary sites and typed URLs keep working.
+                    || (part.ends_with(term)
+                        && part.len() > term.len()
+                        && part[..part.len() - term.len()]
+                            .chars()
+                            .all(|ch| ch.is_ascii_digit()))
             }) || (part.starts_with("bet")
                 && part.len() > 3
                 && part[3..].chars().all(|ch| ch.is_ascii_digit()))
+                || (part.ends_with("bet")
+                    && part.len() > 3
+                    && part[..part.len() - 3]
+                        .chars()
+                        .all(|ch| ch.is_ascii_digit()))
+                // Rotating Vietnamese casino domains often use "vip" followed
+                // by a changing number, with no casino keyword in the hostname.
+                || part.find("vip").is_some_and(|index| {
+                    let suffix = &part[index + 3..];
+                    !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+                })
         })
 }
 
@@ -282,6 +305,11 @@ impl Blocker {
         }) {
             return true;
         }
+        // Some campaign URLs land on a generic/rotating host but expose the
+        // gambling destination in their path or query string.
+        if looks_like_gambling_popup_url(url) {
+            return true;
+        }
         // This engine is consulted only for NewWindowRequested destinations.
         // Use `other` so generic network rules apply; adblock-rust separates
         // document navigations from ordinary filterable resources.
@@ -341,6 +369,48 @@ impl Blocker {
         script.push_str("}})();");
         script
     }
+}
+
+fn looks_like_gambling_popup_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<wry::http::Uri>() else {
+        return false;
+    };
+    let path_and_query = uri.path_and_query().map_or("", |value| value.as_str());
+    let normalized_path = path_and_query.to_ascii_lowercase();
+    let tokens = normalized_path
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty());
+    tokens.into_iter().any(|token| {
+        [
+            "casino",
+            "gambling",
+            "poker",
+            "slot",
+            "slots",
+            "togel",
+            "judi",
+            "taruhan",
+            "baccarat",
+            "jackpot",
+            "sportsbook",
+            "bookmaker",
+            "betting",
+            "taixiu",
+            "xocdia",
+            "xoso",
+            "blackjack",
+            "roulette",
+            "lottery",
+            "lotto",
+            "keno",
+            "nhacai",
+            "nohu",
+            "gamebai",
+            "cacuoc",
+        ]
+        .iter()
+        .any(|term| token == *term || token.starts_with(term) || token.ends_with(term))
+    })
 }
 
 // Reuse WebView2's message-pumping completion helper, as Wry does for its
@@ -697,8 +767,22 @@ mod tests {
         ));
         assert!(blocker.should_block_popup("https://bet365.example/offer", source, true));
         assert!(blocker.should_block_popup("https://slots.example/", source, true));
+        assert!(blocker.should_block_popup("https://789bet.example/", source, true));
+        assert!(blocker.should_block_popup("https://ad88vip6.example/", source, true));
+        assert!(blocker.should_block_popup(
+            "https://rotating-cdn.example/casino/register?id=940814853",
+            source,
+            true
+        ));
         assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
         assert!(!looks_like_gambling_host("sports"));
+        assert!(!blocker.should_block(
+            "https://789bet.example/",
+            "https://789bet.example/",
+            "https://789bet.example/",
+            "document",
+            "GET"
+        ));
         assert!(!blocker.should_block(
             "https://bonus-casino88.example/register",
             source,
