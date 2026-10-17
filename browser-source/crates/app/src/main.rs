@@ -580,6 +580,45 @@ fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::P
     }
 }
 
+fn choose_bookmarks_import_file(window: &Window) -> Option<std::path::PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let owner = window
+        .window_handle()
+        .ok()
+        .and_then(|handle| match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => {
+                Some(windows::Win32::Foundation::HWND(handle.hwnd.get() as _))
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM)
+            .ok()?;
+        let title: Vec<u16> = "Nhập dấu trang HTML"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        dialog.SetTitle(PCWSTR(title.as_ptr())).ok()?;
+        dialog.Show(Some(owner)).ok()?;
+        let path = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
+        Some(webview2_com::take_pwstr(path).into())
+    }
+}
+
 struct BrowserApp {
     background_check: bool,
     internal_ipc_token: String,
@@ -1477,6 +1516,104 @@ impl BrowserApp {
         }
     }
 
+    fn sync_library_profile(&self, profile_id: &str) {
+        let windows = self
+            .windows
+            .values()
+            .filter(|win| win.profile_id == profile_id)
+            .map(|win| win.id)
+            .collect::<Vec<_>>();
+        for win_id in windows {
+            self.sync_library(win_id);
+        }
+    }
+
+    fn notify_library(&self, win_id: WindowId, message: &str) {
+        if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+            win.tab_manager
+                .active_tab_id()
+                .and_then(|id| win.tab_manager.get_tab_by_id(id))
+                .filter(|tab| tab.url.starts_with("evergreen://newtab"))
+                .and_then(|tab| win.tabs.get(&tab.id))
+        }) {
+            let message = serde_json::to_string(message).unwrap();
+            let _ = view.evaluate_script(&format!(
+                "if(window.__showLibraryStatus)window.__showLibraryStatus({message});"
+            ));
+        }
+    }
+
+    fn import_bookmarks(&mut self, win_id: WindowId) {
+        let Some(file) = self
+            .windows
+            .get(&win_id)
+            .and_then(|win| choose_bookmarks_import_file(&win.window))
+        else {
+            return;
+        };
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let Some(profile_id) = self.windows.get(&win_id).map(|win| win.profile_id.clone()) else {
+            return;
+        };
+        let result = (|| -> Result<usize, String> {
+            let file_size = std::fs::metadata(&file)
+                .map_err(|error| format!("Không đọc được thông tin tệp dấu trang: {error}"))?
+                .len();
+            if file_size > 8 * 1024 * 1024 {
+                return Err("Tệp dấu trang vượt quá giới hạn 8 MiB.".to_string());
+            }
+            let html = std::fs::read_to_string(file)
+                .map_err(|error| format!("Không đọc được tệp dấu trang: {error}"))?;
+            let mut library = evergreen_core::library::Library::load(&path)
+                .map_err(|error| format!("Không đọc được hồ sơ dấu trang: {error}"))?;
+            let imported = library
+                .import_netscape_bookmarks(&html)
+                .map_err(|error| error.to_string())?;
+            library
+                .save(&path)
+                .map_err(|error| format!("Không lưu được dấu trang: {error}"))?;
+            Ok(imported)
+        })();
+        match result {
+            Ok(imported) => {
+                self.sync_library_profile(&profile_id);
+                let message = if imported == 0 {
+                    "Không có dấu trang mới để nhập. Mục trùng được bỏ qua; hồ sơ đã đủ 200 mục cũng không nhận thêm.".to_string()
+                } else {
+                    format!("Đã nhập {imported} dấu trang vào hồ sơ hiện tại.")
+                };
+                self.notify_library(win_id, &message);
+            }
+            Err(error) => self.notify_library(win_id, &error),
+        }
+    }
+
+    fn export_bookmarks(&mut self, win_id: WindowId) {
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let Some(library) = evergreen_core::library::Library::load(&path).ok() else {
+            self.notify_library(win_id, "Không đọc được dấu trang của hồ sơ hiện tại.");
+            return;
+        };
+        let Some(destination) =
+            accelerator::show_save_file_dialog("Pip Bookmarks.html", "Xuất dấu trang Pip")
+        else {
+            return;
+        };
+        match std::fs::write(destination, library.export_netscape_bookmarks()) {
+            Ok(()) => self.notify_library(
+                win_id,
+                "Đã xuất dấu trang theo định dạng HTML của trình duyệt.",
+            ),
+            Err(error) => {
+                self.notify_library(win_id, &format!("Không lưu được tệp dấu trang: {error}"))
+            }
+        }
+    }
+
     fn handle_open_settings(&mut self, win_id: WindowId) {
         if let Some(win_ctx) = self.windows.get_mut(&win_id) {
             win_ctx.close_sidebar();
@@ -1762,6 +1899,8 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.edit_library(win_id, |library| library.remove_history(&url));
                     }
                 }
+                UiToHostMessage::ImportBookmarks => self.import_bookmarks(win_id),
+                UiToHostMessage::ExportBookmarks => self.export_bookmarks(win_id),
                 UiToHostMessage::ClearHistory => {
                     if self.windows.get(&win_id).is_some_and(|win| !win.private) {
                         self.edit_library(win_id, |library| library.history.clear());

@@ -16,6 +16,8 @@ pub enum UiToHostMessage {
     RemoveHistory {
         url: String,
     },
+    ImportBookmarks,
+    ExportBookmarks,
     ClearHistory,
     OpenLibrary {
         view: String,

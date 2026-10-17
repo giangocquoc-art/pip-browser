@@ -93,7 +93,7 @@ pub fn start(
             .and_then(|s| s.to_str())
             .unwrap_or("download");
         let chosen = if settings.downloads.ask_where_to_save {
-            crate::accelerator::show_save_file_dialog(filename)
+            crate::accelerator::show_save_file_dialog(filename, "Lưu tệp tải xuống")
         } else {
             // Preserve existing files: choose a free destination instead of overwriting.
             let folder = &settings.downloads.default_folder;
