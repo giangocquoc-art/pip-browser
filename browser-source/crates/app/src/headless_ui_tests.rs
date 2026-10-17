@@ -59,7 +59,7 @@ impl Check {
             0=>self.query(id,true,"(()=>{const okay=document.querySelector('.tab-strip').offsetHeight===40&&document.querySelector('.nav-bar').offsetHeight===48&&document.querySelectorAll('.window-controls .window-control').length===3;const button=document.getElementById('profileButton');button.click();const menu=document.getElementById('profilePopover');const menuOkay=!menu.hidden&&document.querySelectorAll('#profileList .profile-choice').length===1&&document.getElementById('profileCurrentName').textContent==='Cá nhân';showProfileCreate();document.getElementById('profileCreateName').value='Kiểm thử';document.getElementById('profileCreateForm').requestSubmit();document.getElementById('googleDnsButton').click();return okay&&menuOkay&&menu.hidden})()"),
             1=>{
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
-                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('Mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
+                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
             }
             2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton');if(!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData'))return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
             3=>{

@@ -636,7 +636,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google. Cần khởi động lại Pip để áp dụng. Có thể giúp với chặn DNS, không đảm bảo mở được mọi trang hoặc tăng tốc.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra DNS</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google trong Pip. Cần khởi động lại Pip để áp dụng; không đổi DNS Windows hay ẩn địa chỉ IP.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra đường DNS</button></div>
     </div>
 
     <div class="section-title">Hồ sơ và riêng tư</div>
@@ -704,12 +704,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     window.__renderGoogleDns = (enabled, active=enabled, failed=false) => {
       document.getElementById('googleDnsToggle').checked=enabled;
       document.getElementById('googleDnsHint').textContent=failed&&enabled&&!active
-        ? 'Pip không khởi động được kết nối DNS riêng; hiện đang dùng DNS Windows. Kiểm tra kết nối mạng rồi mở lại Pip.'
+        ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối mạng rồi mở lại Pip.'
         : enabled!==active
-          ? 'Đã lưu lựa chọn. Mở lại Pip để áp dụng. Khi bật, chỉ kết nối web trong Pip mới tra cứu qua Google DNS.'
+          ? 'Đã lưu lựa chọn. Đóng rồi mở lại Pip để áp dụng. Kiểm tra đường DNS sẽ thử tải Google qua đúng tuyến đang dùng.'
           : active
-            ? 'Đã bật: Pip gửi tra cứu tên miền qua HTTPS tới Google DNS. Mạng cần cho phép kết nối tới dns.google; DNS Windows không bị đổi và địa chỉ IP không được ẩn.'
-            : 'Đang dùng DNS do Windows cung cấp. Bật Google DNS để Pip tra cứu tên miền riêng qua HTTPS.';
+            ? 'Đã cấu hình tuyến DNS Google cho Pip trong phiên này. Nhấn “Kiểm tra đường DNS” để xác nhận có thể tải trang qua tuyến đó. DNS Windows không đổi và địa chỉ IP không được ẩn.'
+            : 'Đang dùng DNS Windows. Bật Google DNS rồi mở lại Pip để chuyển kết nối web của Pip qua tuyến HTTPS.';
     };
     window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}});
 

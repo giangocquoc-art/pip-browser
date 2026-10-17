@@ -103,6 +103,31 @@ pub fn test_google_doh() -> Result<(), String> {
     Ok(())
 }
 
+/// Exercise the same local HTTP CONNECT proxy used by Pip's WebViews. A direct
+/// DoH request only proves Google's resolver is reachable; this also proves
+/// Pip can resolve a real destination through that resolver and reach it.
+pub fn test_google_doh_through_proxy(port: u16) -> Result<(), String> {
+    let proxy = reqwest::Proxy::http(format!("http://127.0.0.1:{port}"))
+        .map_err(|error| format!("cannot configure Pip DNS proxy test: {error}"))?;
+    let client = Client::builder()
+        .proxy(proxy)
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("cannot create Pip DNS proxy test client: {error}"))?;
+    let response = client
+        .get("https://www.google.com/generate_204")
+        .send()
+        .map_err(|error| format!("Pip DNS proxy could not reach Google: {error}"))?;
+    if response.status().as_u16() != 204 {
+        return Err(format!(
+            "Google DNS proxy test expected HTTP 204, received {}",
+            response.status()
+        ));
+    }
+    Ok(())
+}
+
 impl Drop for DohProxy {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
@@ -579,6 +604,13 @@ mod tests {
         )
         .unwrap();
         assert!(!addresses.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires outbound HTTPS through the local proxy to Google"]
+    fn google_doh_proxy_reaches_google_using_its_own_resolution_route() {
+        let proxy = DohProxy::start().expect("start local DoH proxy");
+        test_google_doh_through_proxy(proxy.port()).expect("fetch Google through proxy");
     }
 
     #[test]

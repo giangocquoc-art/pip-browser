@@ -1444,8 +1444,8 @@
       button.setAttribute('aria-pressed', String(enabled));
       button.dataset.pending = String(enabled !== active);
       button.title = enabled !== active
-        ? 'Google DNS: đã chọn ' + (enabled ? 'bật' : 'tắt') + '. Mở lại Pip để áp dụng.'
-        : 'Google DNS: ' + (active ? 'đang bật' : 'đang tắt') + '. Tra cứu tên miền qua HTTPS tới Google; cần mở lại Pip sau khi đổi.';
+        ? 'Google DNS: đã lưu lựa chọn bật/tắt. Đóng rồi mở lại Pip để áp dụng.'
+        : 'Google DNS: ' + (active ? 'đã cấu hình cho phiên Pip này' : 'đang tắt') + '. Vào Cài đặt > Kết nối để kiểm tra tuyến DNS.';
       button.setAttribute('aria-label', button.title);
     };
 

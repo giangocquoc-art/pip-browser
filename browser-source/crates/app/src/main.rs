@@ -114,7 +114,7 @@ pub(crate) enum BrowserEvent {
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
-    GoogleDnsCheckDone(WindowId, Result<(), String>),
+    GoogleDnsCheckDone(WindowId, bool, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -562,8 +562,11 @@ fn get_settings_path() -> std::path::PathBuf {
 }
 
 fn dns_proxy_browser_args(port: Option<u16>) -> String {
-    port.map(|port| format!("--proxy-server=http://127.0.0.1:{port}"))
-        .unwrap_or_default()
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    if let Some(port) = port {
+        args.push_str(&format!(" --proxy-server=http://127.0.0.1:{port}"));
+    }
+    args
 }
 
 fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
@@ -2133,14 +2136,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::TestGoogleDns => {
-                    self.notify_settings(win_id, "Đang kiểm tra phản hồi Google DNS qua HTTPS...");
+                    let proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    self.notify_settings(
+                        win_id,
+                        if proxy_port.is_some() {
+                            "Đang thử tải Google qua đúng tuyến DNS mà các tab Pip sử dụng..."
+                        } else {
+                            "Đang kiểm tra Google DNS. Pip hiện chưa áp dụng tuyến DNS riêng; nếu vừa bật, hãy mở lại Pip rồi kiểm tra lại."
+                        },
+                    );
                     let proxy = self.proxy.clone();
                     let _ = std::thread::Builder::new()
                         .name("pip-google-dns-check".to_string())
                         .spawn(move || {
-                            let result = doh_proxy::test_google_doh();
-                            let _ =
-                                proxy.send_event(BrowserEvent::GoogleDnsCheckDone(win_id, result));
+                            let result = match proxy_port {
+                                Some(port) => doh_proxy::test_google_doh_through_proxy(port),
+                                None => doh_proxy::test_google_doh(),
+                            };
+                            let _ = proxy.send_event(BrowserEvent::GoogleDnsCheckDone(
+                                win_id,
+                                proxy_port.is_some(),
+                                result,
+                            ));
                         });
                 }
                 UiToHostMessage::DuplicateTab => {
@@ -2670,15 +2687,26 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 };
                 self.notify_settings(win_id, message);
             }
-            BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
-                self.notify_settings(
-                    win_id,
-                    if result.is_ok() {
-                        "Google DNS đã phản hồi qua HTTPS. Website vẫn cần kết nối mạng bình thường."
-                    } else {
-                        "Chưa kết nối được Google DNS qua HTTPS. Kiểm tra mạng hoặc tường lửa; nếu đang bật G DNS, trang web có thể chưa tải được."
-                    },
-                );
+            BrowserEvent::GoogleDnsCheckDone(win_id, route_active, result) => {
+                let message = match (route_active, result) {
+                    (true, Ok(())) => {
+                        "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".to_string()
+                    }
+                    (true, Err(error)) => {
+                        eprintln!("Pip Google DNS route test failed: {error}");
+                        let reason: String = error.chars().take(120).collect();
+                        format!("Tuyến DNS của Pip chưa tải được Google. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
+                    }
+                    (false, Ok(())) => {
+                        "Google DNS có phản hồi, nhưng Pip hiện chưa dùng tuyến DNS riêng. Nếu vừa bật G DNS, hãy mở lại Pip rồi kiểm tra lại.".to_string()
+                    }
+                    (false, Err(error)) => {
+                        eprintln!("Google DNS service check failed: {error}");
+                        let reason: String = error.chars().take(120).collect();
+                        format!("Không thể kết nối tới Google DNS qua HTTPS. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
+                    }
+                };
+                self.notify_settings(win_id, &message);
             }
             BrowserEvent::DownloadRequested(win_id, id) => {
                 downloads::start(win_id, id, self.proxy.clone(), &self.settings);
@@ -3449,6 +3477,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod google_dns_preferences_tests {
     use super::*;
+
+    #[test]
+    fn dns_proxy_browser_args_preserve_wry_defaults_and_only_proxy_when_enabled() {
+        let defaults = dns_proxy_browser_args(None);
+        assert!(defaults.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+        assert!(!defaults.contains("--proxy-server="));
+
+        let enabled = dns_proxy_browser_args(Some(43210));
+        assert!(enabled.contains("--proxy-server=http://127.0.0.1:43210"));
+        assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    }
 
     #[test]
     fn favicons_keep_the_sites_protocol_port_and_host() {
