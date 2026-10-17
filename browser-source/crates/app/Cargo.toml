@@ -15,6 +15,7 @@ adblock = { version = "0.13.3", default-features = false, features = ["embedded-
 
 [target."cfg(windows)".dependencies]
 webview2-com = "0.39"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

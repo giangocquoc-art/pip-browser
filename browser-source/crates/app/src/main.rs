@@ -5,6 +5,8 @@ mod accelerator;
 mod adblock;
 mod cert;
 mod chrome;
+#[cfg(target_os = "windows")]
+mod doh_proxy;
 mod downloads;
 mod error_ui;
 #[cfg(any(test, debug_assertions))]
@@ -141,6 +143,7 @@ struct WindowContext {
     downloads: HashMap<u64, serde_json::Value>,
     proxy: EventLoopProxy<BrowserEvent>,
     profile_id: String,
+    dns_proxy_port: Option<u16>,
     private: bool,
     id: WindowId,
     window: Arc<Window>,
@@ -379,9 +382,10 @@ impl WindowContext {
             );
             let proxy_ipc = proxy.clone();
             let win_id = self.id;
-            let wv = WebViewBuilder::new()
-                .with_additional_browser_args("")
-                .with_bounds(sidebar_bounds)
+            let builder = WebViewBuilder::new()
+                .with_additional_browser_args(dns_proxy_browser_args(self.dns_proxy_port))
+                .with_bounds(sidebar_bounds);
+            let wv = builder
                 .with_html(sidebar_ui::SIDEBAR_HTML.as_str())
                 .with_navigation_handler(|url| {
                     url == "about:blank" || url.starts_with("data:text/html")
@@ -549,6 +553,11 @@ fn get_settings_path() -> std::path::PathBuf {
     get_data_directory().join("settings.json")
 }
 
+fn dns_proxy_browser_args(port: Option<u16>) -> String {
+    port.map(|port| format!("--proxy-server=http://127.0.0.1:{port}"))
+        .unwrap_or_default()
+}
+
 fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
@@ -570,54 +579,6 @@ fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::P
     }
 }
 
-// Chromium's resolver reads application-wide Local State, not profile Preferences.
-// Write before creating any WebView2 environment; changing it requires a restart.
-fn apply_google_dns_preferences(enabled: bool) -> bool {
-    let result = apply_google_dns_preferences_in(
-        &get_data_directory().join("webview2_data").join("EBWebView"),
-        enabled,
-    );
-    if let Err(error) = &result {
-        eprintln!("Pip Google DNS: {error}");
-    }
-    result.is_ok()
-}
-fn apply_google_dns_preferences_in(
-    base: &std::path::Path,
-    enabled: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let path = base.join("Local State");
-    if !enabled && !path.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(base)?;
-    let mut prefs: serde_json::Value = if path.exists() {
-        serde_json::from_slice(&std::fs::read(&path)?)?
-    } else {
-        serde_json::json!({})
-    };
-    let root = prefs
-        .as_object_mut()
-        .ok_or("invalid WebView2 Local State")?;
-    let doh = root
-        .entry("dns_over_https")
-        .or_insert_with(|| serde_json::json!({}));
-    if !doh.is_object() {
-        *doh = serde_json::json!({});
-    }
-    doh["mode"] = serde_json::json!(if enabled { "secure" } else { "off" });
-    doh["templates"] = serde_json::json!(if enabled {
-        "https://dns.google/dns-query{?dns}"
-    } else {
-        ""
-    });
-    // Preserve the previous file on a failed write. Same-volume replacement is atomic.
-    let staging = base.join("Local State.pip-tmp");
-    std::fs::write(&staging, serde_json::to_vec(&prefs)?)?;
-    std::fs::rename(staging, path)?;
-    Ok(())
-}
-
 struct BrowserApp {
     background_check: bool,
     internal_ipc_token: String,
@@ -629,6 +590,8 @@ struct BrowserApp {
     modifiers: ModifiersState,
     settings: evergreen_core::settings::Settings,
     active_google_dns: bool,
+    google_dns_start_failed: bool,
+    doh_proxy: Option<doh_proxy::DohProxy>,
     next_tab_id: AtomicU64,
     allowed_cert_hosts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -784,10 +747,11 @@ impl BrowserApp {
     fn sync_google_dns(&self) {
         let enabled = self.settings.google_dns;
         let active = self.active_google_dns;
+        let failed = self.google_dns_start_failed;
         for win in self.windows.values() {
             if let Some(chrome) = &win.chrome_webview {
                 let _ = chrome.evaluate_script(&format!(
-                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active});"
+                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
                 ));
             }
             for (id, view) in &win.tabs {
@@ -797,7 +761,7 @@ impl BrowserApp {
                     .is_some_and(|tab| tab.url == "evergreen://settings")
                 {
                     let _ = view.evaluate_script(&format!(
-                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active});"
+                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
                     ));
                 }
             }
@@ -881,7 +845,18 @@ impl BrowserApp {
                 .profiles
                 .extend(evergreen_core::settings::default_profiles());
         }
-        let dns_configured = apply_google_dns_preferences(settings.google_dns);
+        let doh_proxy = if settings.google_dns {
+            match doh_proxy::DohProxy::start() {
+                Ok(proxy) => Some(proxy),
+                Err(error) => {
+                    eprintln!("Pip Google DNS proxy failed to start: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let google_dns_start_failed = settings.google_dns && doh_proxy.is_none();
         Self {
             windows: HashMap::new(),
             internal_ipc_token: format!("{:?}", unsafe {
@@ -896,7 +871,9 @@ impl BrowserApp {
             modifiers: ModifiersState::default(),
             background_check: std::env::args().any(|a| a == "--background-check")
                 && std::env::args().any(|a| a == "--portable"),
-            active_google_dns: settings.google_dns && dns_configured,
+            active_google_dns: doh_proxy.is_some(),
+            google_dns_start_failed,
+            doh_proxy,
             settings,
             next_tab_id: AtomicU64::new(1),
             allowed_cert_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
@@ -1031,6 +1008,7 @@ impl BrowserApp {
             proxy: self.proxy.clone(),
             profile_id: profile_id.clone(),
             private,
+            dns_proxy_port: self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port),
             id: win_id,
             window: window.clone(),
             tab_manager: TabManager::new(),
@@ -1062,9 +1040,10 @@ impl BrowserApp {
             )
             .replace("{{PRIVATE_LABEL}}", if private { " · Ẩn danh" } else { "" });
 
-        match WebViewBuilder::new()
-            .with_additional_browser_args("")
-            .with_bounds(chrome_bounds)
+        let chrome_builder = WebViewBuilder::new()
+            .with_additional_browser_args(dns_proxy_browser_args(win_ctx.dns_proxy_port))
+            .with_bounds(chrome_bounds);
+        match chrome_builder
             .with_html(&chrome_html)
             .with_navigation_handler(|url| {
                 url == "about:blank" || url.starts_with("data:text/html")
@@ -1159,9 +1138,11 @@ impl BrowserApp {
         let context = self.windows.get(&win_id).expect("tab window exists");
         let is_persistent = !context.private;
         let profile_id = context.profile_id.clone();
+        let google_dns_active = self.active_google_dns;
+        let google_dns_failed = self.google_dns_start_failed;
 
         let mut builder = WebViewBuilder::new()
-            .with_additional_browser_args("")
+            .with_additional_browser_args(dns_proxy_browser_args(context.dns_proxy_port))
             .with_bounds(bounds)
             .with_incognito(!is_persistent)
             .with_profile_name(&profile_id)
@@ -1169,7 +1150,6 @@ impl BrowserApp {
             .with_background_color((24, 24, 32, 255))
             .with_initialization_script(&init_script)
             .with_devtools(true);
-
         let search_name = self.settings.search_engine_display_name().to_string();
         let ipc_token = self.internal_ipc_token.clone();
         let settings_clone = self.settings.clone();
@@ -1207,12 +1187,17 @@ impl BrowserApp {
                 let active_ver = evergreen_core::env::detect_webview2_runtime()
                     .unwrap_or_else(|| fallback_runtime_ver.clone());
                 let dynamic_settings_html = chrome::protect_internal_html(
-                    settings_ui::get_settings_html(&active_ver, &settings_clone)
-                        .replace("{{CURRENT_PROFILE}}", &protocol_profile)
-                        .replace(
-                            "{{CURRENT_PRIVATE}}",
-                            if is_persistent { "false" } else { "true" },
-                        ),
+                    settings_ui::get_settings_html(
+                        &active_ver,
+                        &settings_clone,
+                        google_dns_active,
+                        google_dns_failed,
+                    )
+                    .replace("{{CURRENT_PROFILE}}", &protocol_profile)
+                    .replace(
+                        "{{CURRENT_PRIVATE}}",
+                        if is_persistent { "false" } else { "true" },
+                    ),
                     &protocol_token,
                 );
                 wry::http::Response::builder()
@@ -1262,12 +1247,17 @@ impl BrowserApp {
             let active_ver = evergreen_core::env::detect_webview2_runtime()
                 .unwrap_or_else(|| runtime_ver.clone());
             builder = builder.with_html(chrome::protect_internal_html(
-                settings_ui::get_settings_html(&active_ver, &self.settings)
-                    .replace("{{CURRENT_PROFILE}}", &profile_id)
-                    .replace(
-                        "{{CURRENT_PRIVATE}}",
-                        if is_persistent { "false" } else { "true" },
-                    ),
+                settings_ui::get_settings_html(
+                    &active_ver,
+                    &self.settings,
+                    google_dns_active,
+                    google_dns_failed,
+                )
+                .replace("{{CURRENT_PROFILE}}", &profile_id)
+                .replace(
+                    "{{CURRENT_PRIVATE}}",
+                    if is_persistent { "false" } else { "true" },
+                ),
                 &ipc_token,
             ));
         } else if is_not_found {
@@ -3284,36 +3274,5 @@ mod google_dns_preferences_tests {
         assert_eq!(extract_host("http://[::1]:8000/"), Some("[::1]".into()));
         assert!(favicon_url("evergreen://newtab").is_none());
         assert!(extract_host("javascript:alert(1)").is_none());
-    }
-
-    #[test]
-    fn toggles_google_dns_without_overwriting_other_profile_preferences() {
-        let base = std::env::temp_dir().join(format!("pip-doh-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let path = base.join("Local State");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            br#"{"profile":{"name":"Keep me"},"dns_over_https":{"mode":"off"}}"#,
-        )
-        .unwrap();
-
-        apply_google_dns_preferences_in(&base, true).unwrap();
-        let enabled: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(enabled["profile"]["name"], "Keep me");
-        assert_eq!(enabled["dns_over_https"]["mode"], "secure");
-        assert_eq!(
-            enabled["dns_over_https"]["templates"],
-            "https://dns.google/dns-query{?dns}"
-        );
-
-        apply_google_dns_preferences_in(&base, false).unwrap();
-        let disabled: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(disabled["dns_over_https"]["mode"], "off");
-        assert_eq!(disabled["dns_over_https"]["templates"], "");
-        assert_eq!(disabled["profile"]["name"], "Keep me");
-        std::fs::remove_dir_all(base).unwrap();
     }
 }

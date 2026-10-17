@@ -700,13 +700,17 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       document.getElementById('clearCacheButton').disabled=isPrivateProfile;
     };
     window.__renderProfiles({{PROFILES_JSON}});
-    window.__renderGoogleDns = (enabled, active=enabled) => {
+    window.__renderGoogleDns = (enabled, active=enabled, failed=false) => {
       document.getElementById('googleDnsToggle').checked=enabled;
-      document.getElementById('googleDnsHint').textContent=enabled!==active
-        ? 'Đã lưu lựa chọn. Mở lại Pip để áp dụng cho kết nối mới. Google DNS tra cứu tên miền qua HTTPS; không ẩn IP như VPN.'
-        : 'Tra cứu tên miền qua HTTPS tới Google. Mở lại Pip sau khi đổi; DNS không ẩn IP như VPN và không bảo đảm mở được mọi trang.';
+      document.getElementById('googleDnsHint').textContent=failed&&enabled&&!active
+        ? 'Pip không khởi động được kết nối DNS riêng; hiện đang dùng DNS Windows. Kiểm tra kết nối mạng rồi mở lại Pip.'
+        : enabled!==active
+          ? 'Đã lưu lựa chọn. Mở lại Pip để áp dụng. Khi bật, chỉ kết nối web trong Pip mới tra cứu qua Google DNS.'
+          : active
+            ? 'Đã bật: Pip gửi tra cứu tên miền qua HTTPS tới Google DNS. Mạng cần cho phép kết nối tới dns.google; DNS Windows không bị đổi và địa chỉ IP không được ẩn.'
+            : 'Đang dùng DNS do Windows cung cấp. Bật Google DNS để Pip tra cứu tên miền riêng qua HTTPS.';
     };
-    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}});
+    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}});
 
     function sendAction(action) {
       if (window.ipc) {
@@ -808,7 +812,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
 use evergreen_core::settings::Settings;
 
-pub fn get_settings_html(runtime_ver: &str, settings: &Settings) -> String {
+pub fn get_settings_html(
+    runtime_ver: &str,
+    settings: &Settings,
+    google_dns_active: bool,
+    google_dns_failed: bool,
+) -> String {
     let download_dir_str = settings.downloads.default_folder.to_string_lossy();
     let mut html = SETTINGS_TEMPLATE
         .replace("{{LOGO_BASE64}}", LOGO_BASE64.trim())
@@ -824,6 +833,14 @@ pub fn get_settings_html(runtime_ver: &str, settings: &Settings) -> String {
         .replace(
             "{{GOOGLE_DNS_ENABLED}}",
             if settings.google_dns { "true" } else { "false" },
+        )
+        .replace(
+            "{{GOOGLE_DNS_ACTIVE}}",
+            if google_dns_active { "true" } else { "false" },
+        )
+        .replace(
+            "{{GOOGLE_DNS_FAILED}}",
+            if google_dns_failed { "true" } else { "false" },
         );
 
     let engine = settings.search_engine.to_lowercase();

@@ -6,7 +6,7 @@ Chạy bộ cài `PipSetup.exe` bằng tài khoản thường. Bộ cài tạo l
 
 - Trang tab mới dùng mascot làm nền, có ô tìm kiếm lớn ở giữa và mục **Lần đầu dùng Pip?**. Trong Cài đặt có hướng dẫn về chức năng, phím tắt, RAM và dữ liệu.
 - **Cài đặt → Bộ nhớ và dữ liệu → Xóa bộ nhớ đệm** dọn cache đĩa của hồ sơ hiện tại, giữ đăng nhập, lịch sử, dấu trang và tệp tải xuống.
-- Nút **G DNS** trên thanh công cụ đổi Google DNS bảo mật. Viền nét đứt báo lựa chọn cần mở lại Pip để áp dụng. DNS không thay thế VPN hoặc mở được mọi loại chặn mạng.
+- Nút **G DNS** trên thanh công cụ bật/tắt Google DNS bảo mật cho kết nối web của Pip. Sau khi đổi, cần mở lại Pip để áp dụng cho mọi tab và cửa sổ. Khi bật, Pip dùng proxy loopback riêng để hỏi Google DNS-over-HTTPS rồi kết nối tới địa chỉ trả về; Windows DNS không bị đổi. DNS không thay thế VPN, không ẩn địa chỉ IP và không đảm bảo mở được mọi loại chặn mạng. Mạng chặn kết nối trực tiếp hoặc yêu cầu proxy công ty có thể không tương thích.
 - Nút **khiên** bật/tắt chặn quảng cáo cho hostname hiện tại; phím tắt `Ctrl+Shift+A`. Bấm F5 khi muốn áp dụng thay đổi cho trang đang mở. Pip giữ nội dung đang nhập, không tự tải lại trang.
 - Brave xử lý yêu cầu mạng; EasyList, uBlock Origin và danh sách popup HaGeZi cung cấp bộ lọc quảng cáo. Khi bộ lọc đang bật, Pip chặn cửa sổ tự bật và đối chiếu đích popup với danh sách quảng cáo, popup và cá cược HaGeZi. Danh sách cá cược cũng nhận diện tên miền phụ. Quy tắc cá cược chỉ áp dụng cho popup, không chặn địa chỉ người dùng mở trong tab hiện tại hoặc nhập vào thanh địa chỉ. Scriptlet YouTube từ uBlock/Brave chạy trước script trang để lọc cấu hình và phản hồi trình phát. Bộ lọc được đóng gói sẵn, không tải mã thực thi từ Internet khi duyệt web.
 - Nút **ngôi sao** lưu/bỏ dấu trang. Dấu trang và lịch sử có màn hình xem, xóa; lưu riêng theo hồ sơ. Lịch sử tối đa 500 trang gần nhất; dấu trang tối đa 200 mục.
@@ -18,7 +18,7 @@ Chạy bộ cài `PipSetup.exe` bằng tài khoản thường. Bộ cài tạo l
 
 Giới hạn: quảng cáo YouTube thay đổi theo tài khoản, khu vực và thời điểm; không cam kết chặn tuyệt đối mọi quảng cáo hoặc quảng cáo ghép vào nội dung video. Tên miền mới chưa có trong snapshot cá cược và không có dấu hiệu nhận diện rõ vẫn phụ thuộc vào lần cập nhật bộ lọc tiếp theo. Scriptlet hiện dành cho tài liệu YouTube chính; chưa có bộ thực thi procedural cosmetic, redirect resource hay chặn đầy đủ service/shared worker. Bộ lọc cần cập nhật bằng bản Pip mới.
 
-WebView2 do Microsoft quản lý và cập nhật. Google DNS đã được xác minh trên WebView2 `155.0.4283.45`; cấu hình phụ thuộc định dạng Local State của Chromium và cần kiểm tra lại khi runtime thay đổi. Bản Pip này chưa ký số.
+WebView2 do Microsoft quản lý và cập nhật. Khi Google DNS bật, Pip cấu hình proxy loopback cho các WebView2 của cửa sổ và nội dung; DNS tên miền đích được hỏi qua HTTPS tới `dns.google`, với kết nối bootstrap tới IP công khai `8.8.8.8` hoặc `8.8.4.4`. Nếu proxy không khởi động được, Pip báo trong Cài đặt và quay về DNS Windows. Bản Pip này chưa ký số.
 
 Dữ liệu portable nằm trong `user_data` cạnh exe. Bản cài dùng `%APPDATA%\evergreen-browser` kế thừa từ nền Evergreen; trình gỡ chỉ xóa dữ liệu khi bạn chọn tùy chọn đó. Không chia sẻ thư mục dữ liệu cá nhân khi phát hành.
 

@@ -40,8 +40,13 @@ finally: close_process(process)
 time.sleep(2)
 data=json.loads(trace.read_text(encoding='utf-8'))
 names={v:k for k,v in data['constants']['logEventTypes'].items()}
-events=[{'event':names.get(e['type'],e['type']),'params':e.get('params',{})} for e in data['events'] if any(t in names.get(e['type'],'') for t in ('DNS_CONFIG','DNS_TRANSACTION_HTTPS','DNS_OVER_HTTPS','DOH'))]
-report={'binary':str(source),'google_dns_events':events}
+events=[{'event':names.get(e['type'],e['type']),'params':e.get('params',{})} for e in data['events'] if any(t in names.get(e['type'],'') for t in ('PROXY_CONFIG_CHANGED','DNS_TRANSACTION','DNS_OVER_HTTPS','DOH'))]
+proxy_configs=[e['params'].get('new_config',{}) for e in events if e['event']=='PROXY_CONFIG_CHANGED']
+local_proxy=any('127.0.0.1:' in json.dumps(config) for config in proxy_configs)
+dns_transactions=[e for e in events if e['event']=='DNS_TRANSACTION']
+report={'binary':str(source),'local_proxy_configured':local_proxy,'direct_dns_transactions':len(dns_transactions),'network_events':events}
 out=Path('target/google-dns-verification.json');out.write_text(json.dumps(report,indent=2))
 print(json.dumps(events,indent=2)[:12000])
 print('Evidence:',out,'; isolated profile:',directory)
+if not local_proxy: raise SystemExit('Google DNS proxy was not configured in WebView2')
+if dns_transactions: raise SystemExit('WebView2 emitted direct DNS transactions; possible DNS leak')
