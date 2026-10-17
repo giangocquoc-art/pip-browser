@@ -2050,7 +2050,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     use webview2_com::Microsoft::Web::WebView2::Win32::*;
                     use windows::core::Interface;
                     use wry::WebViewExtWindows;
-                    if let Some(win) = self.windows.get(&win_id).filter(|w| !w.private) {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if win.private {
+                            self.notify_settings(
+                                win_id,
+                                "Trong ẩn danh, cookie và dữ liệu website tự được xóa khi đóng toàn bộ cửa sổ ẩn danh.",
+                            );
+                            return;
+                        }
                         if let Some(view) = win
                             .tab_manager
                             .active_tab_id()
@@ -2649,7 +2656,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                         BrowsingDataClearKind::Passwords => "Đã xóa mật khẩu đã lưu của hồ sơ.",
                         BrowsingDataClearKind::SiteData => {
-                            "Đã xóa cookie và dữ liệu website của hồ sơ; bạn đã đăng xuất."
+                            "Đã xóa cookie và dữ liệu website; tải lại các trang để đăng xuất."
                         }
                     }
                 } else {
