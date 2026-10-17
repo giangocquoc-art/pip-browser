@@ -13,6 +13,11 @@ pub enum UiToHostMessage {
     RemoveBookmark {
         url: String,
     },
+    RemoveHistory {
+        url: String,
+    },
+    ImportBookmarks,
+    ExportBookmarks,
     ClearHistory,
     OpenLibrary {
         view: String,
@@ -43,6 +48,7 @@ pub enum UiToHostMessage {
     SetGoogleDns {
         enabled: bool,
     },
+    TestGoogleDns,
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,
@@ -53,6 +59,7 @@ pub enum UiToHostMessage {
     },
     ClearSavedPasswords,
     ClearCache,
+    ClearSiteData,
     /// Switch active tab
     SwitchTab {
         id: TabId,

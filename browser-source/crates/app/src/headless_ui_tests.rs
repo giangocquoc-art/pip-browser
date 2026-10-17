@@ -59,9 +59,9 @@ impl Check {
             0=>self.query(id,true,"(()=>{const okay=document.querySelector('.tab-strip').offsetHeight===40&&document.querySelector('.nav-bar').offsetHeight===48&&document.querySelectorAll('.window-controls .window-control').length===3;const button=document.getElementById('profileButton');button.click();const menu=document.getElementById('profilePopover');const menuOkay=!menu.hidden&&document.querySelectorAll('#profileList .profile-choice').length===1&&document.getElementById('profileCurrentName').textContent==='Cá nhân';showProfileCreate();document.getElementById('profileCreateName').value='Kiểm thử';document.getElementById('profileCreateForm').requestSubmit();document.getElementById('googleDnsButton').click();return okay&&menuOkay&&menu.hidden})()"),
             1=>{
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
-                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('Mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
+                self.query(id,true,"(()=>{const okay=document.getElementById('googleDnsButton').title.includes('mở lại Pip');document.getElementById('googleDnsButton').click();postIpc('OpenSettings');return okay})()");
             }
-            2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle');if(!input)return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
+            2=>self.query(id,false,"(()=>{const input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton');if(!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData'))return false;const before=input.checked;input.click();return before&&!input.checked&&typeof window.__pipSend==='function'})()"),
             3=>{
                 if self.app.settings.downloads.ask_where_to_save {return Err("Settings checkbox did not reach native storage".into());}
                 let disk=evergreen_core::settings::Settings::load_from_path(&get_settings_path()).map_err(|e|e.to_string())?;
@@ -70,8 +70,13 @@ impl Check {
             }
             4=>self.query(id,false,"(()=>{if(document.title!=='Pip native test')return false;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';return typeof window.__pipSend==='undefined'})()"),
             5=>self.query(id,true,"(()=>{document.getElementById('bookmarkButton').click();postIpc('OpenLibrary',{view:'bookmarks'});return true})()"),
-            6=>self.query(id,false,"document.getElementById('bookmarksList')?.textContent.includes('Pip native test')===true"),
-            7=>self.query(id,true,"(()=>{postIpc('OpenPrivateWindow');return true})()"),
+            6=>self.query(id,false,"(()=>{const portable=document.getElementById('importBookmarksButton')?.dataset.action==='ImportBookmarks'&&document.getElementById('exportBookmarksButton')?.dataset.action==='ExportBookmarks';const check=kind=>{const input=document.getElementById(kind+'Search'),list=document.getElementById(kind+'List'),empty=document.getElementById(kind+'NoResults');if(!input||!list.textContent.includes('Pip native test'))return false;input.value='pip native';input.dispatchEvent(new Event('input'));const matched=list.querySelectorAll('.library-row').length===1;input.value='not found';input.dispatchEvent(new Event('input'));const emptyState=empty.hidden===false&&list.querySelectorAll('.library-row').length===0;input.value='';input.dispatchEvent(new Event('input'));return matched&&emptyState&&list.querySelectorAll('.library-row').length===1};const bookmarks=check('bookmarks');document.querySelector('.rail-link[data-view=history]').click();const history=check('history');const row=[...document.querySelectorAll('#historyList .library-row')].find(item=>item.textContent.includes('Pip native test'));row?.querySelector('button')?.click();return portable&&bookmarks&&history&&!!row})()"),
+            7=>{
+                let path=self.app.library_path(id).ok_or("Library path missing")?;
+                let library=evergreen_core::library::Library::load(&path).map_err(|e|e.to_string())?;
+                if library.history.iter().any(|page|page.url==self.url){return Err("Removing a history entry did not persist".into());}
+                self.query(id,true,"(()=>{postIpc('OpenPrivateWindow');return true})()");
+            }
             8=>{
                 let private=self.app.windows.values().find(|w|w.private).ok_or("Private window missing")?.id;
                 self.app.handle_navigate(private,&(self.url.clone()+"private"));self.step+=1;

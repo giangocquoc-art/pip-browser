@@ -1,3 +1,11 @@
+# Pip 0.1.7
+
+Google DNS diagnostics now test a real Google page through Pip's local DNS-over-HTTPS proxy, rather than checking only whether Google's resolver responds directly. The toolbar and settings distinguish a running route from a saved change that still needs a Pip restart. This setting affects Pip only; it does not change Windows DNS or hide the user's IP address.
+
+Pip can now import and export bookmarks as standard browser HTML, search and remove history entries, and clear cookies plus site storage from the selected profile. These actions are limited to the selected profile and explain which data is preserved.
+
+The Windows installer remains unsigned with Authenticode. GitHub builds the release assets, publishes SHA-256 checksums, and signs artifact provenance; these checks help verify a download but do not remove Windows SmartScreen warnings. Ad and popup filtering remains best-effort and does not guarantee that every ad or redirect is blocked.
+
 # Pip 0.1.6
 
 Broadened gambling pop-up detection for rotating domains: Pip now recognizes common numeric `bet` and `vip` host patterns and gambling terms in popup paths and query strings. These checks apply only to newly opened windows; normal navigation is unchanged. The bundled HaGeZi snapshots remain the primary broad domain coverage, and no filter can guarantee every newly created redirect is caught.

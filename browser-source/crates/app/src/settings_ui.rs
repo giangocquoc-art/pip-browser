@@ -636,7 +636,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google. Cần khởi động lại Pip để áp dụng. Có thể giúp với chặn DNS, không đảm bảo mở được mọi trang hoặc tăng tốc.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Tra cứu tên miền qua HTTPS tới Google trong Pip. Cần khởi động lại Pip để áp dụng; không đổi DNS Windows hay ẩn địa chỉ IP.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra đường DNS</button></div>
     </div>
 
     <div class="section-title">Hồ sơ và riêng tư</div>
@@ -645,6 +645,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       <div class="row"><select id="profileSelect" title="Chọn hồ sơ để mở cửa sổ riêng hoặc đổi tên" aria-label="Hồ sơ"></select><button class="btn btn-secondary" onclick="profileAction('OpenProfile',{id:profileSelect.value})">Mở hồ sơ</button></div>
       <div class="row"><input id="profileName" class="text-input" maxlength="40" placeholder="Tên hồ sơ" aria-label="Tên hồ sơ"><button class="btn btn-secondary" onclick="profileAction('CreateProfile',{name:profileName.value})">Tạo hồ sơ</button><button class="btn btn-secondary" onclick="profileAction('RenameProfile',{id:profileSelect.value,name:profileName.value})">Đổi tên hồ sơ đã chọn</button></div>
       <div class="row"><div class="row-info"><span class="row-label">Cửa sổ ẩn danh</span><span class="row-desc">Không ghi lịch sử hoặc lưu phiên tab. Dữ liệu website của phiên ẩn danh được bỏ khi đóng toàn bộ cửa sổ ẩn danh của hồ sơ; tệp đã tải vẫn còn.</span></div><button class="btn btn-secondary" onclick="sendAction('OpenPrivateWindow')">Mở ẩn danh</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Xóa cookie và dữ liệu website</span><span class="row-desc">Xóa cookie và dữ liệu website của hồ sơ hiện tại để đăng xuất; các trang đang mở có thể cần tải lại. Giữ dấu trang, lịch sử, mật khẩu và tệp tải xuống.</span></div><button class="btn btn-secondary" id="clearSiteDataButton" onclick="if(confirm('Xóa cookie và dữ liệu website của hồ sơ hiện tại? Bạn sẽ bị đăng xuất khỏi các website.')) sendAction('ClearSiteData')">Xóa dữ liệu website</button></div>
     </div>
     <div class="section-title">Mật khẩu và tự điền</div>
     <div class="card">
@@ -700,13 +701,17 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       document.getElementById('clearCacheButton').disabled=isPrivateProfile;
     };
     window.__renderProfiles({{PROFILES_JSON}});
-    window.__renderGoogleDns = (enabled, active=enabled) => {
+    window.__renderGoogleDns = (enabled, active=enabled, failed=false) => {
       document.getElementById('googleDnsToggle').checked=enabled;
-      document.getElementById('googleDnsHint').textContent=enabled!==active
-        ? 'Đã lưu lựa chọn. Mở lại Pip để áp dụng cho kết nối mới. Google DNS tra cứu tên miền qua HTTPS; không ẩn IP như VPN.'
-        : 'Tra cứu tên miền qua HTTPS tới Google. Mở lại Pip sau khi đổi; DNS không ẩn IP như VPN và không bảo đảm mở được mọi trang.';
+      document.getElementById('googleDnsHint').textContent=failed&&enabled&&!active
+        ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối mạng rồi mở lại Pip.'
+        : enabled!==active
+          ? 'Đã lưu lựa chọn. Đóng rồi mở lại Pip để áp dụng. Kiểm tra đường DNS sẽ thử tải Google qua đúng tuyến đang dùng.'
+          : active
+            ? 'Đã cấu hình tuyến DNS Google cho Pip trong phiên này. Nhấn “Kiểm tra đường DNS” để xác nhận có thể tải trang qua tuyến đó. DNS Windows không đổi và địa chỉ IP không được ẩn.'
+            : 'Đang dùng DNS Windows. Bật Google DNS rồi mở lại Pip để chuyển kết nối web của Pip qua tuyến HTTPS.';
     };
-    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}});
+    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}});
 
     function sendAction(action) {
       if (window.ipc) {
@@ -808,7 +813,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
 use evergreen_core::settings::Settings;
 
-pub fn get_settings_html(runtime_ver: &str, settings: &Settings) -> String {
+pub fn get_settings_html(
+    runtime_ver: &str,
+    settings: &Settings,
+    google_dns_active: bool,
+    google_dns_failed: bool,
+) -> String {
     let download_dir_str = settings.downloads.default_folder.to_string_lossy();
     let mut html = SETTINGS_TEMPLATE
         .replace("{{LOGO_BASE64}}", LOGO_BASE64.trim())
@@ -824,6 +834,14 @@ pub fn get_settings_html(runtime_ver: &str, settings: &Settings) -> String {
         .replace(
             "{{GOOGLE_DNS_ENABLED}}",
             if settings.google_dns { "true" } else { "false" },
+        )
+        .replace(
+            "{{GOOGLE_DNS_ACTIVE}}",
+            if google_dns_active { "true" } else { "false" },
+        )
+        .replace(
+            "{{GOOGLE_DNS_FAILED}}",
+            if google_dns_failed { "true" } else { "false" },
         );
 
     let engine = settings.search_engine.to_lowercase();

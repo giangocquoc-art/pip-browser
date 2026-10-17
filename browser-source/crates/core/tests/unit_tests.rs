@@ -177,6 +177,7 @@ fn test_ipc_serde_ui_to_host_all_variants() {
             total: 5,
         },
         UiToHostMessage::OpenSettings,
+        UiToHostMessage::ClearSiteData,
         UiToHostMessage::SetSearchEngine {
             engine: "google".to_string(),
         },

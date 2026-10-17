@@ -690,7 +690,10 @@ pub fn attach_navigation_events(
 }
 
 #[cfg(target_os = "windows")]
-pub fn show_save_file_dialog(default_filename: &str) -> Option<std::path::PathBuf> {
+pub fn show_save_file_dialog(
+    default_filename: &str,
+    dialog_title: &str,
+) -> Option<std::path::PathBuf> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
     use windows::Win32::UI::Shell::{FileSaveDialog, IFileSaveDialog, SIGDN_FILESYSPATH};
@@ -702,7 +705,7 @@ pub fn show_save_file_dialog(default_filename: &str) -> Option<std::path::PathBu
             .chain(std::iter::once(0))
             .collect();
         let _ = dialog.SetFileName(PCWSTR(wname.as_ptr()));
-        let title: Vec<u16> = "Lưu tệp tải xuống"
+        let title: Vec<u16> = dialog_title
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();

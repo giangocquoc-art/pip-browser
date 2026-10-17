@@ -5,6 +5,8 @@ mod accelerator;
 mod adblock;
 mod cert;
 mod chrome;
+#[cfg(target_os = "windows")]
+mod doh_proxy;
 mod downloads;
 mod error_ui;
 #[cfg(any(test, debug_assertions))]
@@ -111,7 +113,8 @@ pub(crate) enum BrowserEvent {
     TabNavigated(WindowId, TabId, String),
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
-    BrowsingDataClearDone(WindowId, bool, bool),
+    BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
+    GoogleDnsCheckDone(WindowId, bool, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -137,10 +140,18 @@ pub(crate) enum BrowserEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BrowsingDataClearKind {
+    Cache,
+    Passwords,
+    SiteData,
+}
+
 struct WindowContext {
     downloads: HashMap<u64, serde_json::Value>,
     proxy: EventLoopProxy<BrowserEvent>,
     profile_id: String,
+    dns_proxy_port: Option<u16>,
     private: bool,
     id: WindowId,
     window: Arc<Window>,
@@ -379,9 +390,10 @@ impl WindowContext {
             );
             let proxy_ipc = proxy.clone();
             let win_id = self.id;
-            let wv = WebViewBuilder::new()
-                .with_additional_browser_args("")
-                .with_bounds(sidebar_bounds)
+            let builder = WebViewBuilder::new()
+                .with_additional_browser_args(dns_proxy_browser_args(self.dns_proxy_port))
+                .with_bounds(sidebar_bounds);
+            let wv = builder
                 .with_html(sidebar_ui::SIDEBAR_HTML.as_str())
                 .with_navigation_handler(|url| {
                     url == "about:blank" || url.starts_with("data:text/html")
@@ -549,6 +561,14 @@ fn get_settings_path() -> std::path::PathBuf {
     get_data_directory().join("settings.json")
 }
 
+fn dns_proxy_browser_args(port: Option<u16>) -> String {
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    if let Some(port) = port {
+        args.push_str(&format!(" --proxy-server=http://127.0.0.1:{port}"));
+    }
+    args
+}
+
 fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
@@ -570,52 +590,43 @@ fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::P
     }
 }
 
-// Chromium's resolver reads application-wide Local State, not profile Preferences.
-// Write before creating any WebView2 environment; changing it requires a restart.
-fn apply_google_dns_preferences(enabled: bool) -> bool {
-    let result = apply_google_dns_preferences_in(
-        &get_data_directory().join("webview2_data").join("EBWebView"),
-        enabled,
-    );
-    if let Err(error) = &result {
-        eprintln!("Pip Google DNS: {error}");
-    }
-    result.is_ok()
-}
-fn apply_google_dns_preferences_in(
-    base: &std::path::Path,
-    enabled: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let path = base.join("Local State");
-    if !enabled && !path.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(base)?;
-    let mut prefs: serde_json::Value = if path.exists() {
-        serde_json::from_slice(&std::fs::read(&path)?)?
-    } else {
-        serde_json::json!({})
+fn choose_bookmarks_import_file(window: &Window) -> Option<std::path::PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
     };
-    let root = prefs
-        .as_object_mut()
-        .ok_or("invalid WebView2 Local State")?;
-    let doh = root
-        .entry("dns_over_https")
-        .or_insert_with(|| serde_json::json!({}));
-    if !doh.is_object() {
-        *doh = serde_json::json!({});
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let owner = window
+        .window_handle()
+        .ok()
+        .and_then(|handle| match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => {
+                Some(windows::Win32::Foundation::HWND(handle.hwnd.get() as _))
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM)
+            .ok()?;
+        let title: Vec<u16> = "Nhập dấu trang HTML"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        dialog.SetTitle(PCWSTR(title.as_ptr())).ok()?;
+        dialog.Show(Some(owner)).ok()?;
+        let path = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
+        Some(webview2_com::take_pwstr(path).into())
     }
-    doh["mode"] = serde_json::json!(if enabled { "secure" } else { "off" });
-    doh["templates"] = serde_json::json!(if enabled {
-        "https://dns.google/dns-query{?dns}"
-    } else {
-        ""
-    });
-    // Preserve the previous file on a failed write. Same-volume replacement is atomic.
-    let staging = base.join("Local State.pip-tmp");
-    std::fs::write(&staging, serde_json::to_vec(&prefs)?)?;
-    std::fs::rename(staging, path)?;
-    Ok(())
 }
 
 struct BrowserApp {
@@ -629,6 +640,8 @@ struct BrowserApp {
     modifiers: ModifiersState,
     settings: evergreen_core::settings::Settings,
     active_google_dns: bool,
+    google_dns_start_failed: bool,
+    doh_proxy: Option<doh_proxy::DohProxy>,
     next_tab_id: AtomicU64,
     allowed_cert_hosts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -784,10 +797,11 @@ impl BrowserApp {
     fn sync_google_dns(&self) {
         let enabled = self.settings.google_dns;
         let active = self.active_google_dns;
+        let failed = self.google_dns_start_failed;
         for win in self.windows.values() {
             if let Some(chrome) = &win.chrome_webview {
                 let _ = chrome.evaluate_script(&format!(
-                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active});"
+                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
                 ));
             }
             for (id, view) in &win.tabs {
@@ -797,7 +811,7 @@ impl BrowserApp {
                     .is_some_and(|tab| tab.url == "evergreen://settings")
                 {
                     let _ = view.evaluate_script(&format!(
-                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active});"
+                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed});"
                     ));
                 }
             }
@@ -881,7 +895,18 @@ impl BrowserApp {
                 .profiles
                 .extend(evergreen_core::settings::default_profiles());
         }
-        let dns_configured = apply_google_dns_preferences(settings.google_dns);
+        let doh_proxy = if settings.google_dns {
+            match doh_proxy::DohProxy::start() {
+                Ok(proxy) => Some(proxy),
+                Err(error) => {
+                    eprintln!("Pip Google DNS proxy failed to start: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let google_dns_start_failed = settings.google_dns && doh_proxy.is_none();
         Self {
             windows: HashMap::new(),
             internal_ipc_token: format!("{:?}", unsafe {
@@ -896,7 +921,9 @@ impl BrowserApp {
             modifiers: ModifiersState::default(),
             background_check: std::env::args().any(|a| a == "--background-check")
                 && std::env::args().any(|a| a == "--portable"),
-            active_google_dns: settings.google_dns && dns_configured,
+            active_google_dns: doh_proxy.is_some(),
+            google_dns_start_failed,
+            doh_proxy,
             settings,
             next_tab_id: AtomicU64::new(1),
             allowed_cert_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
@@ -1031,6 +1058,7 @@ impl BrowserApp {
             proxy: self.proxy.clone(),
             profile_id: profile_id.clone(),
             private,
+            dns_proxy_port: self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port),
             id: win_id,
             window: window.clone(),
             tab_manager: TabManager::new(),
@@ -1062,9 +1090,10 @@ impl BrowserApp {
             )
             .replace("{{PRIVATE_LABEL}}", if private { " · Ẩn danh" } else { "" });
 
-        match WebViewBuilder::new()
-            .with_additional_browser_args("")
-            .with_bounds(chrome_bounds)
+        let chrome_builder = WebViewBuilder::new()
+            .with_additional_browser_args(dns_proxy_browser_args(win_ctx.dns_proxy_port))
+            .with_bounds(chrome_bounds);
+        match chrome_builder
             .with_html(&chrome_html)
             .with_navigation_handler(|url| {
                 url == "about:blank" || url.starts_with("data:text/html")
@@ -1159,9 +1188,11 @@ impl BrowserApp {
         let context = self.windows.get(&win_id).expect("tab window exists");
         let is_persistent = !context.private;
         let profile_id = context.profile_id.clone();
+        let google_dns_active = self.active_google_dns;
+        let google_dns_failed = self.google_dns_start_failed;
 
         let mut builder = WebViewBuilder::new()
-            .with_additional_browser_args("")
+            .with_additional_browser_args(dns_proxy_browser_args(context.dns_proxy_port))
             .with_bounds(bounds)
             .with_incognito(!is_persistent)
             .with_profile_name(&profile_id)
@@ -1169,7 +1200,6 @@ impl BrowserApp {
             .with_background_color((24, 24, 32, 255))
             .with_initialization_script(&init_script)
             .with_devtools(true);
-
         let search_name = self.settings.search_engine_display_name().to_string();
         let ipc_token = self.internal_ipc_token.clone();
         let settings_clone = self.settings.clone();
@@ -1207,12 +1237,17 @@ impl BrowserApp {
                 let active_ver = evergreen_core::env::detect_webview2_runtime()
                     .unwrap_or_else(|| fallback_runtime_ver.clone());
                 let dynamic_settings_html = chrome::protect_internal_html(
-                    settings_ui::get_settings_html(&active_ver, &settings_clone)
-                        .replace("{{CURRENT_PROFILE}}", &protocol_profile)
-                        .replace(
-                            "{{CURRENT_PRIVATE}}",
-                            if is_persistent { "false" } else { "true" },
-                        ),
+                    settings_ui::get_settings_html(
+                        &active_ver,
+                        &settings_clone,
+                        google_dns_active,
+                        google_dns_failed,
+                    )
+                    .replace("{{CURRENT_PROFILE}}", &protocol_profile)
+                    .replace(
+                        "{{CURRENT_PRIVATE}}",
+                        if is_persistent { "false" } else { "true" },
+                    ),
                     &protocol_token,
                 );
                 wry::http::Response::builder()
@@ -1262,12 +1297,17 @@ impl BrowserApp {
             let active_ver = evergreen_core::env::detect_webview2_runtime()
                 .unwrap_or_else(|| runtime_ver.clone());
             builder = builder.with_html(chrome::protect_internal_html(
-                settings_ui::get_settings_html(&active_ver, &self.settings)
-                    .replace("{{CURRENT_PROFILE}}", &profile_id)
-                    .replace(
-                        "{{CURRENT_PRIVATE}}",
-                        if is_persistent { "false" } else { "true" },
-                    ),
+                settings_ui::get_settings_html(
+                    &active_ver,
+                    &self.settings,
+                    google_dns_active,
+                    google_dns_failed,
+                )
+                .replace("{{CURRENT_PROFILE}}", &profile_id)
+                .replace(
+                    "{{CURRENT_PRIVATE}}",
+                    if is_persistent { "false" } else { "true" },
+                ),
                 &ipc_token,
             ));
         } else if is_not_found {
@@ -1483,6 +1523,104 @@ impl BrowserApp {
         let profile = &self.windows.get(&win_id).unwrap().profile_id;
         for win in self.windows.values().filter(|w| &w.profile_id == profile) {
             self.sync_library(win.id);
+        }
+    }
+
+    fn sync_library_profile(&self, profile_id: &str) {
+        let windows = self
+            .windows
+            .values()
+            .filter(|win| win.profile_id == profile_id)
+            .map(|win| win.id)
+            .collect::<Vec<_>>();
+        for win_id in windows {
+            self.sync_library(win_id);
+        }
+    }
+
+    fn notify_library(&self, win_id: WindowId, message: &str) {
+        if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+            win.tab_manager
+                .active_tab_id()
+                .and_then(|id| win.tab_manager.get_tab_by_id(id))
+                .filter(|tab| tab.url.starts_with("evergreen://newtab"))
+                .and_then(|tab| win.tabs.get(&tab.id))
+        }) {
+            let message = serde_json::to_string(message).unwrap();
+            let _ = view.evaluate_script(&format!(
+                "if(window.__showLibraryStatus)window.__showLibraryStatus({message});"
+            ));
+        }
+    }
+
+    fn import_bookmarks(&mut self, win_id: WindowId) {
+        let Some(file) = self
+            .windows
+            .get(&win_id)
+            .and_then(|win| choose_bookmarks_import_file(&win.window))
+        else {
+            return;
+        };
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let Some(profile_id) = self.windows.get(&win_id).map(|win| win.profile_id.clone()) else {
+            return;
+        };
+        let result = (|| -> Result<usize, String> {
+            let file_size = std::fs::metadata(&file)
+                .map_err(|error| format!("Không đọc được thông tin tệp dấu trang: {error}"))?
+                .len();
+            if file_size > 8 * 1024 * 1024 {
+                return Err("Tệp dấu trang vượt quá giới hạn 8 MiB.".to_string());
+            }
+            let html = std::fs::read_to_string(file)
+                .map_err(|error| format!("Không đọc được tệp dấu trang: {error}"))?;
+            let mut library = evergreen_core::library::Library::load(&path)
+                .map_err(|error| format!("Không đọc được hồ sơ dấu trang: {error}"))?;
+            let imported = library
+                .import_netscape_bookmarks(&html)
+                .map_err(|error| error.to_string())?;
+            library
+                .save(&path)
+                .map_err(|error| format!("Không lưu được dấu trang: {error}"))?;
+            Ok(imported)
+        })();
+        match result {
+            Ok(imported) => {
+                self.sync_library_profile(&profile_id);
+                let message = if imported == 0 {
+                    "Không có dấu trang mới để nhập. Mục trùng được bỏ qua; hồ sơ đã đủ 200 mục cũng không nhận thêm.".to_string()
+                } else {
+                    format!("Đã nhập {imported} dấu trang vào hồ sơ hiện tại.")
+                };
+                self.notify_library(win_id, &message);
+            }
+            Err(error) => self.notify_library(win_id, &error),
+        }
+    }
+
+    fn export_bookmarks(&mut self, win_id: WindowId) {
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let Some(library) = evergreen_core::library::Library::load(&path).ok() else {
+            self.notify_library(win_id, "Không đọc được dấu trang của hồ sơ hiện tại.");
+            return;
+        };
+        let Some(destination) =
+            accelerator::show_save_file_dialog("Pip Bookmarks.html", "Xuất dấu trang Pip")
+        else {
+            return;
+        };
+        match std::fs::write(destination, library.export_netscape_bookmarks()) {
+            Ok(()) => self.notify_library(
+                win_id,
+                "Đã xuất dấu trang theo định dạng HTML của trình duyệt.",
+            ),
+            Err(error) => {
+                self.notify_library(win_id, &format!("Không lưu được tệp dấu trang: {error}"))
+            }
         }
     }
 
@@ -1766,8 +1904,17 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 UiToHostMessage::RemoveBookmark { url } => {
                     self.edit_library(win_id, |library| library.bookmarks.retain(|p| p.url != url))
                 }
+                UiToHostMessage::RemoveHistory { url } => {
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        self.edit_library(win_id, |library| library.remove_history(&url));
+                    }
+                }
+                UiToHostMessage::ImportBookmarks => self.import_bookmarks(win_id),
+                UiToHostMessage::ExportBookmarks => self.export_bookmarks(win_id),
                 UiToHostMessage::ClearHistory => {
-                    self.edit_library(win_id, |library| library.history.clear())
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        self.edit_library(win_id, |library| library.history.clear());
+                    }
                 }
                 UiToHostMessage::OpenLibrary { view } => {
                     if matches!(view.as_str(), "bookmarks" | "history") {
@@ -1895,12 +2042,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
-                action @ (UiToHostMessage::ClearSavedPasswords | UiToHostMessage::ClearCache) => {
-                    let cache = matches!(action, UiToHostMessage::ClearCache);
+                action @ (UiToHostMessage::ClearSavedPasswords
+                | UiToHostMessage::ClearCache
+                | UiToHostMessage::ClearSiteData) => {
+                    let kind = match action {
+                        UiToHostMessage::ClearCache => BrowsingDataClearKind::Cache,
+                        UiToHostMessage::ClearSiteData => BrowsingDataClearKind::SiteData,
+                        _ => BrowsingDataClearKind::Passwords,
+                    };
                     use webview2_com::Microsoft::Web::WebView2::Win32::*;
                     use windows::core::Interface;
                     use wry::WebViewExtWindows;
-                    if let Some(win) = self.windows.get(&win_id).filter(|w| !w.private) {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if win.private {
+                            self.notify_settings(
+                                win_id,
+                                "Trong ẩn danh, cookie và dữ liệu website tự được xóa khi đóng toàn bộ cửa sổ ẩn danh.",
+                            );
+                            return;
+                        }
                         if let Some(view) = win
                             .tab_manager
                             .active_tab_id()
@@ -1921,22 +2081,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                                 let _ = proxy.send_event(
                                                     BrowserEvent::BrowsingDataClearDone(
                                                         win_id,
-                                                        cache,
+                                                        kind,
                                                         result.is_ok(),
                                                     ),
                                                 );
                                                 Ok(())
                                             }),
                                         );
-                                    let kind = if cache {
-                                        COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
-                                    } else {
-                                        COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE
+                                    let data_kind = match kind {
+                                        BrowsingDataClearKind::Cache => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
+                                        }
+                                        BrowsingDataClearKind::Passwords => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE
+                                        }
+                                        BrowsingDataClearKind::SiteData => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE
+                                        }
                                     };
-                                    if profile.ClearBrowsingData(kind, &callback).is_err() {
+                                    if profile.ClearBrowsingData(data_kind, &callback).is_err() {
                                         let _ = self.proxy.send_event(
                                             BrowserEvent::BrowsingDataClearDone(
-                                                win_id, cache, false,
+                                                win_id, kind, false,
                                             ),
                                         );
                                     }
@@ -1968,6 +2134,31 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.notify_settings(win_id, "Không thể lưu cài đặt Google DNS.");
                         self.sync_google_dns();
                     }
+                }
+                UiToHostMessage::TestGoogleDns => {
+                    let proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    self.notify_settings(
+                        win_id,
+                        if proxy_port.is_some() {
+                            "Đang thử tải Google qua đúng tuyến DNS mà các tab Pip sử dụng..."
+                        } else {
+                            "Đang kiểm tra Google DNS. Pip hiện chưa áp dụng tuyến DNS riêng; nếu vừa bật, hãy mở lại Pip rồi kiểm tra lại."
+                        },
+                    );
+                    let proxy = self.proxy.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("pip-google-dns-check".to_string())
+                        .spawn(move || {
+                            let result = match proxy_port {
+                                Some(port) => doh_proxy::test_google_doh_through_proxy(port),
+                                None => doh_proxy::test_google_doh(),
+                            };
+                            let _ = proxy.send_event(BrowserEvent::GoogleDnsCheckDone(
+                                win_id,
+                                proxy_port.is_some(),
+                                result,
+                            ));
+                        });
                 }
                 UiToHostMessage::DuplicateTab => {
                     let url = self
@@ -2474,28 +2665,48 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     output.trim()
                 );
             }
-            BrowserEvent::BrowsingDataClearDone(win_id, cache, success) => {
-                let item = if cache {
-                    "bộ nhớ đệm"
-                } else {
-                    "mật khẩu đã lưu"
-                };
-                self.notify_settings(
-                    win_id,
-                    &format!(
-                        "{} {item}{}",
-                        if success {
-                            "Đã xóa"
-                        } else {
-                            "Không thể xóa"
-                        },
-                        if success && cache {
-                            "; đăng nhập và lịch sử được giữ lại."
-                        } else {
-                            "."
+            BrowserEvent::BrowsingDataClearDone(win_id, kind, success) => {
+                let message = if success {
+                    match kind {
+                        BrowsingDataClearKind::Cache => {
+                            "Đã xóa bộ nhớ đệm; đăng nhập và lịch sử được giữ lại."
                         }
-                    ),
-                );
+                        BrowsingDataClearKind::Passwords => "Đã xóa mật khẩu đã lưu của hồ sơ.",
+                        BrowsingDataClearKind::SiteData => {
+                            "Đã xóa cookie và dữ liệu website; tải lại các trang để đăng xuất."
+                        }
+                    }
+                } else {
+                    match kind {
+                        BrowsingDataClearKind::Cache => "Không thể xóa bộ nhớ đệm.",
+                        BrowsingDataClearKind::Passwords => "Không thể xóa mật khẩu đã lưu.",
+                        BrowsingDataClearKind::SiteData => {
+                            "Không thể xóa cookie và dữ liệu website."
+                        }
+                    }
+                };
+                self.notify_settings(win_id, message);
+            }
+            BrowserEvent::GoogleDnsCheckDone(win_id, route_active, result) => {
+                let message = match (route_active, result) {
+                    (true, Ok(())) => {
+                        "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".to_string()
+                    }
+                    (true, Err(error)) => {
+                        eprintln!("Pip Google DNS route test failed: {error}");
+                        let reason: String = error.chars().take(120).collect();
+                        format!("Tuyến DNS của Pip chưa tải được Google. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
+                    }
+                    (false, Ok(())) => {
+                        "Google DNS có phản hồi, nhưng Pip hiện chưa dùng tuyến DNS riêng. Nếu vừa bật G DNS, hãy mở lại Pip rồi kiểm tra lại.".to_string()
+                    }
+                    (false, Err(error)) => {
+                        eprintln!("Google DNS service check failed: {error}");
+                        let reason: String = error.chars().take(120).collect();
+                        format!("Không thể kết nối tới Google DNS qua HTTPS. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
+                    }
+                };
+                self.notify_settings(win_id, &message);
             }
             BrowserEvent::DownloadRequested(win_id, id) => {
                 downloads::start(win_id, id, self.proxy.clone(), &self.settings);
@@ -3268,6 +3479,17 @@ mod google_dns_preferences_tests {
     use super::*;
 
     #[test]
+    fn dns_proxy_browser_args_preserve_wry_defaults_and_only_proxy_when_enabled() {
+        let defaults = dns_proxy_browser_args(None);
+        assert!(defaults.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+        assert!(!defaults.contains("--proxy-server="));
+
+        let enabled = dns_proxy_browser_args(Some(43210));
+        assert!(enabled.contains("--proxy-server=http://127.0.0.1:43210"));
+        assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+    }
+
+    #[test]
     fn favicons_keep_the_sites_protocol_port_and_host() {
         assert_eq!(
             favicon_url("http://localhost:8000/page"),
@@ -3284,36 +3506,5 @@ mod google_dns_preferences_tests {
         assert_eq!(extract_host("http://[::1]:8000/"), Some("[::1]".into()));
         assert!(favicon_url("evergreen://newtab").is_none());
         assert!(extract_host("javascript:alert(1)").is_none());
-    }
-
-    #[test]
-    fn toggles_google_dns_without_overwriting_other_profile_preferences() {
-        let base = std::env::temp_dir().join(format!("pip-doh-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let path = base.join("Local State");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            br#"{"profile":{"name":"Keep me"},"dns_over_https":{"mode":"off"}}"#,
-        )
-        .unwrap();
-
-        apply_google_dns_preferences_in(&base, true).unwrap();
-        let enabled: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(enabled["profile"]["name"], "Keep me");
-        assert_eq!(enabled["dns_over_https"]["mode"], "secure");
-        assert_eq!(
-            enabled["dns_over_https"]["templates"],
-            "https://dns.google/dns-query{?dns}"
-        );
-
-        apply_google_dns_preferences_in(&base, false).unwrap();
-        let disabled: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(disabled["dns_over_https"]["mode"], "off");
-        assert_eq!(disabled["dns_over_https"]["templates"], "");
-        assert_eq!(disabled["profile"]["name"], "Keep me");
-        std::fs::remove_dir_all(base).unwrap();
     }
 }
