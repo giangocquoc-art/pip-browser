@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const CACHE_MAX_AGE: Duration = Duration::from_secs(600);
+const CACHE_MAX_ENTRIES: usize = 2048;
 
 pub struct DohProxy {
     port: u16,
@@ -114,6 +115,7 @@ impl Drop for DohProxy {
 struct CachedAnswers {
     addresses: Vec<IpAddr>,
     expires: Instant,
+    last_used: Instant,
 }
 
 fn handle_client(
@@ -364,15 +366,18 @@ fn resolve_google_doh(
     if let Ok(ip) = hostname.parse::<IpAddr>() {
         return Ok(vec![ip]);
     }
-    if let Some(cached) = cache
+    let now = Instant::now();
+    let mut entries = cache
         .lock()
-        .map_err(|_| "DNS cache is unavailable".to_string())?
-        .get(&hostname)
-    {
-        if cached.expires > Instant::now() {
+        .map_err(|_| "DNS cache is unavailable".to_string())?;
+    if let Some(cached) = entries.get_mut(&hostname) {
+        if cached.expires > now {
+            cached.last_used = now;
             return Ok(cached.addresses.clone());
         }
     }
+    entries.remove(&hostname);
+    drop(entries);
 
     let (v4, v6) = thread::scope(|scope| {
         let v4 = scope.spawn(|| query_google_json(client, &hostname, "A"));
@@ -396,17 +401,35 @@ fn resolve_google_doh(
         return Err("Google DNS returned no address".to_string());
     }
     ttl = ttl.min(CACHE_MAX_AGE).max(Duration::from_secs(5));
-    cache
+    let now = Instant::now();
+    let mut entries = cache
         .lock()
-        .map_err(|_| "DNS cache is unavailable".to_string())?
-        .insert(
-            hostname,
-            CachedAnswers {
-                addresses: addresses.clone(),
-                expires: Instant::now() + ttl,
-            },
-        );
+        .map_err(|_| "DNS cache is unavailable".to_string())?;
+    prune_dns_cache(&mut entries, now);
+    entries.insert(
+        hostname,
+        CachedAnswers {
+            addresses: addresses.clone(),
+            expires: now + ttl,
+            last_used: now,
+        },
+    );
     Ok(addresses)
+}
+
+fn prune_dns_cache(cache: &mut HashMap<String, CachedAnswers>, now: Instant) {
+    cache.retain(|_, answers| answers.expires > now);
+    while cache.len() >= CACHE_MAX_ENTRIES {
+        let least_recently_used = cache
+            .iter()
+            .min_by_key(|(_, answers)| answers.last_used)
+            .map(|(hostname, _)| hostname.clone());
+        if let Some(hostname) = least_recently_used {
+            cache.remove(&hostname);
+        } else {
+            break;
+        }
+    }
 }
 
 fn query_google_json(
@@ -496,6 +519,36 @@ mod tests {
             parse_http_target("/path?q=1", origin),
             Some(("example.com".into(), 80, "/path?q=1".into()))
         );
+    }
+
+    #[test]
+    fn dns_cache_evicts_expired_and_least_recently_used_entries() {
+        let now = Instant::now();
+        let mut cache = HashMap::new();
+        cache.insert(
+            "expired.example".to_string(),
+            CachedAnswers {
+                addresses: vec!["192.0.2.1".parse().unwrap()],
+                expires: now - Duration::from_secs(1),
+                last_used: now,
+            },
+        );
+        for index in 0..CACHE_MAX_ENTRIES {
+            cache.insert(
+                format!("host-{index}.example"),
+                CachedAnswers {
+                    addresses: vec!["192.0.2.2".parse().unwrap()],
+                    expires: now + CACHE_MAX_AGE,
+                    last_used: now + Duration::from_secs(index as u64),
+                },
+            );
+        }
+
+        prune_dns_cache(&mut cache, now);
+        assert_eq!(cache.len(), CACHE_MAX_ENTRIES - 1);
+        assert!(!cache.contains_key("expired.example"));
+        assert!(!cache.contains_key("host-0.example"));
+        assert!(cache.contains_key(&format!("host-{}.example", CACHE_MAX_ENTRIES - 1)));
     }
 
     #[test]
