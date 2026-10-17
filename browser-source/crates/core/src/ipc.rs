@@ -53,6 +53,10 @@ pub enum UiToHostMessage {
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,
+    SetTabGroup {
+        tab_id: TabId,
+        name: String,
+    },
     RestoreSession,
     ReopenClosedTab,
     SetAutofill {

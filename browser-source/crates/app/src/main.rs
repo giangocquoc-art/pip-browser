@@ -1445,6 +1445,7 @@ impl BrowserApp {
                 is_audio_playing: false,
                 is_muted: false,
                 pinned: false,
+                group: None,
                 status: evergreen_core::tabs::TabStatus::Active,
                 last_active_timestamp_secs: Self::now_secs(),
             };
@@ -2075,6 +2076,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             win.tab_manager.toggle_pin(id);
                             win.sync_ui_state();
                         }
+                    }
+                }
+                UiToHostMessage::SetTabGroup { tab_id, name } => {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        if !win.tab_manager.set_group(tab_id, &name) {
+                            eprintln!("Pip ignored an invalid tab group name");
+                        }
+                        win.sync_ui_state();
                     }
                 }
                 UiToHostMessage::RestoreSession => self.restore_session(win_id),

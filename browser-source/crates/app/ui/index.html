@@ -100,6 +100,21 @@
       border-bottom: none;
     }
 
+    .tab.grouped {
+      border-top: 3px solid var(--tab-group-color);
+    }
+
+    .tab-group-label {
+      flex: 0 1 auto;
+      max-width: 58px;
+      overflow: hidden;
+      color: var(--tab-group-color);
+      font-size: 10px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .tab.active {
       background: var(--bg-tab-active);
       color: var(--text-main);
@@ -1247,6 +1262,11 @@
           tabEl.setAttribute('role', 'tab');
           tabEl.onclick = () => switchTab(tab.id);
 
+          const groupLabel = document.createElement('span');
+          groupLabel.className = 'tab-group-label';
+          groupLabel.setAttribute('aria-hidden', 'true');
+          tabEl.appendChild(groupLabel);
+
           // Drag and drop listeners
           tabEl.draggable = true;
           tabEl.ondragstart = (e) => {
@@ -1339,6 +1359,27 @@
 
         tabEl.setAttribute('tabindex', isActive ? '0' : '-1');
         tabEl.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        tabEl.classList.toggle('grouped', !!tab.group);
+        tabEl.style.setProperty('--tab-group-color', tab.group?.color || 'transparent');
+        const groupLabel = tabEl.querySelector('.tab-group-label');
+        if (groupLabel) {
+          groupLabel.textContent = tab.group?.name || '';
+          groupLabel.hidden = !tab.group;
+        }
+        tabEl.oncontextmenu = (event) => {
+          event.preventDefault();
+          const currentName = tab.group?.name || '';
+          const promptText = currentName
+            ? `Tab thuộc nhóm “${currentName}”. Nhập tên nhóm khác để chuyển tab, hoặc xóa trắng để bỏ nhóm.`
+            : 'Nhập tên nhóm cho tab này. Dùng lại tên đó để thêm các tab khác vào cùng nhóm.';
+          const name = window.prompt(promptText, currentName);
+          if (name !== null) postIpc('SetTabGroup', {tab_id: tab.id, name});
+        };
+        if (tab.group) {
+          tabEl.setAttribute('aria-label', `${tab.title || 'Tab mới'}, nhóm ${tab.group.name}`);
+        } else {
+          tabEl.removeAttribute('aria-label');
+        }
 
         if (isActive) {
           tabEl.classList.add('active');

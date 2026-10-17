@@ -1,7 +1,7 @@
 use evergreen_core::env::is_process_elevated;
 use evergreen_core::ipc::{HostToUiMessage, UiToHostMessage};
 use evergreen_core::settings::Settings;
-use evergreen_core::tabs::{TabId, TabManager, TabStatus};
+use evergreen_core::tabs::{TabId, TabManager, TabState, TabStatus};
 
 #[test]
 fn settings_accept_the_nested_patches_sent_by_the_ui() {
@@ -46,6 +46,41 @@ fn test_tab_manager_create_and_transitions() {
 
     let tab1 = manager.tabs().iter().find(|t| t.id == id1).unwrap();
     assert_eq!(tab1.status, TabStatus::Inactive);
+}
+
+#[test]
+fn test_tab_groups_are_validated_and_survive_session_restore() {
+    let mut manager = TabManager::new();
+    let first = manager.create_tab("https://one.example", 1);
+    let second = manager.create_tab("https://two.example", 2);
+
+    assert!(manager.set_group(first, "  Research  "));
+    assert!(manager.set_group(second, "research"));
+    let group = manager.get_tab_by_id(first).unwrap().group.clone().unwrap();
+    let same_group = manager
+        .get_tab_by_id(second)
+        .unwrap()
+        .group
+        .clone()
+        .unwrap();
+    assert_eq!(group.name, "Research");
+    assert_eq!(group.color, same_group.color);
+    assert!(!manager.set_group(first, "x".repeat(25).as_str()));
+    assert!(!manager.set_group(first, "bad\nname"));
+
+    let snapshot = manager.snapshot();
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    let snapshot: Vec<TabState> = serde_json::from_str(&serialized).unwrap();
+    let mut restored = TabManager::new();
+    restored.restore_from_snapshot(snapshot);
+    assert_eq!(restored.get_tab_by_id(first).unwrap().group, Some(group));
+    assert!(restored.set_group(first, ""));
+    assert!(restored.get_tab_by_id(first).unwrap().group.is_none());
+
+    let mut legacy = serde_json::to_value(manager.snapshot()).unwrap();
+    legacy[0].as_object_mut().unwrap().remove("group");
+    let legacy: Vec<TabState> = serde_json::from_value(legacy).unwrap();
+    assert!(legacy[0].group.is_none());
 }
 
 #[test]
@@ -138,6 +173,10 @@ fn test_ipc_serde_ui_to_host_all_variants() {
         UiToHostMessage::ReorderTab {
             from_index: 0,
             to_index: 2,
+        },
+        UiToHostMessage::SetTabGroup {
+            tab_id: TabId(42),
+            name: "Research".to_string(),
         },
         UiToHostMessage::DetachTabToNewWindow {
             tab_id: TabId(1),
