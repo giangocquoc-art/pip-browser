@@ -114,7 +114,7 @@ pub(crate) enum BrowserEvent {
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
-    GoogleDnsCheckDone(WindowId, bool, Result<(), String>),
+    GoogleDnsCheckDone(WindowId, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -2136,28 +2136,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::TestGoogleDns => {
-                    let proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    let Some(proxy_port) = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port)
+                    else {
+                        self.notify_settings(
+                            win_id,
+                            "Chưa kiểm tra được tuyến DNS của Pip vì Google DNS chưa chạy. Bật G DNS rồi đóng và mở lại Pip để áp dụng, sau đó thử lại.",
+                        );
+                        return;
+                    };
                     self.notify_settings(
                         win_id,
-                        if proxy_port.is_some() {
-                            "Đang thử tải Google qua đúng tuyến DNS mà các tab Pip sử dụng..."
-                        } else {
-                            "Đang kiểm tra Google DNS. Pip hiện chưa áp dụng tuyến DNS riêng; nếu vừa bật, hãy mở lại Pip rồi kiểm tra lại."
-                        },
+                        "Đang thử tải Google qua proxy DNS đang cấu hình cho các tab Pip...",
                     );
                     let proxy = self.proxy.clone();
                     let _ = std::thread::Builder::new()
                         .name("pip-google-dns-check".to_string())
                         .spawn(move || {
-                            let result = match proxy_port {
-                                Some(port) => doh_proxy::test_google_doh_through_proxy(port),
-                                None => doh_proxy::test_google_doh(),
-                            };
-                            let _ = proxy.send_event(BrowserEvent::GoogleDnsCheckDone(
-                                win_id,
-                                proxy_port.is_some(),
-                                result,
-                            ));
+                            let result = doh_proxy::test_google_doh_through_proxy(proxy_port);
+                            let _ =
+                                proxy.send_event(BrowserEvent::GoogleDnsCheckDone(win_id, result));
                         });
                 }
                 UiToHostMessage::DuplicateTab => {
@@ -2687,23 +2684,15 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 };
                 self.notify_settings(win_id, message);
             }
-            BrowserEvent::GoogleDnsCheckDone(win_id, route_active, result) => {
-                let message = match (route_active, result) {
-                    (true, Ok(())) => {
+            BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
+                let message = match result {
+                    Ok(()) => {
                         "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".to_string()
                     }
-                    (true, Err(error)) => {
+                    Err(error) => {
                         eprintln!("Pip Google DNS route test failed: {error}");
                         let reason: String = error.chars().take(120).collect();
                         format!("Tuyến DNS của Pip chưa tải được Google. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
-                    }
-                    (false, Ok(())) => {
-                        "Google DNS có phản hồi, nhưng Pip hiện chưa dùng tuyến DNS riêng. Nếu vừa bật G DNS, hãy mở lại Pip rồi kiểm tra lại.".to_string()
-                    }
-                    (false, Err(error)) => {
-                        eprintln!("Google DNS service check failed: {error}");
-                        let reason: String = error.chars().take(120).collect();
-                        format!("Không thể kết nối tới Google DNS qua HTTPS. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
                     }
                 };
                 self.notify_settings(win_id, &message);
