@@ -74,70 +74,78 @@ export default {
   },
 };
 
-// Every vault is addressed by a cryptographically random, 256-bit bearer ID.
-// The object stores only an opaque AES-GCM envelope. It never receives a key.
+// Every vault is addressed by a cryptographically random 128-bit ID and a
+// separate 256-bit bearer token. The object stores only an opaque AES-GCM
+// envelope. It never receives a key.
 export class PipSyncVault {
   constructor(state) {
     this.storage = state.storage;
   }
 
   async fetch(request) {
-    const stored = await this.storage.get("envelope");
     const authorization = request.headers.get("Authorization") || "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
     if (!/^[a-f0-9]{64}$/.test(token)) return response("Unauthorized", 401);
     const tokenHash = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
-    const savedTokenHash = await this.storage.get("tokenHash");
-    if (savedTokenHash && !constantTimeEqual(tokenHash, savedTokenHash)) return response("Unauthorized", 401);
-    const revoked = await this.storage.get("revoked");
-
-    if (request.method === "GET") {
-      if (revoked) return response("Vault deleted", 410);
-      if (!stored) return response("Not found", 404);
-      return response(stored.body, 200, {
-        "Content-Type": "application/json; charset=utf-8",
-        ETag: stored.etag,
-      });
-    }
-
-    if (request.method === "DELETE") {
-      if (revoked) return response(null, 204);
-      if (stored) {
-        const condition = request.headers.get("If-Match");
-        if (condition !== stored.etag && condition !== "*") return response("Conflict", 412);
-      }
-      await this.storage.delete("envelope");
-      if (!savedTokenHash) await this.storage.put("tokenHash", tokenHash);
-      // Retain only a one-bit tombstone and the access-token hash. This prevents another
-      // device with the old recovery code from silently recreating the deleted vault.
-      await this.storage.put("revoked", true);
-      return response(null, 204);
-    }
-    if (revoked) return response("Vault deleted", 410);
-
     let body;
-    try {
-      body = await readLimitedText(request);
-    } catch {
-      return response("Invalid UTF-8", 400);
+    let etag;
+    if (request.method === "PUT") {
+      try {
+        body = await readLimitedText(request);
+      } catch {
+        return response("Invalid UTF-8", 400);
+      }
+      if (body === null) return response("Payload too large", 413);
+      let envelope;
+      try {
+        envelope = JSON.parse(body);
+      } catch {
+        return response("Invalid JSON", 400);
+      }
+      if (!validPayload(envelope)) return response("Invalid encrypted envelope", 400);
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+      etag = `"${hex(bytes)}"`;
     }
-    if (body === null) return response("Payload too large", 413);
-    let envelope;
-    try {
-      envelope = JSON.parse(body);
-    } catch {
-      return response("Invalid JSON", 400);
-    }
-    if (!validPayload(envelope)) return response("Invalid encrypted envelope", 400);
 
-    const condition = request.headers.get("If-Match");
-    const create = request.headers.get("If-None-Match") === "*";
-    if (stored ? condition !== stored.etag : !create) return response("Conflict", 412);
+    // Keep the revision check and its corresponding write/delete in one
+    // Durable Object transaction. Hashing and body parsing happen beforehand,
+    // so overlapping requests cannot both pass an If-Match check on stale data.
+    return this.storage.transaction(async (txn) => {
+      const values = await txn.get(["envelope", "tokenHash", "revoked"]);
+      const stored = values.get("envelope");
+      const savedTokenHash = values.get("tokenHash");
+      const revoked = values.get("revoked");
+      if (savedTokenHash && !constantTimeEqual(tokenHash, savedTokenHash)) return response("Unauthorized", 401);
 
-    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
-    const etag = `"${hex(bytes)}"`;
-    await this.storage.put("envelope", { body, etag });
-    if (!savedTokenHash) await this.storage.put("tokenHash", tokenHash);
-    return response(null, 204, { ETag: etag });
+      if (request.method === "GET") {
+        if (revoked) return response("Vault deleted", 410);
+        if (!stored) return response("Not found", 404);
+        return response(stored.body, 200, {
+          "Content-Type": "application/json; charset=utf-8",
+          ETag: stored.etag,
+        });
+      }
+
+      if (request.method === "DELETE") {
+        if (revoked) return response(null, 204);
+        if (stored) {
+          const condition = request.headers.get("If-Match");
+          if (condition !== stored.etag && condition !== "*") return response("Conflict", 412);
+        }
+        await txn.delete("envelope");
+        // Retain only a one-bit tombstone and the access-token hash. This prevents another
+        // device with the old recovery code from silently recreating the deleted vault.
+        await txn.put({ tokenHash: savedTokenHash || tokenHash, revoked: true });
+        return response(null, 204);
+      }
+
+      if (revoked) return response("Vault deleted", 410);
+      const condition = request.headers.get("If-Match");
+      const create = request.headers.get("If-None-Match") === "*";
+      if (stored ? condition !== stored.etag : !create) return response("Conflict", 412);
+      await txn.put({ envelope: { body, etag }, tokenHash: savedTokenHash || tokenHash });
+      return response(null, 204, { ETag: etag });
+    });
   }
 }
+

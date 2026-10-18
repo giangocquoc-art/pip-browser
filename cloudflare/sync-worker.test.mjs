@@ -8,9 +8,30 @@ const envelope = JSON.stringify({ version: 1, salt: "b".repeat(32), iv: "c".repe
 
 class MemoryStorage {
   values = new Map();
-  async get(key) { return this.values.get(key); }
-  async put(key, value) { this.values.set(key, value); }
+  tail = Promise.resolve();
+  async get(key) {
+    if (Array.isArray(key)) return new Map(key.flatMap((entryKey) => this.values.has(entryKey) ? [[entryKey, this.values.get(entryKey)]] : []));
+    return this.values.get(key);
+  }
+  async put(key, value) {
+    if (typeof key === "object") {
+      for (const [entryKey, entryValue] of Object.entries(key)) this.values.set(entryKey, entryValue);
+      return;
+    }
+    this.values.set(key, value);
+  }
   async delete(key) { return this.values.delete(key); }
+  async transaction(callback) {
+    const previous = this.tail;
+    let release;
+    this.tail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await callback(this);
+    } finally {
+      release();
+    }
+  }
 }
 
 function testEnv() {
@@ -53,6 +74,47 @@ test("rejects stale writes instead of silently overwriting a newer device", asyn
   assert.equal(stale.status, 412);
 });
 
+test("serializes concurrent conditional writes so only one revision wins", async () => {
+  const env = testEnv();
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
+  const created = await worker.fetch(new Request(url, {
+    method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope,
+  }), env);
+  const etag = created.headers.get("ETag");
+  const nextEnvelope = JSON.stringify({ version: 1, salt: "f".repeat(32), iv: "1".repeat(24), ciphertext: "2".repeat(64) });
+  const writes = await Promise.all([
+    worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-Match": etag }), body: nextEnvelope }), env),
+    worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-Match": etag }), body: envelope }), env),
+  ]);
+  assert.deepEqual(writes.map((result) => result.status).sort(), [204, 412]);
+});
+
+test("a delete racing a newer write cannot erase the accepted revision", async () => {
+  const env = testEnv();
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
+  const created = await worker.fetch(new Request(url, {
+    method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope,
+  }), env);
+  const etag = created.headers.get("ETag");
+  const nextEnvelope = JSON.stringify({ version: 1, salt: "f".repeat(32), iv: "1".repeat(24), ciphertext: "2".repeat(64) });
+  const [write, deletion] = await Promise.all([
+    worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-Match": etag }), body: nextEnvelope }), env),
+    worker.fetch(new Request(url, { method: "DELETE", headers: auth({ "If-Match": etag }) }), env),
+  ]);
+  assert.ok(
+    (write.status === 204 && deletion.status === 412)
+      || (write.status === 410 && deletion.status === 204),
+    `unexpected concurrent outcomes: write=${write.status}, delete=${deletion.status}`,
+  );
+  const current = await worker.fetch(new Request(url, { headers: auth() }), env);
+  if (deletion.status === 204) {
+    assert.equal(current.status, 410);
+  } else {
+    assert.equal(current.status, 200);
+    assert.equal(await current.text(), nextEnvelope);
+  }
+});
+
 test("rejects weak vault IDs, malformed envelopes, and unsupported methods", async () => {
   const env = testEnv();
   assert.equal((await worker.fetch(new Request("https://sync.psharehub.com/v1/vault/abc"), env)).status, 404);
@@ -93,3 +155,4 @@ test("permanently deletes a vault, revokes old devices, and requires a new recov
   assert.equal((await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope }), env)).status, 410);
   assert.equal((await worker.fetch(new Request(url, { method: "DELETE", headers: auth() }), env)).status, 204);
 });
+
