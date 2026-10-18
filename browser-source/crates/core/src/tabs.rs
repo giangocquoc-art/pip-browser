@@ -31,6 +31,9 @@ pub struct TabState {
     pub is_muted: bool,
     #[serde(default)]
     pub pinned: bool,
+    /// Prevent automatic suspension while the user needs this tab to stay active.
+    #[serde(default)]
+    pub keep_awake: bool,
     /// Optional visual grouping metadata, persisted with the tab session.
     #[serde(default)]
     pub group: Option<TabGroup>,
@@ -78,6 +81,7 @@ impl TabManager {
             is_audio_playing: false,
             is_muted: false,
             pinned: false,
+            keep_awake: false,
             group: None,
             status: TabStatus::Active,
             last_active_timestamp_secs: current_time_secs,
@@ -204,6 +208,12 @@ impl TabManager {
             tab.pinned = !tab.pinned;
             self.tabs.sort_by_key(|t| !t.pinned);
         }
+    }
+
+    pub fn toggle_keep_awake(&mut self, id: TabId) -> Option<bool> {
+        let tab = self.tabs.iter_mut().find(|tab| tab.id == id)?;
+        tab.keep_awake = !tab.keep_awake;
+        Some(tab.keep_awake)
     }
 
     /// Assign a tab to a named group, or remove it from its group when `name` is empty.

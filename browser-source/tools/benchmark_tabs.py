@@ -1,5 +1,5 @@
 """Compare 12 local tabs in hidden, disposable Pip instances. Dev-only CDP, never user profiles.
-Usage: python tools/benchmark_tabs.py old.exe new.exe
+Usage: python tools/benchmark_tabs.py old.exe new.exe [--sleep-test]
 Requires existing developer tools: psutil and websockets. This does not benchmark real video sites.
 """
 import asyncio
@@ -68,6 +68,14 @@ async def run(binary,url):
     try:
         chrome=await wait_for(lambda pages:next((p for p in pages if p.get('title')=='Pip'),None))
         async with websockets.connect(chrome['webSocketDebuggerUrl'],max_size=8*1024*1024) as ws:
+            if sleep_test:
+                expression='postIpc("SaveSettings",{settings_json:JSON.stringify({performance:{sleep_after_secs:10,background_throttling:true}})})'
+                await ws.send(json.dumps({'id':100,'method':'Runtime.evaluate','params':{'expression':expression,'returnByValue':True}}))
+                while True:
+                    reply=json.loads(await ws.recv())
+                    if reply.get('id')==100:
+                        assert 'exceptionDetails' not in reply.get('result',{}),reply
+                        break
             for count in range(1,12):
                 expression='postIpc("CreateTab",{url:'+json.dumps(url+f'?tab={count}')+'})'
                 await ws.send(json.dumps({'id':count,'method':'Runtime.evaluate','params':{'expression':expression,'returnByValue':True}}))
@@ -79,15 +87,43 @@ async def run(binary,url):
                 await wait_for(lambda pages:sum(p.get('title')=='Pip tab benchmark' for p in pages)==count+1)
         await asyncio.sleep(3)
         samples=[]
-        for _ in range(3):
+        async def sample():
             processes=[parent]+parent.children(recursive=True)
             memory=[p.memory_info() for p in processes if p.is_running()]
-            samples.append({'processes':len(memory),'host_private_mib':parent.memory_info().private/1048576,
-                            'total_private_mib':sum(m.private for m in memory)/1048576,
-                            'summed_working_set_mib':sum(m.rss for m in memory)/1048576})
-            await asyncio.sleep(.3)
+            return {'processes':len(memory),'host_private_mib':parent.memory_info().private/1048576,
+                    'total_private_mib':sum(m.private for m in memory)/1048576,
+                    'summed_working_set_mib':sum(m.rss for m in memory)/1048576}
+        samples.append(await sample())
+        sleep_check=None
+        if sleep_test:
+            async def sleeping_tabs(pages):
+                chrome_page=next((p for p in pages if p.get('title')=='Pip'),None)
+                if not chrome_page:return None
+                expression='document.querySelectorAll(".tab[aria-label*=\\\'tab đang ngủ\\\']").length'
+                async with websockets.connect(chrome_page['webSocketDebuggerUrl'],max_size=8*1024*1024) as ws:
+                    await ws.send(json.dumps({'id':200,'method':'Runtime.evaluate','params':{'expression':expression,'returnByValue':True}}))
+                    while True:
+                        reply=json.loads(await ws.recv())
+                        if reply.get('id')==200:
+                            return reply.get('result',{}).get('result',{}).get('value',0)
+            deadline=asyncio.get_running_loop().time()+50
+            asleep=0
+            while asyncio.get_running_loop().time()<deadline and asleep<11:
+                await asyncio.sleep(.5)
+                asleep=await sleeping_tabs(await targets()) or 0
+            samples.append(await sample())
+            sleep_check={'suspended_background_tabs':asleep,'expected_background_tabs':11,
+                         'wait_seconds':round(50-(deadline-asyncio.get_running_loop().time()),1)}
+        else:
+            for _ in range(2):
+                await asyncio.sleep(.3)
+                samples.append(await sample())
         result={'binary':str(binary),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
                 'tabs':12,'median':{k:round(statistics.median(s[k] for s in samples),2) for k in samples[0]}}
+        if sleep_check:
+            result['sleep_test']=sleep_check
+            result['before_sleep']=samples[0]
+            result['after_sleep']=samples[1]
         print(json.dumps(result,ensure_ascii=False),flush=True)
         return result
     finally:
@@ -99,26 +135,38 @@ async def run(binary,url):
             except psutil.NoSuchProcess:pass
 
 async def main():
-    assert len(sys.argv)==3,'Supply before and after executables'
+    global sleep_test
+    sleep_test='--sleep-test' in sys.argv
+    binaries=[arg for arg in sys.argv[1:] if arg!='--sleep-test']
+    assert len(binaries)==2,'Supply before and after executables'
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
         url=f'http://127.0.0.1:{server.server_port}/'
-        binaries=sys.argv[1:]
         results=[]
-        for cycle in range(3):
+        for cycle in range(1 if sleep_test else 3):
             for binary in (binaries if cycle%2==0 else binaries[::-1]):
                 results.append(await run(binary,url))
-        comparison=[]
+        inputs={}
         for binary in binaries:
-            samples=[r['median'] for r in results if r['binary']==str(Path(binary).resolve())]
-            comparison.append({'binary':str(Path(binary).resolve()),'runs':len(samples),
+            resolved=str(Path(binary).resolve())
+            digest=hashlib.sha256(Path(resolved).read_bytes()).hexdigest()
+            inputs.setdefault(digest,resolved)
+        comparison=[]
+        for digest,binary in inputs.items():
+            samples=[r['median'] for r in results if r['sha256']==digest]
+            summary={'binary':binary,'sha256':digest,'runs':len(samples),
                 'median':{key:round(statistics.median(sample[key] for sample in samples),2) for key in samples[0]},
-                'private_mib_range':[min(sample['total_private_mib'] for sample in samples),max(sample['total_private_mib'] for sample in samples)]})
-        report={'scenario':'12 identical local static tabs; hidden windows; CDP on loopback; fresh portable profiles',
-                'limitations':'Three fresh-profile runs per binary, alternating order; three samples each. Working sets double-count shared pages. Does not prove real-site, media, 4GB-device or long-session performance.',
-                'results':results,'comparison':comparison}
-        Path('target/tab-benchmark.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+                'private_mib_range':[min(sample['total_private_mib'] for sample in samples),max(sample['total_private_mib'] for sample in samples)]}
+            comparison.append(summary)
+        report={'scenario':'12 identical local static tabs; hidden windows; CDP on loopback; fresh portable profiles'+('; 10-second idle threshold; compare memory before/after suspension' if sleep_test else ''),
+                'comparison_valid':len(inputs)>1,
+                'input_sha256':list(inputs),
+                'limitations':('One fresh-profile run per binary; static fixture does not model real sites or media. Working sets double-count shared pages.' if sleep_test else 'Three fresh-profile runs per binary, alternating order; three samples each. Working sets double-count shared pages. Does not prove real-site, media, 4GB-device or long-session performance.'),
+                'results':results,'comparison':comparison if len(inputs)>1 else None,
+                'single_binary_baseline':comparison[0] if len(inputs)==1 else None}
+        output=Path('target/tab-sleep-benchmark.json' if sleep_test else 'target/tab-benchmark.json')
+        output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     finally:server.shutdown()
 
 if __name__=='__main__':asyncio.run(main())

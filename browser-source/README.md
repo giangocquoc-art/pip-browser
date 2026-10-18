@@ -8,8 +8,11 @@ Pip là trình duyệt Windows 10/11 x64 dựa trên Microsoft Edge WebView2, v�
 - Nhấp phải vào tab để tạo nhóm, chuyển tab giữa các nhóm hoặc bỏ nhóm. Tên nhóm và màu được lưu cùng phiên tab của cửa sổ.
 - Dịch văn bản trang sang tiếng Việt bằng Translator API trên thiết bị của WebView2 khi runtime hỗ trợ; có thể khôi phục văn bản gốc.
 - Hồ sơ riêng lưu dữ liệu website độc lập; cửa sổ ẩn danh không lưu lịch sử duyệt web.
+- Quản lý quyền website theo hồ sơ; xem và đặt lại quyền đã lưu để website hỏi lại.
+- Quản lý tiện ích mở rộng tương thích WebView2: cài thư mục unpacked, bật/tắt và gỡ theo hồ sơ; WebView2 không có nút và popup toolbar của Chrome.
 - Tùy chọn đồng bộ dấu trang mã hóa đầu-cuối theo hồ sơ; máy chủ không nhận khóa giải mã. Mã khôi phục dùng để ghép thiết bị.
-- Brave Adblock Rust xử lý bộ lọc EasyList, uBlock Origin và danh sách popup HaGeZi được đóng gói sẵn. Khi bộ lọc bật cho website, Pip chặn popup tự mở và đối chiếu đích popup với danh sách quảng cáo, popup và cá cược HaGeZi; tên miền phụ của miền cá cược trong danh sách cũng bị nhận diện. Quy tắc cá cược chỉ áp dụng cho popup, không chặn điều hướng bình thường. YouTube và website khác có thể thay đổi cách phân phối quảng cáo nên không thể cam kết chặn mọi quảng cáo.
+- Tự ngủ tab nền sau thời gian bạn chọn để giảm hoạt động nền và yêu cầu WebView2 tiết kiệm bộ nhớ; mức RAM thu hồi tùy trang và runtime. Tab phát âm thanh, đang tải, được ghim hoặc được bạn chọn giữ thức vẫn hoạt động. Biểu mẫu trong trang không bị xóa và tab tự chạy lại khi được mở.
+- Brave Adblock Rust xử lý luật mạng EasyList/uBlock Origin, procedural cosmetic filters và popup HaGeZi; request từ document, service worker và shared worker được lọc khi WebView2 Runtime hỗ trợ. Menu Pip có **Sửa lỗi phát video** để tắt lọc cho website hiện tại rồi tải lại sau khi người dùng xác nhận. Luật redirect dùng một số tài nguyên thay thế cục bộ đã đóng gói. YouTube và website khác có thể thay đổi cách phân phối quảng cáo nên không thể cam kết chặn mọi quảng cáo.
 - Google DNS bảo mật là tùy chọn. DNS không ẩn địa chỉ IP và không thay thế VPN.
 - Dùng WebView2 Runtime do Microsoft cập nhật; Pip không mang theo một bản Chromium riêng.
 

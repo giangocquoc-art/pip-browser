@@ -91,6 +91,27 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       border-bottom: none;
     }
 
+    .site-permissions-list{display:grid;gap:8px;padding:10px 18px 16px}
+    .site-permission-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border-separator);border-radius:9px}
+    .site-permission-detail{display:flex;min-width:0;flex-direction:column;gap:3px}
+    .site-permission-detail strong{overflow-wrap:anywhere;font-size:13px;color:var(--text-main)}
+    .site-permission-detail span,.empty-state{font-size:12px;color:var(--text-muted)}
+    .empty-state{padding:4px 2px}
+    .password-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:16px 20px;border-bottom:1px solid var(--border-separator)}
+    .password-form .password-wide{grid-column:1/-1}
+    .password-list{display:grid;gap:8px;padding:12px 18px 16px}
+    .password-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--border-separator);border-radius:9px}
+    .password-detail{display:flex;min-width:0;flex-direction:column;gap:3px;overflow-wrap:anywhere}
+    .password-detail strong{font-size:13px}.password-detail span{font-size:12px;color:var(--text-muted)}
+    .password-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
+    @media(max-width:640px){.password-form{grid-template-columns:1fr}.password-form .password-wide{grid-column:auto}.password-item{align-items:flex-start;flex-direction:column}.password-actions{justify-content:flex-start}}
+    .extension-list{display:grid;gap:8px;padding:12px 18px 16px}
+    .extension-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--border-separator);border-radius:9px}
+    .extension-detail{display:flex;min-width:0;flex-direction:column;gap:3px;overflow-wrap:anywhere}
+    .extension-detail strong{font-size:13px}.extension-detail span{font-size:12px;color:var(--text-muted)}
+    .extension-actions{display:flex;flex-wrap:wrap;gap:6px}
+    @media(max-width:640px){.extension-item{align-items:flex-start;flex-direction:column}}
+
     .row-info {
       display: flex;
       flex-direction: column;
@@ -150,6 +171,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     .btn:hover {
       background: var(--accent-blue-hover);
     }
+    .btn[hidden] { display:none!important; }
 
     .btn-secondary {
       background: rgba(255, 255, 255, 0.08);
@@ -353,15 +375,27 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     <div class="section-title">Hướng dẫn Pip</div>
     <div class="card help-card">
       <details><summary>Thanh công cụ: hồ sơ, dấu trang, khiên và G DNS</summary><p><b>Hồ sơ</b> mở các cửa sổ có đăng nhập, lịch sử và dấu trang riêng. <b>Ngôi sao</b> hoặc Ctrl+D lưu trang đang xem. <b>Khiên</b> đổi chặn quảng cáo cho hostname hiện tại; nhấn F5 sau khi đổi. <b>G DNS</b> đổi cách tra cứu địa chỉ website qua Google; mở lại Pip để áp dụng.</p></details>
-      <details><summary>Chặn quảng cáo hoạt động thế nào?</summary><p>Brave Adblock Rust lọc yêu cầu mạng bằng bộ lọc tích hợp, kèm quy tắc ẩn quảng cáo và scriptlet cho YouTube. Nếu trang lỗi, thử tắt khiên cho trang đó rồi tải lại. Quảng cáo YouTube có thể thay đổi và vẫn xuất hiện; bộ lọc được cập nhật cùng bản Pip mới.</p></details>
-      <details><summary>Hồ sơ và ẩn danh khác nhau thế nào?</summary><p>Hồ sơ giữ đăng nhập và dữ liệu website riêng trên thiết bị; chưa có đồng bộ đám mây. Ẩn danh không ghi lịch sử. Đóng toàn bộ cửa sổ ẩn danh của hồ sơ để kết thúc phiên; tệp tải và dấu trang chủ động lưu vẫn còn. Website và nhà mạng vẫn có thể nhận biết kết nối.</p></details>
-      <details><summary>Các phím tắt thường dùng</summary><p>Ctrl+T: tab mới · Ctrl+Tab: tab kế · Ctrl+W: đóng tab · Ctrl+Shift+T: mở lại tab đã đóng · Ctrl+L: thanh địa chỉ · Ctrl+H: lịch sử · Ctrl+Shift+O: dấu trang · Ctrl+J: tải xuống · Ctrl+F: tìm chữ · Ctrl+Shift+N: ẩn danh. Xem danh sách đầy đủ trong Menu → Phím tắt.</p></details>
+      <details><summary>Chặn quảng cáo hoạt động thế nào?</summary><p>Brave Adblock Rust lọc yêu cầu mạng bằng bộ lọc tích hợp, kèm quy tắc ẩn quảng cáo và scriptlet cho YouTube. Nếu trang lỗi, thử tắt khiên cho trang đó rồi tải lại. Quảng cáo YouTube có thể thay đổi và vẫn xuất hiện; bạn có thể cập nhật danh sách trong Cài đặt.</p></details>
+      <details><summary>Hồ sơ và ẩn danh khác nhau thế nào?</summary><p>Hồ sơ giữ đăng nhập và dữ liệu website riêng trên thiết bị. Pip Sync chỉ đồng bộ dấu trang đã mã hóa sau khi bạn tạo mã và bấm đồng bộ. Ẩn danh không ghi lịch sử. Đóng toàn bộ cửa sổ ẩn danh của hồ sơ để kết thúc phiên; tệp tải và dấu trang chủ động lưu vẫn còn. Website và nhà mạng vẫn có thể nhận biết kết nối.</p></details>
+      <details><summary>Các phím tắt thường dùng</summary><p>Ctrl+T: tab mới · Ctrl+Tab: tab kế · Ctrl+W: đóng tab · Ctrl+Shift+W: đóng cửa sổ · Ctrl+Shift+T: mở lại tab đã đóng · Ctrl+L: thanh địa chỉ · Ctrl+H: lịch sử · Ctrl+Shift+O: dấu trang · Ctrl+J: tải xuống · Ctrl+Shift+Delete: xóa dữ liệu duyệt web · Ctrl+F: tìm chữ · Ctrl+Shift+M: chuyển hồ sơ · Ctrl+Shift+N: ẩn danh · Alt+Shift+P: điền mật khẩu duy nhất đã lưu cho website hiện tại. Xem danh sách đầy đủ trong Menu → Phím tắt.</p></details>
+    </div>
+    <div class="section-title">Chặn quảng cáo</div>
+    <div class="card">
+      <div class="row">
+        <div class="row-info">
+          <span class="row-label">Cập nhật danh sách bộ lọc</span>
+          <span class="row-desc" id="adblockUpdateStatus" aria-live="polite">Tải EasyList và uBlock Origin qua HTTPS. Danh sách chỉ chứa luật lọc mạng; khởi động lại Pip để áp dụng.</span>
+        </div>
+        <button class="btn btn-secondary" id="updateAdblockFiltersButton" onclick="updateAdblockFilters()">Cập nhật bộ lọc</button>
+      </div>
     </div>
     <div class="section-title">Bộ nhớ và dữ liệu</div>
     <div class="card help-card">
       <details><summary>Mở nhiều tab mà nhẹ hơn</summary><p>Tab được khôi phục từ phiên trước chỉ tải khi bạn chọn. Tab đang ẩn được WebView2 yêu cầu giảm bộ nhớ đệm; trang vẫn giữ nội dung khi chuyển tab. Đóng các tab không cần để giải phóng thêm RAM; ghim tab chỉ giữ vị trí, không làm tab nhẹ hơn. Pip không tự hủy trang đang nhập liệu hoặc cuộc gọi.</p></details>
       <details><summary>RAM, dung lượng đĩa và Internet</summary><p>RAM là bộ nhớ của các trang đang mở. Dung lượng đĩa gồm bộ nhớ đệm, cookie, dữ liệu website và tệp đã tải, có thể tăng theo cách dùng. Mỗi hồ sơ lưu một bộ dữ liệu riêng; chỉ tạo khi cần tách tài khoản. Pip dùng chung WebView2 của Microsoft. Không có trình duyệt nhiều tab nào sử dụng bằng không các tài nguyên này.</p></details>
+      <div class="row"><div class="row-info"><span class="row-label">Tự ngủ tab nền để giảm hoạt động</span><span class="row-desc">WebView2 tạm dừng đồng hồ và hoạt ảnh của tab không hoạt động, đồng thời được yêu cầu tiết kiệm bộ nhớ; mức RAM thu hồi tùy trang và WebView2. Biểu mẫu vẫn ở nguyên trong trang. Tab phát âm thanh, đang tải, đang tải tệp hoặc được bạn chọn giữ thức sẽ không tự ngủ. Mở Menu → Giữ tab này thức cho cuộc gọi và tác vụ nền.</span></div><div class="row-action"><label><input type="checkbox" id="backgroundThrottlingToggle" {{BACKGROUND_TAB_SLEEP_ENABLED}} onchange="onToggleChange('backgroundThrottling',this.checked)"> Bật</label><select id="sleepAfterSelect" {{SLEEP_DELAY_DISABLED}} aria-label="Thời gian trước khi tab nền ngủ" onchange="onIdleSleepChange(this.value)"><option value="0">Không tự ngủ</option><option value="60">Sau 1 phút</option><option value="300">Sau 5 phút</option><option value="900">Sau 15 phút</option><option value="1800">Sau 30 phút</option></select></div></div>
       <div class="row"><div class="row-info"><span class="row-label">Dọn bộ nhớ đệm website</span><span class="row-desc">Xóa bản sao tạm của ảnh và tệp website thuộc hồ sơ hiện tại để thu hồi dung lượng đĩa. Giữ cookie đăng nhập, lịch sử, dấu trang và tệp tải. Website có thể tải chậm hơn trong lần mở kế tiếp.</span></div><button class="btn btn-secondary" id="clearCacheButton" onclick="sendAction('ClearCache')">Xóa bộ nhớ đệm</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Xóa dữ liệu duyệt web</span><span class="row-desc">Xóa các loại đã chọn trong toàn bộ thời gian của hồ sơ hiện tại. Lịch sử gồm Pip và WebView2; xóa lịch sử tải xuống không xóa tệp hoặc hủy lượt tải đang chạy. Dấu trang luôn được giữ lại.</span></div><div class="row-action" role="group" aria-label="Loại dữ liệu cần xóa"><label><input id="clearDataHistory" type="checkbox"> Lịch sử</label><label><input id="clearDataSite" type="checkbox"> Cookie và dữ liệu website</label><label><input id="clearDataCache" type="checkbox"> Bộ nhớ đệm</label><label><input id="clearDataPasswords" type="checkbox"> Mật khẩu đã lưu</label><label><input id="clearDataAutofill" type="checkbox"> Dữ liệu tự điền</label><label><input id="clearDataDownloads" type="checkbox"> Lịch sử tải xuống</label></div><button class="btn btn-secondary" id="clearSelectedBrowsingDataButton" onclick="clearSelectedBrowsingData()">Xóa dữ liệu đã chọn</button></div>
     </div>
 
     <div class="section-title">Bộ máy & phiên bản</div>
@@ -384,6 +418,16 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
           <span class="val-badge active">Microsoft quản lý</span>
         </div>
       </div>
+      <div class="row">
+        <div class="row-info">
+          <span class="row-label">Cập nhật Pip</span>
+          <span class="row-desc" id="appUpdateStatus" aria-live="polite">Chỉ kết nối GitHub khi bạn bấm kiểm tra.</span>
+        </div>
+        <div class="row-action">
+          <button class="btn btn-secondary" id="checkAppUpdatesButton" onclick="checkAppUpdates()">Kiểm tra phiên bản</button>
+          <a class="btn" id="openAppReleaseButton" hidden target="_blank" rel="noopener noreferrer">Mở bản phát hành</a>
+        </div>
+      </div>
     </div>
 
     <div class="section-title">Tính năng trình duyệt</div>
@@ -403,7 +447,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       <div class="row">
         <div class="row-info">
           <span class="row-label">Quản lý tải xuống</span>
-          <span class="row-desc">Ctrl+J mở tiến trình, hủy tải, mở tệp hoặc thư mục. Danh sách chỉ thuộc phiên của cửa sổ này</span>
+          <span class="row-desc">Ctrl+J mở lịch sử tải của hồ sơ, hủy lượt đang chạy, mở tệp hoặc thư mục</span>
         </div>
         <div class="row-action">
           <label class="switch">
@@ -633,6 +677,8 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
           </select>
         </div>
       </div>
+      <div class="row"><div class="row-info"><span class="row-label">Quyền đã cấp cho website</span><span class="row-desc" id="sitePermissionsHint">Danh sách quyền riêng theo hồ sơ. Đặt lại để website hỏi lại lần sau.</span></div><button class="btn btn-secondary" id="refreshSitePermissionsButton" onclick="profileAction('GetSitePermissions')">Tải lại</button></div>
+      <div id="sitePermissionsList" class="site-permissions-list" role="list" aria-live="polite"><span class="empty-state">Đang tải quyền đã lưu…</span></div>
     </div>
 
     <div class="section-title">Kết nối</div>
@@ -643,17 +689,33 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Hồ sơ và riêng tư</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Đồng bộ dấu trang có mã hóa</span><span class="row-desc"><span id="syncState">Mã hóa trên thiết bị trước khi gửi.</span> Chỉ đồng bộ dấu trang và mục đã xóa; không đồng bộ mật khẩu, lịch sử, cookie hoặc phiên tab. Hãy giữ mã khôi phục ở nơi riêng.</span></div><button class="btn btn-secondary" id="syncCreateButton" onclick="profileAction('EnableBookmarkSync')">Tạo mã đồng bộ</button><button class="btn btn-secondary" id="syncImportButton" onclick="const code=prompt('Nhập mã khôi phục Pip Sync trên thiết bị khác');if(code)profileAction('ImportBookmarkSync',{recovery_code:code})">Nhập mã</button><button class="btn btn-secondary" id="syncCodeButton" onclick="profileAction('ShowBookmarkSyncCode')">Hiện mã khôi phục</button><button class="btn" id="syncNowButton" onclick="profileAction('SyncBookmarks')">Đồng bộ ngay</button><button class="btn btn-secondary" id="syncDisableButton" onclick="if(confirm('Xóa dấu trang đồng bộ khỏi máy chủ và tắt Pip Sync trong hồ sơ này?'))profileAction('DisableBookmarkSync')">Tắt và xóa</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Đồng bộ dấu trang có mã hóa</span><span class="row-desc"><span id="syncState">Mã hóa trên thiết bị trước khi gửi. Khi bật, Pip tự đồng bộ lúc mở và sau khi sửa dấu trang.</span> Chỉ đồng bộ dấu trang và mục đã xóa; không đồng bộ mật khẩu, lịch sử, cookie hoặc phiên tab. Hãy giữ mã khôi phục ở nơi riêng.</span></div><button class="btn btn-secondary" id="syncCreateButton" onclick="profileAction('EnableBookmarkSync')">Tạo mã đồng bộ</button><button class="btn btn-secondary" id="syncImportButton" onclick="const code=prompt('Nhập mã khôi phục Pip Sync trên thiết bị khác');if(code)profileAction('ImportBookmarkSync',{recovery_code:code})">Nhập mã</button><button class="btn btn-secondary" id="syncCodeButton" onclick="profileAction('ShowBookmarkSyncCode')">Hiện mã khôi phục</button><button class="btn" id="syncNowButton" onclick="profileAction('SyncBookmarks')">Đồng bộ ngay</button><button class="btn btn-secondary" id="syncDisableButton" onclick="if(confirm('Xóa dấu trang đồng bộ khỏi máy chủ và tắt Pip Sync trong hồ sơ này?'))profileAction('DisableBookmarkSync')">Tắt và xóa</button></div>
       <div class="row"><div class="row-info"><span class="row-label">Hồ sơ đang dùng</span><span class="row-desc">Cookie, đăng nhập và dữ liệu website được tách theo hồ sơ. Không đồng bộ tài khoản Chrome.</span></div><strong id="currentProfileName"></strong></div>
       <div class="row"><select id="profileSelect" title="Chọn hồ sơ để mở cửa sổ riêng hoặc đổi tên" aria-label="Hồ sơ"></select><button class="btn btn-secondary" onclick="profileAction('OpenProfile',{id:profileSelect.value})">Mở hồ sơ</button></div>
-      <div class="row"><input id="profileName" class="text-input" maxlength="40" placeholder="Tên hồ sơ" aria-label="Tên hồ sơ"><button class="btn btn-secondary" onclick="profileAction('CreateProfile',{name:profileName.value})">Tạo hồ sơ</button><button class="btn btn-secondary" onclick="profileAction('RenameProfile',{id:profileSelect.value,name:profileName.value})">Đổi tên hồ sơ đã chọn</button></div>
+      <div class="row"><input id="profileName" class="text-input" maxlength="40" placeholder="Tên hồ sơ" aria-label="Tên hồ sơ"><button class="btn btn-secondary" onclick="profileAction('CreateProfile',{name:profileName.value})">Tạo hồ sơ</button><button class="btn btn-secondary" onclick="profileAction('RenameProfile',{id:profileSelect.value,name:profileName.value})">Đổi tên hồ sơ đã chọn</button><button class="btn btn-secondary" id="deleteProfileButton" onclick="if(confirm('Xóa vĩnh viễn hồ sơ đã chọn cùng cookie, dữ liệu website, mật khẩu, dấu trang, lịch sử và phiên tab? Pip sẽ khởi động lại. Lịch sử tải xuống bị xóa, các tệp đã tải vẫn được giữ.'))profileAction('DeleteProfile',{id:profileSelect.value})">Xóa hồ sơ</button></div>
       <div class="row"><div class="row-info"><span class="row-label">Cửa sổ ẩn danh</span><span class="row-desc">Không ghi lịch sử hoặc lưu phiên tab. Dữ liệu website của phiên ẩn danh được bỏ khi đóng toàn bộ cửa sổ ẩn danh của hồ sơ; tệp đã tải vẫn còn.</span></div><button class="btn btn-secondary" onclick="sendAction('OpenPrivateWindow')">Mở ẩn danh</button></div>
       <div class="row"><div class="row-info"><span class="row-label">Xóa cookie và dữ liệu website</span><span class="row-desc">Xóa cookie và dữ liệu website của hồ sơ hiện tại để đăng xuất; các trang đang mở có thể cần tải lại. Giữ dấu trang, lịch sử, mật khẩu và tệp tải xuống.</span></div><button class="btn btn-secondary" id="clearSiteDataButton" onclick="if(confirm('Xóa cookie và dữ liệu website của hồ sơ hiện tại? Bạn sẽ bị đăng xuất khỏi các website.')) sendAction('ClearSiteData')">Xóa dữ liệu website</button></div>
     </div>
     <div class="section-title">Mật khẩu và tự điền</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Lưu mật khẩu và tự điền của WebView2</span><span class="row-desc">Áp dụng cho hồ sơ hiện tại, luôn tắt trong ẩn danh. Pip không có kho mật khẩu riêng.</span></div><input id="autofillToggle" type="checkbox" aria-label="Lưu mật khẩu và tự điền" onchange="profileAction('SetAutofill',{enabled:this.checked})"></div>
-      <div class="row"><span>Xóa mật khẩu đã lưu của hồ sơ này</span><button class="btn btn-secondary" id="clearPasswordsButton" onclick="if(confirm('Xóa toàn bộ mật khẩu đã lưu trong hồ sơ này?')) sendAction('ClearSavedPasswords')">Xóa mật khẩu</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Lưu mật khẩu và tự điền của WebView2</span><span class="row-desc">Tùy chọn này áp dụng cho hồ sơ hiện tại và luôn tắt trong ẩn danh.</span></div><input id="autofillToggle" type="checkbox" aria-label="Lưu mật khẩu và tự điền" onchange="profileAction('SetAutofill',{enabled:this.checked})"></div>
+      <div class="row"><div class="row-info"><span class="row-label">Kho mật khẩu Pip</span><span class="row-desc" id="passwordVaultHint">Được mã hóa theo tài khoản Windows và tách riêng theo hồ sơ. Pip chỉ điền vào tab cùng địa chỉ website; không tự gửi biểu mẫu.</span></div></div>
+      <form class="password-form" onsubmit="savePasswordFromForm();return false">
+        <input id="passwordOrigin" class="text-input" inputmode="url" autocomplete="url" placeholder="https://example.com" aria-label="Địa chỉ website" required>
+        <input id="passwordUsername" class="text-input" autocomplete="username" placeholder="Tên đăng nhập" aria-label="Tên đăng nhập" required>
+        <input id="passwordValue" class="text-input password-wide" type="password" autocomplete="new-password" placeholder="Mật khẩu" aria-label="Mật khẩu" required>
+        <button class="btn password-wide" id="savePasswordButton" type="submit">Lưu mật khẩu mã hóa</button>
+      </form>
+      <div class="row"><label for="passwordTargetTab">Điền vào tab đang mở</label><select id="passwordTargetTab" class="select-box" aria-label="Tab nhận mật khẩu"><option value="">Chọn tab website…</option></select></div>
+      <div id="savedPasswordsList" class="password-list" role="list" aria-live="polite"><span class="empty-state">Đang tải mật khẩu đã lưu…</span></div>
+      <div class="row"><div class="row-info"><span class="row-label">Xóa mật khẩu đã lưu của hồ sơ này</span><span class="row-desc">Xóa cả mật khẩu Pip và mật khẩu được WebView2 lưu.</span></div><button class="btn btn-secondary" id="clearPasswordsButton" onclick="if(confirm('Xóa toàn bộ mật khẩu Pip và WebView2 đã lưu trong hồ sơ này?')) sendAction('ClearSavedPasswords')">Xóa mật khẩu</button></div>
+    </div>
+
+    <div class="section-title">Tiện ích</div>
+    <div class="card">
+      <div class="row"><div class="row-info"><span class="row-label">Tiện ích mở rộng WebView2</span><span class="row-desc" id="browserExtensionsHint">Cài tiện ích tương thích từ thư mục đã giải nén. Pip không tải tiện ích từ Chrome Web Store.</span></div><button class="btn" id="addBrowserExtensionButton" onclick="if(confirm('Chỉ cài tiện ích bạn tin cậy. Tiện ích có thể đọc hoặc thay đổi dữ liệu website theo quyền trong manifest. Chọn thư mục đã giải nén có manifest.json; giữ nguyên thư mục sau khi cài.'))profileAction('SelectBrowserExtensionFolder')">Thêm tiện ích</button><button class="btn btn-secondary" id="refreshBrowserExtensionsButton" onclick="profileAction('GetBrowserExtensions')">Tải lại</button></div>
+      <div class="row"><span class="row-desc">WebView2 chưa có thanh biểu tượng và cửa sổ popup của tiện ích. Tiện ích có thể chạy script nền/nội dung, nhưng tính năng cần popup hoặc biểu tượng có thể không dùng được.</span></div>
+      <div id="browserExtensionsList" class="extension-list" role="list" aria-live="polite"><span class="empty-state">Đang tải tiện ích…</span></div>
     </div>
 
     <div id="statusBanner" class="status-banner info" role="status" aria-live="polite">
@@ -685,6 +747,30 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     });
     const currentProfileId = '{{CURRENT_PROFILE}}';
     const isPrivateProfile = {{CURRENT_PRIVATE}};
+    const profileSelect = document.getElementById('profileSelect');
+    const deleteProfileButton = document.getElementById('deleteProfileButton');
+    function updateDeleteProfileButton() {
+      const selected = Array.from(profileSelect.options).find(profile=>profile.value===profileSelect.value);
+      deleteProfileButton.disabled=isPrivateProfile || !selected || selected.value==='Default' || selected.dataset.syncEnabled==='true' || selected.dataset.open!=='true';
+    }
+    profileSelect.addEventListener('change',updateDeleteProfileButton);
+    const sitePermissionsList = document.getElementById('sitePermissionsList');
+    document.getElementById('refreshSitePermissionsButton').disabled=isPrivateProfile;
+    if(isPrivateProfile){document.getElementById('sitePermissionsHint').textContent='Quyền hồ sơ đã lưu không thể quản lý trong cửa sổ ẩn danh.';sitePermissionsList.replaceChildren(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Không khả dụng trong ẩn danh.'}));}
+    window.__renderSitePermissions = function(permissions) {
+      sitePermissionsList.replaceChildren();
+      if(!Array.isArray(permissions)||permissions.length===0){sitePermissionsList.append(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Chưa có quyền website nào được lưu.'}));return;}
+      for(const permission of permissions){
+        const row=document.createElement('div');row.className='site-permission-item';row.setAttribute('role','listitem');
+        const detail=document.createElement('div');detail.className='site-permission-detail';
+        const origin=document.createElement('strong');origin.textContent=permission.origin;
+        const state=document.createElement('span');state.textContent=`${permission.kind_name} · ${permission.state_name}`;
+        detail.append(origin,state);
+        const reset=document.createElement('button');reset.type='button';reset.className='btn btn-secondary';reset.textContent='Đặt lại';reset.setAttribute('aria-label',`Đặt lại quyền ${permission.kind_name} cho ${permission.origin}`);
+        reset.addEventListener('click',()=>{if(confirm(`Đặt lại quyền ${permission.kind_name} của ${permission.origin}? Website sẽ hỏi lại lần sau.`))profileAction('ResetSitePermission',{origin:permission.origin,kind:permission.kind_id});});
+        row.append(detail,reset);sitePermissionsList.append(row);
+      }
+    };
     function profileAction(action,payload) {
       window.ipc.postMessage(JSON.stringify({action,payload}));
     }
@@ -701,15 +787,69 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       document.getElementById('autofillToggle').checked=!isPrivateProfile && !!current?.autofill;
       document.getElementById('autofillToggle').disabled=isPrivateProfile;
       document.getElementById('clearPasswordsButton').disabled=isPrivateProfile;
+      for(const id of ['passwordOrigin','passwordUsername','passwordValue','savePasswordButton','passwordTargetTab'])document.getElementById(id).disabled=isPrivateProfile;
+      for(const id of ['addBrowserExtensionButton','refreshBrowserExtensionsButton'])document.getElementById(id).disabled=isPrivateProfile;
       document.getElementById('clearCacheButton').disabled=isPrivateProfile;
+      document.getElementById('clearSelectedBrowsingDataButton').disabled=isPrivateProfile;
+      for(const id of ['clearDataHistory','clearDataSite','clearDataCache','clearDataPasswords','clearDataAutofill','clearDataDownloads'])document.getElementById(id).disabled=isPrivateProfile;
       document.getElementById('syncCreateButton').disabled=isPrivateProfile || !!current?.syncEnabled;
       document.getElementById('syncImportButton').disabled=isPrivateProfile || !!current?.syncEnabled;
       document.getElementById('syncNowButton').disabled=isPrivateProfile || !current?.syncEnabled;
       document.getElementById('syncCodeButton').disabled=isPrivateProfile || !current?.syncEnabled;
       document.getElementById('syncDisableButton').disabled=isPrivateProfile || !current?.syncEnabled;
+      for(const option of select.options){const profile=profiles.find(p=>p.id===option.value);option.dataset.syncEnabled=profile?.syncEnabled?'true':'false';option.dataset.open=profile?.isOpen?'true':'false';}
+      updateDeleteProfileButton();
       document.getElementById('syncState').textContent=isPrivateProfile?'Đồng bộ bị tắt trong cửa sổ ẩn danh.':current?.syncEnabled?'Đã thiết lập mã hóa. Bấm Đồng bộ ngay để chuyển dấu trang.':'Mã hóa trên thiết bị trước khi gửi.';
     };
     window.__renderProfiles({{PROFILES_JSON}});
+    if(!isPrivateProfile)profileAction('GetSitePermissions');
+    if(!isPrivateProfile)profileAction('GetSavedPasswords');
+    const browserExtensionsList=document.getElementById('browserExtensionsList');
+    window.__renderBrowserExtensions=function(extensions){
+      browserExtensionsList.replaceChildren();
+      if(!Array.isArray(extensions)||extensions.length===0){browserExtensionsList.append(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Chưa cài tiện ích nào trong hồ sơ này.'}));return}
+      for(const extension of extensions){
+        const row=document.createElement('div');row.className='extension-item';row.setAttribute('role','listitem');
+        const detail=document.createElement('div');detail.className='extension-detail';
+        const name=document.createElement('strong');name.textContent=extension.name||'Tiện ích không tên';
+        const id=document.createElement('span');id.textContent=`${extension.enabled?'Đang bật':'Đang tắt'} · ${extension.id}`;
+        detail.append(name,id);
+        const actions=document.createElement('div');actions.className='extension-actions';
+        const toggle=document.createElement('button');toggle.type='button';toggle.className='btn btn-secondary';toggle.textContent=extension.enabled?'Tắt':'Bật';toggle.setAttribute('aria-label',`${extension.enabled?'Tắt':'Bật'} ${extension.name}`);toggle.addEventListener('click',()=>profileAction('SetBrowserExtensionEnabled',{id:extension.id,enabled:!extension.enabled}));
+        const remove=document.createElement('button');remove.type='button';remove.className='btn btn-secondary';remove.textContent='Gỡ';remove.setAttribute('aria-label',`Gỡ ${extension.name}`);remove.addEventListener('click',()=>{if(confirm(`Gỡ ${extension.name} khỏi hồ sơ này?`))profileAction('RemoveBrowserExtension',{id:extension.id})});
+        actions.append(toggle,remove);row.append(detail,actions);browserExtensionsList.append(row);
+      }
+    };
+    window.__renderBrowserExtensionsError=function(message){browserExtensionsList.replaceChildren(Object.assign(document.createElement('span'),{className:'empty-state',textContent:message||'WebView2 chưa thể đọc tiện ích.'}))};
+    if(isPrivateProfile){document.getElementById('browserExtensionsHint').textContent='Quản lý tiện ích không khả dụng trong cửa sổ ẩn danh.';browserExtensionsList.replaceChildren(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Không khả dụng trong ẩn danh.'}));}
+    else profileAction('GetBrowserExtensions');
+    const savedPasswordsList=document.getElementById('savedPasswordsList');
+    window.__renderPasswords=function(entries,targets){
+      const tabSelect=document.getElementById('passwordTargetTab');
+      const previous=tabSelect.value;
+      tabSelect.replaceChildren(new Option('Chọn tab website…',''));
+      for(const target of (Array.isArray(targets)?targets:[])){const option=new Option(`${target.title||target.origin} — ${target.origin}`,String(target.id));tabSelect.add(option)}
+      if([...tabSelect.options].some(option=>option.value===previous))tabSelect.value=previous;
+      savedPasswordsList.replaceChildren();
+      if(!Array.isArray(entries)||entries.length===0){savedPasswordsList.append(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Chưa có mật khẩu Pip nào. Nhập website, tên đăng nhập và mật khẩu ở trên.'}));return}
+      for(const entry of entries){
+        const row=document.createElement('div');row.className='password-item';row.dataset.passwordId=String(entry.id);row.setAttribute('role','listitem');
+        const detail=document.createElement('div');detail.className='password-detail';
+        const site=document.createElement('strong');site.textContent=entry.origin;
+        const user=document.createElement('span');user.textContent=entry.username;
+        const reveal=document.createElement('input');reveal.type='password';reveal.readOnly=true;reveal.autocomplete='off';reveal.setAttribute('aria-label',`Mật khẩu cho ${entry.origin}`);reveal.hidden=true;
+        detail.append(site,user,reveal);
+        const actions=document.createElement('div');actions.className='password-actions';
+        const revealButton=document.createElement('button');revealButton.type='button';revealButton.className='btn btn-secondary';revealButton.textContent='Hiện';revealButton.addEventListener('click',()=>{if(reveal.hidden){profileAction('RevealPassword',{id:entry.id});}else{reveal.value='';reveal.hidden=true;revealButton.textContent='Hiện';}});
+        revealButton.setAttribute('aria-label',`Hiện mật khẩu ${entry.id}`);
+        const fill=document.createElement('button');fill.type='button';fill.className='btn btn-secondary';fill.textContent='Điền';fill.addEventListener('click',()=>{const target=Number(tabSelect.value);if(!Number.isSafeInteger(target)||target<=0){showStatus('Chọn tab website cần điền trước.');return}profileAction('FillPassword',{id:entry.id,tab_id:target})});
+        const remove=document.createElement('button');remove.type='button';remove.className='btn btn-secondary';remove.textContent='Xóa';remove.setAttribute('aria-label',`Xóa mật khẩu ${entry.username} tại ${entry.origin}`);remove.addEventListener('click',()=>{if(confirm(`Xóa mật khẩu ${entry.username} tại ${entry.origin}?`))profileAction('DeletePassword',{id:entry.id})});
+        actions.append(revealButton,fill,remove);row.append(detail,actions);savedPasswordsList.append(row);
+      }
+    };
+    window.__showSavedPassword=function(id,password){const row=[...savedPasswordsList.querySelectorAll('.password-item')].find(item=>item.dataset.passwordId===String(id));if(row){const field=row.querySelector('input');field.value=password;field.hidden=false;const button=row.querySelector('.password-actions button');button.textContent='Ẩn';button.setAttribute('aria-label',`Ẩn mật khẩu ${id}`)}};
+    if(isPrivateProfile){document.getElementById('passwordVaultHint').textContent='Kho mật khẩu bị tắt trong cửa sổ ẩn danh.';savedPasswordsList.replaceChildren(Object.assign(document.createElement('span'),{className:'empty-state',textContent:'Không khả dụng trong ẩn danh.'}));}
+    function savePasswordFromForm(){const origin=document.getElementById('passwordOrigin').value.trim();const username=document.getElementById('passwordUsername').value.trim();const password=document.getElementById('passwordValue').value;if(!origin||!username||!password){showStatus('Nhập đủ website, tên đăng nhập và mật khẩu.');return}let normalized;try{const parsed=new URL(origin);if(!['http:','https:'].includes(parsed.protocol))throw new Error();normalized=parsed.origin}catch{showStatus('Địa chỉ phải bắt đầu bằng http:// hoặc https://.');return}const exists=[...savedPasswordsList.querySelectorAll('.password-item')].some(row=>row.querySelector('strong')?.textContent===normalized&&row.querySelector('.password-detail span')?.textContent===username);if(exists&&!confirm('Mật khẩu cùng website và tên đăng nhập sẽ được cập nhật. Tiếp tục?'))return;profileAction('SavePassword',{origin,username,password});document.getElementById('passwordValue').value=''}
     window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null) => {
       document.getElementById('googleDnsToggle').checked=enabled;
       document.getElementById('googleDnsRestartRow').hidden=enabled===active;
@@ -736,6 +876,35 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
         showStatus('Mở trang này trong Pip để sử dụng cài đặt.');
       }
     }
+
+    function clearSelectedBrowsingData() {
+      const selected={
+        history:document.getElementById('clearDataHistory').checked,
+        site_data:document.getElementById('clearDataSite').checked,
+        cache:document.getElementById('clearDataCache').checked,
+        passwords:document.getElementById('clearDataPasswords').checked,
+        autofill:document.getElementById('clearDataAutofill').checked,
+        download_history:document.getElementById('clearDataDownloads').checked,
+      };
+      if(!Object.values(selected).some(Boolean)){showStatus('Hãy chọn ít nhất một loại dữ liệu cần xóa.');return;}
+      const effects=[];
+      if(selected.history)effects.push('lịch sử duyệt web');
+      if(selected.site_data)effects.push('cookie và dữ liệu website (bạn sẽ bị đăng xuất)');
+      if(selected.cache)effects.push('bộ nhớ đệm');
+      if(selected.passwords)effects.push('mật khẩu đã lưu');
+      if(selected.autofill)effects.push('dữ liệu tự điền');
+      if(selected.download_history)effects.push('lịch sử tải xuống (tệp vẫn được giữ)');
+      if(!confirm('Xóa '+effects.join(', ')+' của hồ sơ hiện tại? Dấu trang, tệp đã tải và các lượt tải đang chạy vẫn được giữ.'))return;
+      profileAction('ClearSelectedBrowsingData',selected);
+      showStatus('Đang xóa dữ liệu đã chọn...');
+    }
+
+    window.__focusClearData = function() {
+      const control=document.getElementById('clearDataHistory');
+      control?.closest('.row')?.scrollIntoView({block:'center'});
+      control?.focus();
+    };
+    if(new URLSearchParams(location.search).has('clear-data'))requestAnimationFrame(()=>window.__focusClearData());
 
     function showStatus(text) {
       const banner = document.getElementById('statusBanner');
@@ -765,7 +934,11 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     function onToggleChange(setting, value) {
       if (window.ipc) {
         let payloadObj = {};
-        if (setting === 'askWhereToSave' || setting === 'showProgressToolbar') {
+        if (setting === 'backgroundThrottling') {
+          payloadObj = { performance: { background_throttling: value } };
+          const delay=document.getElementById('sleepAfterSelect');
+          if(delay)delay.disabled=!value;
+        } else if (setting === 'askWhereToSave' || setting === 'showProgressToolbar') {
           payloadObj = { downloads: { [setting === 'askWhereToSave' ? 'ask_where_to_save' : 'show_progress_toolbar']: value } };
         } else if (setting === 'tabReordering' || setting === 'tabTearoff') {
           payloadObj = { tabs: { [setting === 'tabReordering' ? 'enable_tab_reordering' : 'enable_tab_tearoff']: value } };
@@ -780,6 +953,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
         }));
         showStatus('Đang lưu lựa chọn...');
       }
+    }
+
+    function onIdleSleepChange(seconds) {
+      if (!window.ipc) return;
+      window.ipc.postMessage(JSON.stringify({action:'SaveSettings',payload:{settings_json:JSON.stringify({performance:{sleep_after_secs:Number(seconds)}})}}));
+      showStatus(Number(seconds)===0?'Đã tắt tự ngủ tab nền.':'Đã cập nhật thời gian tự ngủ tab nền.');
     }
 
     function onDefaultZoomChange(zoom) {
@@ -815,6 +994,40 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
         const cleanVer = version.startsWith('v') ? version : 'v' + version;
         el.textContent = cleanVer.includes('(Active)') ? cleanVer : cleanVer + ' (Active)';
       }
+    };
+
+    function checkAppUpdates() {
+      document.getElementById('appUpdateStatus').textContent='Đang kiểm tra GitHub…';
+      document.getElementById('openAppReleaseButton').hidden=true;
+      profileAction('CheckAppUpdates');
+    }
+    window.__renderAppUpdate = function(result) {
+      const status=document.getElementById('appUpdateStatus');
+      const link=document.getElementById('openAppReleaseButton');
+      if(!status||!link)return;
+      if(result?.error){status.textContent=result.error;link.hidden=true;return}
+      const current='v'+result.currentVersion, latest='v'+result.latestVersion;
+      if(result.updateAvailable)status.textContent=`Có bản Pip mới ${latest}; bạn đang dùng ${current}.`;
+      else if(result.currentVersion===result.latestVersion)status.textContent=`Pip ${current} đang là bản phát hành mới nhất.`;
+      else status.textContent=`Pip ${current} mới hơn bản phát hành công khai ${latest}.`;
+      try {
+        const url=new URL(result.releaseUrl);
+        link.href=url.protocol==='https:'&&url.hostname==='github.com'&&url.pathname.startsWith('/giangocquoc-art/pip-browser/releases/tag/')?url.href:'#';
+        link.hidden=!result.updateAvailable;
+      } catch {link.hidden=true}
+    };
+    function updateAdblockFilters() {
+      document.getElementById('adblockUpdateStatus').textContent='Đang tải và kiểm tra bốn danh sách bộ lọc…';
+      const button=document.getElementById('updateAdblockFiltersButton');
+      button.disabled=true;
+      profileAction('UpdateAdblockFilters');
+    }
+    window.__renderAdblockFilterUpdate = function(result) {
+      const status=document.getElementById('adblockUpdateStatus');
+      const button=document.getElementById('updateAdblockFiltersButton');
+      if(!status||!button)return;
+      button.disabled=false;
+      status.textContent=result?.error||`Đã lưu ${result.listCount} danh sách với khoảng ${result.ruleCount.toLocaleString('vi-VN')} luật. Đóng và mở lại Pip để áp dụng.`;
     };
 
     if (window.__runtimeVersion) {
@@ -893,6 +1106,10 @@ pub fn get_settings_html(
         ("tabTearoffToggle", settings.tabs.enable_tab_tearoff),
         ("showZoomBadgeToggle", settings.appearance.show_zoom_badge),
         (
+            "backgroundThrottlingToggle",
+            settings.performance.background_throttling,
+        ),
+        (
             "featureFindInPageToggle",
             settings.features.enable_find_in_page,
         ),
@@ -928,6 +1145,31 @@ pub fn get_settings_html(
             html.replace_range(start..end, &input);
         }
     }
+
+    html = html
+        .replace(
+            "{{BACKGROUND_TAB_SLEEP_ENABLED}}",
+            if settings.performance.background_throttling {
+                "checked"
+            } else {
+                ""
+            },
+        )
+        .replace(
+            "{{SLEEP_DELAY_DISABLED}}",
+            if settings.performance.background_throttling {
+                ""
+            } else {
+                "disabled"
+            },
+        )
+        .replace(
+            &format!("value=\"{}\"", settings.performance.sleep_after_secs),
+            &format!(
+                "value=\"{}\" selected",
+                settings.performance.sleep_after_secs
+            ),
+        );
 
     // Zoom level
     let zoom_id = if (settings.appearance.default_zoom_level - 0.75).abs() < 0.01 {
@@ -980,6 +1222,33 @@ mod tests {
         assert!(html.contains("ImportBookmarkSync"));
         assert!(html.contains("SyncBookmarks"));
         assert!(html.contains("\"syncEnabled\":true"));
+        assert!(html.contains("DeleteProfile"));
+        assert!(html.contains("GetSitePermissions"));
+        assert!(html.contains("ResetSitePermission"));
+        assert!(html.contains("GetSavedPasswords"));
+        assert!(html.contains("CheckAppUpdates"));
+        assert!(html.contains("UpdateAdblockFilters"));
+        assert!(html.contains("Cập nhật bộ lọc"));
+        assert!(html.contains("Kiểm tra phiên bản"));
+        assert!(html.contains("SelectBrowserExtensionFolder"));
+        assert!(html.contains("SetBrowserExtensionEnabled"));
+        assert!(html.contains("RemoveBrowserExtension"));
+        assert!(html.contains("browserExtensionsList"));
+        assert!(html.contains("SavePassword"));
+        assert!(html.contains("RevealPassword"));
+        assert!(html.contains("FillPassword"));
+        assert!(html.contains("DeletePassword"));
+        assert!(html.contains("Kho mật khẩu Pip"));
+        assert!(html.contains("isPrivateProfile"));
+        assert!(html.contains("clearDataHistory"));
+        assert!(html.contains("clearDataSite"));
+        assert!(html.contains("clearDataCache"));
+        assert!(html.contains("clearDataPasswords"));
+        assert!(html.contains("clearDataAutofill"));
+        assert!(html.contains("clearDataDownloads"));
+        assert!(html.contains("ClearSelectedBrowsingData"));
+        assert!(html.contains("Ctrl+Shift+Delete"));
+        assert!(html.contains("__focusClearData"));
         assert!(!html.contains("local-dpapi-secret-marker"));
     }
 }

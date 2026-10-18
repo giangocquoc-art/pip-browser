@@ -3,6 +3,8 @@
 
 mod accelerator;
 mod adblock;
+mod adblock_updates;
+mod app_updates;
 mod cert;
 mod chrome;
 #[cfg(target_os = "windows")]
@@ -10,9 +12,11 @@ mod doh_proxy;
 mod downloads;
 mod error_ui;
 #[cfg(any(test, debug_assertions))]
+#[cfg(debug_assertions)]
 mod headless_ui_tests;
 mod home_ui;
 mod loading_ui;
+mod passwords;
 mod settings_ui;
 mod sidebar_ui;
 mod sync;
@@ -24,13 +28,13 @@ use evergreen_core::env::{detect_webview2_runtime, is_process_elevated};
 use evergreen_core::ipc::{HostToUiMessage, UiToHostMessage};
 use evergreen_core::tabs::{TabId, TabManager, TabState};
 use evergreen_core::updater::run_local_command;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows};
@@ -70,6 +74,21 @@ const NAV_WATCHER_SCRIPT: &str = r#"
   });
 })();
 "#;
+
+const SESSION_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(15);
+
+fn persist_session_snapshot(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<bool> {
+    if std::fs::read(path).is_ok_and(|current| current == bytes) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staging = path.with_extension("json.tmp");
+    std::fs::write(&staging, bytes)?;
+    std::fs::rename(staging, path)?;
+    Ok(true)
+}
 
 #[cfg(target_os = "windows")]
 fn webview_container_hwnd(webview: &WebView) -> Option<windows::Win32::Foundation::HWND> {
@@ -113,12 +132,16 @@ pub(crate) enum BrowserEvent {
     Ipc(WindowId, UiToHostMessage),
     TabTitleChanged(WindowId, TabId, String),
     TabNavigated(WindowId, TabId, String),
+    TabAudioChanged(WindowId, TabId, bool),
     HistoryChanged(WindowId, TabId, bool, bool),
     CommandDone(String, bool, String),
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
     GoogleDnsCheckDone(WindowId, Result<(), String>),
     GoogleDnsHealthCheckDone(Result<(), String>),
-    SyncBookmarksDone(WindowId, Result<sync::SyncOutcome, String>),
+    AppUpdateCheckDone(WindowId, Result<app_updates::AppUpdateInfo, String>),
+    AdblockFilterUpdateDone(WindowId, Result<adblock_updates::UpdateSummary, String>),
+    TabSuspendResult(WindowId, TabId, bool),
+    SyncBookmarksDone(WindowId, String, bool, Result<sync::SyncOutcome, String>),
     SyncDisabled(WindowId, String, String, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
@@ -126,16 +149,22 @@ pub(crate) enum BrowserEvent {
         window_id: WindowId,
         download_id: u64,
         filename: String,
+        path: String,
         received_bytes: i64,
         total_bytes: i64,
         state: String,
     },
+    PasswordFillDone(WindowId, bool),
+    BrowserExtensionsLoaded(WindowId, Result<Vec<BrowserExtensionInfo>, String>),
+    BrowserExtensionOperationDone(WindowId, Result<(), String>),
     PermissionPrompt {
         window_id: WindowId,
         permission_id: u64,
         origin: String,
         permission_kind: String,
     },
+    SitePermissionsLoaded(WindowId, Result<Vec<SitePermission>, String>),
+    SitePermissionReset(WindowId, bool),
     TabCrashed(WindowId, TabId, i32),
     ServerCertificateError {
         window_id: WindowId,
@@ -150,6 +179,68 @@ enum BrowsingDataClearKind {
     Cache,
     Passwords,
     SiteData,
+    Selected {
+        clear_pip_history: bool,
+        clear_pip_download_history: bool,
+        clear_pip_passwords: bool,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SitePermission {
+    origin: String,
+    kind_id: i32,
+    kind_name: &'static str,
+    state_name: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct BrowserExtensionInfo {
+    id: String,
+    name: String,
+    enabled: bool,
+}
+
+fn site_permission_kind_name(kind: i32) -> &'static str {
+    match kind {
+        1 => "Micrô",
+        2 => "Camera",
+        3 => "Vị trí",
+        4 => "Thông báo",
+        5 => "Cảm biến",
+        6 => "Đọc bảng nhớ tạm",
+        7 => "Nhiều lượt tải tự động",
+        8 => "Đọc và ghi tệp",
+        9 => "Tự phát media",
+        10 => "Phông chữ cục bộ",
+        11 => "MIDI hệ thống",
+        12 => "Quản lý cửa sổ",
+        _ => "Quyền khác",
+    }
+}
+
+fn site_permission_state_name(state: i32) -> &'static str {
+    match state {
+        1 => "Được phép",
+        2 => "Bị chặn",
+        _ => "Mặc định",
+    }
+}
+
+fn valid_permission_origin(origin: &str) -> bool {
+    if origin.len() > 2048 || origin.chars().any(char::is_control) {
+        return false;
+    }
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "http" | "https")
+        && !authority.is_empty()
+        && !authority.contains('/')
+        && !authority.contains('?')
+        && !authority.contains('#')
+        && !authority.contains('@')
+        && !authority.chars().any(char::is_whitespace)
 }
 
 struct WindowContext {
@@ -397,7 +488,8 @@ impl WindowContext {
             let win_id = self.id;
             let builder = WebViewBuilder::new()
                 .with_additional_browser_args(dns_proxy_browser_args(self.dns_proxy_port))
-                .with_bounds(sidebar_bounds);
+                .with_bounds(sidebar_bounds)
+                .with_browser_extensions_enabled(true);
             let wv = builder
                 .with_html(sidebar_ui::SIDEBAR_HTML.as_str())
                 .with_navigation_handler(|url| {
@@ -428,6 +520,7 @@ impl WindowContext {
                 serde_json::to_string(&self.downloads.values().collect::<Vec<_>>()).unwrap();
             let private = self.private;
             let active = self.tab_manager.active_tab();
+            let keep_awake = active.is_some_and(|tab| tab.keep_awake);
             let url = active.map(|t| t.url.clone()).unwrap_or_default();
             let sec_info = cert_cache.query_or_default(&url);
 
@@ -439,7 +532,7 @@ impl WindowContext {
 
             if let Ok(json_str) = serde_json::to_string(&sync_msg) {
                 let script = format!(
-                    "if(window.__syncDownloads)window.__syncDownloads({snapshot});if(window.__renderPrivacy)window.__renderPrivacy({private});if(window.__sidebarSync)window.__sidebarSync({json_str});"
+                    "if(window.__syncDownloads)window.__syncDownloads({snapshot});if(window.__renderPrivacy)window.__renderPrivacy({private});if(window.__setKeepAwake)window.__setKeepAwake({keep_awake});if(window.__sidebarSync)window.__sidebarSync({json_str});"
                 );
                 let _ = sidebar.evaluate_script(&script);
             }
@@ -562,8 +655,68 @@ fn get_data_directory() -> std::path::PathBuf {
     evergreen_core::env::resolve_data_directory(&exe_dir, &args)
 }
 
+fn download_history_path(profile_id: &str) -> std::path::PathBuf {
+    get_data_directory()
+        .join("profiles")
+        .join(profile_id)
+        .join("downloads.json")
+}
+
+fn load_download_history(profile_id: &str) -> HashMap<u64, serde_json::Value> {
+    let Ok(bytes) = std::fs::read(download_history_path(profile_id)) else {
+        return HashMap::new();
+    };
+    if bytes.len() > 2 * 1024 * 1024 {
+        return HashMap::new();
+    }
+    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+        return HashMap::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|mut item| {
+            let id = item["download_id"].as_u64()?;
+            if !matches!(item["state"].as_str(), Some("Completed" | "Interrupted"))
+                || item["filename"]
+                    .as_str()
+                    .is_none_or(|name| name.len() > 1024)
+                || item["path"].as_str().is_none_or(|path| path.len() > 32_768)
+            {
+                return None;
+            }
+            item["received_bytes"] =
+                serde_json::json!(item["received_bytes"].as_i64().unwrap_or(0).max(0));
+            item["total_bytes"] =
+                serde_json::json!(item["total_bytes"].as_i64().unwrap_or(0).max(0));
+            Some((id, item))
+        })
+        .collect()
+}
+
+fn trim_download_history(downloads: &mut HashMap<u64, serde_json::Value>) {
+    let mut completed = downloads
+        .iter()
+        .filter(|(_, item)| item["state"] != "InProgress")
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    completed.sort_unstable();
+    for id in completed
+        .into_iter()
+        .take(downloads.len().saturating_sub(500))
+    {
+        downloads.remove(&id);
+    }
+}
+
 fn get_settings_path() -> std::path::PathBuf {
     get_data_directory().join("settings.json")
+}
+
+fn bookmark_sync_state_changed(
+    before: &evergreen_core::library::Library,
+    after: &evergreen_core::library::Library,
+) -> bool {
+    before.bookmarks != after.bookmarks || before.removed_bookmarks != after.removed_bookmarks
 }
 
 fn dns_proxy_browser_args(port: Option<u16>) -> String {
@@ -640,6 +793,71 @@ fn choose_bookmarks_import_file(window: &Window) -> Option<std::path::PathBuf> {
     }
 }
 
+fn choose_browser_extension_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let owner = window
+        .window_handle()
+        .ok()
+        .and_then(|handle| match handle.as_raw() {
+            RawWindowHandle::Win32(handle) => {
+                Some(windows::Win32::Foundation::HWND(handle.hwnd.get() as _))
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+        dialog.SetOptions(dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
+        let title: Vec<u16> = "Chọn thư mục tiện ích đã giải nén"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        dialog.SetTitle(PCWSTR(title.as_ptr()))?;
+        dialog.Show(Some(owner))?;
+        let path = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+        Ok(webview2_com::take_pwstr(path).into())
+    }
+}
+
+fn validate_browser_extension_folder(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|_| "Không tìm thấy thư mục tiện ích đã chọn.".to_string())?;
+    if !path.is_dir()
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('_'))
+    {
+        return Err("Hãy chọn thư mục tiện ích hợp lệ trên máy này.".into());
+    }
+    let manifest_path = path.join("manifest.json");
+    let metadata = std::fs::metadata(&manifest_path)
+        .map_err(|_| "Thư mục không có manifest.json của tiện ích.".to_string())?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err("manifest.json không hợp lệ hoặc vượt quá 1 MiB.".into());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(manifest_path)
+            .map_err(|_| "Không đọc được manifest.json của tiện ích.".to_string())?,
+    )
+    .map_err(|_| "manifest.json không phải JSON hợp lệ.".to_string())?;
+    if !matches!(manifest["manifest_version"].as_u64(), Some(2 | 3))
+        || manifest["name"].as_str().is_none_or(str::is_empty)
+        || manifest["version"].as_str().is_none_or(str::is_empty)
+    {
+        return Err("Tiện ích cần manifest version 2 hoặc 3, tên và phiên bản hợp lệ.".into());
+    }
+    Ok(path)
+}
+
 struct BrowserApp {
     background_check: bool,
     internal_ipc_token: String,
@@ -659,6 +877,10 @@ struct BrowserApp {
     restart_profiles: Vec<String>,
     next_tab_id: AtomicU64,
     allowed_cert_hosts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    next_session_autosave: Instant,
+    next_background_tab_check: Instant,
+    suspending_tabs: HashSet<(WindowId, TabId)>,
+    syncing_profiles: HashSet<String>,
 }
 
 impl BrowserApp {
@@ -733,6 +955,389 @@ impl BrowserApp {
         }
     }
 
+    fn browser_extension_profile(
+        &self,
+        win_id: WindowId,
+    ) -> Result<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile7, String> {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Profile7, ICoreWebView2_13,
+        };
+        use windows::core::Interface;
+        use wry::WebViewExtWindows;
+
+        let win = self
+            .windows
+            .get(&win_id)
+            .filter(|win| !win.private)
+            .ok_or_else(|| "Tiện ích bị tắt trong cửa sổ ẩn danh.".to_string())?;
+        let view = win
+            .tab_manager
+            .active_tab_id()
+            .and_then(|id| win.tabs.get(&id))
+            .ok_or_else(|| "Không tìm thấy tab WebView2 đang hoạt động.".to_string())?;
+        unsafe {
+            view.controller()
+                .CoreWebView2()
+                .and_then(|core| core.cast::<ICoreWebView2_13>())
+                .and_then(|core| core.Profile())
+                .and_then(|profile| profile.cast::<ICoreWebView2Profile7>())
+        }
+        .map_err(|_| {
+            "WebView2 Runtime chưa hỗ trợ tiện ích. Cần Runtime 120.0.2210.55 trở lên.".into()
+        })
+    }
+
+    fn request_browser_extensions(&self, win_id: WindowId) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2BrowserExtensionList;
+
+        let profile = match self.browser_extension_profile(win_id) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.notify_settings(win_id, &message);
+                return;
+            }
+        };
+        let proxy = self.proxy.clone();
+        let callback = webview2_com::ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
+            move |result, collection: Option<ICoreWebView2BrowserExtensionList>| {
+                let extensions = result.map_err(|error| error.to_string()).and_then(|()| {
+                    let collection = collection
+                        .ok_or_else(|| "WebView2 không trả về danh sách tiện ích.".to_string())?;
+                    let mut count = 0u32;
+                    unsafe { collection.Count(&mut count) }.map_err(|error| error.to_string())?;
+                    let mut items = Vec::with_capacity(count.min(256) as usize);
+                    for index in 0..count.min(256) {
+                        let extension = unsafe { collection.GetValueAtIndex(index) }
+                            .map_err(|error| error.to_string())?;
+                        let mut id = windows::core::PWSTR::null();
+                        let mut name = windows::core::PWSTR::null();
+                        let mut enabled = windows::core::BOOL(0);
+                        unsafe {
+                            extension.Id(&mut id).map_err(|error| error.to_string())?;
+                            extension
+                                .Name(&mut name)
+                                .map_err(|error| error.to_string())?;
+                            extension
+                                .IsEnabled(&mut enabled)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        items.push(BrowserExtensionInfo {
+                            id: if id.is_null() {
+                                String::new()
+                            } else {
+                                webview2_com::take_pwstr(id)
+                            },
+                            name: if name.is_null() {
+                                "Tiện ích không tên".into()
+                            } else {
+                                webview2_com::take_pwstr(name)
+                            },
+                            enabled: enabled.as_bool(),
+                        });
+                    }
+                    items.sort_by(|left, right| {
+                        left.name.to_lowercase().cmp(&right.name.to_lowercase())
+                    });
+                    Ok(items)
+                });
+                let _ = proxy.send_event(BrowserEvent::BrowserExtensionsLoaded(win_id, extensions));
+                Ok(())
+            },
+        ));
+        if unsafe { profile.GetBrowserExtensions(&callback) }.is_err() {
+            self.notify_settings(win_id, "Không thể đọc danh sách tiện ích của hồ sơ này.");
+        }
+    }
+
+    fn install_browser_extension(&self, win_id: WindowId, path: std::path::PathBuf) {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+
+        let path = match validate_browser_extension_folder(&path) {
+            Ok(path) => path,
+            Err(message) => {
+                self.notify_settings(win_id, &message);
+                return;
+            }
+        };
+        let profile = match self.browser_extension_profile(win_id) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.notify_settings(win_id, &message);
+                return;
+            }
+        };
+        let path = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let proxy = self.proxy.clone();
+        let callback = webview2_com::ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
+            move |result, extension| {
+                let result = result.and_then(|()| {
+                    extension
+                        .ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(-1)))
+                        .map(|_| ())
+                });
+                let _ = proxy.send_event(BrowserEvent::BrowserExtensionOperationDone(
+                    win_id,
+                    result.map_err(|_| "WebView2 không thể cài tiện ích này.".to_string()),
+                ));
+                Ok(())
+            },
+        ));
+        if let Err(error) = unsafe { profile.AddBrowserExtension(PCWSTR(path.as_ptr()), &callback) }
+        {
+            self.notify_settings(win_id, &format!("Không thể cài tiện ích: {error}"));
+        }
+    }
+
+    fn change_browser_extension(&self, win_id: WindowId, id: String, enabled: Option<bool>) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2BrowserExtensionList;
+
+        if id.len() > 128
+            || id.is_empty()
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        {
+            self.notify_settings(win_id, "Mã tiện ích không hợp lệ.");
+            return;
+        }
+        let profile = match self.browser_extension_profile(win_id) {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.notify_settings(win_id, &message);
+                return;
+            }
+        };
+        let proxy = self.proxy.clone();
+        let callback = webview2_com::ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
+            move |result, collection: Option<ICoreWebView2BrowserExtensionList>| {
+                let operation = result.and_then(|()| {
+                    let collection = collection
+                        .ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(-1)))?;
+                    let mut count = 0u32;
+                    unsafe { collection.Count(&mut count) }?;
+                    let mut target = None;
+                    for index in 0..count.min(256) {
+                        let extension = unsafe { collection.GetValueAtIndex(index) }?;
+                        let mut extension_id = windows::core::PWSTR::null();
+                        unsafe { extension.Id(&mut extension_id)? };
+                        let extension_id = webview2_com::take_pwstr(extension_id);
+                        if extension_id == id {
+                            target = Some(extension);
+                            break;
+                        }
+                    }
+                    target.ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(-1)))
+                });
+                let Ok(extension) = operation else {
+                    let _ = proxy.send_event(BrowserEvent::BrowserExtensionOperationDone(
+                        win_id,
+                        Err("Không tìm thấy tiện ích trong hồ sơ này.".into()),
+                    ));
+                    return Ok(());
+                };
+                let proxy_done = proxy.clone();
+                let done = move |result: windows::core::Result<()>| {
+                    let message = if enabled.is_some() {
+                        "Không thể đổi trạng thái tiện ích."
+                    } else {
+                        "Không thể xóa tiện ích."
+                    };
+                    let _ = proxy_done.send_event(BrowserEvent::BrowserExtensionOperationDone(
+                        win_id,
+                        result.map_err(|_| message.to_string()),
+                    ));
+                    Ok(())
+                };
+                let call = unsafe {
+                    match enabled {
+                        Some(enabled) => {
+                            let callback =
+                                webview2_com::BrowserExtensionEnableCompletedHandler::create(
+                                    Box::new(done),
+                                );
+                            extension.Enable(enabled, &callback)
+                        }
+                        None => {
+                            let callback =
+                                webview2_com::BrowserExtensionRemoveCompletedHandler::create(
+                                    Box::new(done),
+                                );
+                            extension.Remove(&callback)
+                        }
+                    }
+                };
+                if let Err(error) = call {
+                    let _ = proxy.send_event(BrowserEvent::BrowserExtensionOperationDone(
+                        win_id,
+                        Err(format!("Không thể cập nhật tiện ích: {error}")),
+                    ));
+                }
+                Ok(())
+            },
+        ));
+        if unsafe { profile.GetBrowserExtensions(&callback) }.is_err() {
+            self.notify_settings(win_id, "Không thể cập nhật tiện ích trong hồ sơ này.");
+        }
+    }
+
+    fn request_site_permissions(&self, win_id: WindowId) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Profile4, ICoreWebView2_13,
+        };
+        use windows::core::Interface;
+        use wry::WebViewExtWindows;
+
+        let Some(win) = self.windows.get(&win_id) else {
+            return;
+        };
+        if win.private {
+            self.notify_settings(
+                win_id,
+                "Không thể quản lý quyền đã lưu trong cửa sổ ẩn danh.",
+            );
+            return;
+        }
+        let Some(view) = win
+            .tab_manager
+            .active_tab_id()
+            .and_then(|id| win.tabs.get(&id))
+        else {
+            self.notify_settings(win_id, "Không tìm thấy hồ sơ WebView2 đang hoạt động.");
+            return;
+        };
+
+        let profile = unsafe {
+            view.controller()
+                .CoreWebView2()
+                .and_then(|core| core.cast::<ICoreWebView2_13>())
+                .and_then(|core| core.Profile())
+                .and_then(|profile| profile.cast::<ICoreWebView2Profile4>())
+        };
+        let Ok(profile) = profile else {
+            self.notify_settings(
+                win_id,
+                "WebView2 Runtime hiện tại chưa hỗ trợ quản lý quyền theo website.",
+            );
+            return;
+        };
+
+        let proxy = self.proxy.clone();
+        let callback = webview2_com::GetNonDefaultPermissionSettingsCompletedHandler::create(
+            Box::new(move |result, collection| {
+                let permissions = result.map_err(|error| error.to_string()).and_then(|()| {
+                    let Some(collection) = collection else {
+                        return Err("WebView2 không trả về danh sách quyền.".to_string());
+                    };
+                    let mut count = 0u32;
+                    unsafe { collection.Count(&mut count) }.map_err(|error| error.to_string())?;
+                    let mut permissions = Vec::with_capacity(count.min(256) as usize);
+                    for index in 0..count.min(256) {
+                        let setting = unsafe { collection.GetValueAtIndex(index) }
+                            .map_err(|error| error.to_string())?;
+                        let mut kind = webview2_com::Microsoft::Web::WebView2::Win32::
+                                COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                        let mut state = webview2_com::Microsoft::Web::WebView2::Win32::
+                                COREWEBVIEW2_PERMISSION_STATE_DEFAULT;
+                        let mut origin = windows::core::PWSTR::null();
+                        unsafe {
+                            setting
+                                .PermissionKind(&mut kind)
+                                .map_err(|error| error.to_string())?;
+                            setting
+                                .PermissionState(&mut state)
+                                .map_err(|error| error.to_string())?;
+                            setting
+                                .PermissionOrigin(&mut origin)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        permissions.push(SitePermission {
+                            origin: if origin.is_null() {
+                                String::new()
+                            } else {
+                                webview2_com::take_pwstr(origin)
+                            },
+                            kind_id: kind.0,
+                            kind_name: site_permission_kind_name(kind.0),
+                            state_name: site_permission_state_name(state.0),
+                        });
+                    }
+                    Ok(permissions)
+                });
+                let _ = proxy.send_event(BrowserEvent::SitePermissionsLoaded(win_id, permissions));
+                Ok(())
+            }),
+        );
+        if unsafe { profile.GetNonDefaultPermissionSettings(&callback) }.is_err() {
+            self.notify_settings(win_id, "Không thể đọc quyền website đã lưu.");
+        }
+    }
+
+    fn reset_site_permission(&self, win_id: WindowId, origin: String, kind: i32) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND,
+            COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
+        };
+        use windows::core::{Interface, PCWSTR};
+        use wry::WebViewExtWindows;
+
+        let Some(win) = self.windows.get(&win_id) else {
+            return;
+        };
+        if win.private || !valid_permission_origin(&origin) || !(1..=12).contains(&kind) {
+            self.notify_settings(win_id, "Quyền hoặc website không hợp lệ.");
+            return;
+        }
+        let Some(view) = win
+            .tab_manager
+            .active_tab_id()
+            .and_then(|id| win.tabs.get(&id))
+        else {
+            self.notify_settings(win_id, "Không tìm thấy hồ sơ WebView2 đang hoạt động.");
+            return;
+        };
+        let profile = unsafe {
+            view.controller()
+                .CoreWebView2()
+                .and_then(|core| core.cast::<ICoreWebView2_13>())
+                .and_then(|core| core.Profile())
+                .and_then(|profile| profile.cast::<ICoreWebView2Profile4>())
+        };
+        let Ok(profile) = profile else {
+            self.notify_settings(
+                win_id,
+                "WebView2 Runtime hiện tại chưa hỗ trợ quản lý quyền theo website.",
+            );
+            return;
+        };
+
+        let origin_wide = origin
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let proxy = self.proxy.clone();
+        let callback =
+            webview2_com::SetPermissionStateCompletedHandler::create(Box::new(move |result| {
+                let _ = proxy.send_event(BrowserEvent::SitePermissionReset(win_id, result.is_ok()));
+                Ok(())
+            }));
+        let result = unsafe {
+            profile.SetPermissionState(
+                COREWEBVIEW2_PERMISSION_KIND(kind),
+                PCWSTR(origin_wide.as_ptr()),
+                COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
+                &callback,
+            )
+        };
+        if result.is_err() {
+            self.notify_settings(win_id, "Không thể đặt lại quyền website.");
+        }
+    }
+
     fn save_session(&self, win_id: WindowId) {
         let Some(win) = self.windows.get(&win_id) else {
             return;
@@ -740,17 +1345,13 @@ impl BrowserApp {
         if win.private {
             return;
         }
-        let directory = get_data_directory().join("sessions");
         let tabs = win.tab_manager.snapshot();
         if let Ok(bytes) = serde_json::to_vec(&tabs) {
-            if std::fs::create_dir_all(&directory).is_ok() {
-                let path = directory.join(format!("{}.json", win.profile_id));
-                let staging = path.with_extension("json.tmp");
-                if let Err(error) =
-                    std::fs::write(&staging, bytes).and_then(|_| std::fs::rename(staging, path))
-                {
-                    eprintln!("Save session: {error}");
-                }
+            let path = get_data_directory()
+                .join("sessions")
+                .join(format!("{}.json", win.profile_id));
+            if let Err(error) = persist_session_snapshot(&path, &bytes) {
+                eprintln!("Save session: {error}");
             }
         }
     }
@@ -878,6 +1479,20 @@ impl BrowserApp {
         }
     }
 
+    fn notify_user(&self, win_id: WindowId, message: &str) {
+        let Some(chrome) = self
+            .windows
+            .get(&win_id)
+            .and_then(|win| win.chrome_webview.as_ref())
+        else {
+            return;
+        };
+        let encoded = serde_json::to_string(message).unwrap_or_else(|_| "\"Pip\"".into());
+        let _ = chrome.evaluate_script(&format!(
+            "if(window.__notifyUser)window.__notifyUser({encoded})"
+        ));
+    }
+
     fn sync_profiles(&self) {
         let public_profiles = self
             .settings
@@ -889,6 +1504,7 @@ impl BrowserApp {
                     "name": profile.name,
                     "autofill": profile.autofill,
                     "syncEnabled": profile.sync_credentials_protected.is_some(),
+                    "isOpen": self.windows.values().any(|window| window.profile_id == profile.id),
                 })
             })
             .collect::<Vec<_>>();
@@ -994,6 +1610,10 @@ impl BrowserApp {
             settings,
             next_tab_id: AtomicU64::new(1),
             allowed_cert_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            next_session_autosave: Instant::now() + SESSION_AUTOSAVE_INTERVAL,
+            next_background_tab_check: Instant::now() + Duration::from_secs(15),
+            suspending_tabs: HashSet::new(),
+            syncing_profiles: HashSet::new(),
         }
     }
 
@@ -1006,6 +1626,57 @@ impl BrowserApp {
 
     fn next_tab_id(&self) -> TabId {
         TabId(self.next_tab_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    fn suspend_idle_tabs(&mut self, now_secs: u64) {
+        if !self.settings.performance.background_throttling
+            || self.settings.performance.sleep_after_secs == 0
+        {
+            return;
+        }
+        let idle_after = self.settings.performance.sleep_after_secs;
+        let mut candidates = Vec::new();
+        for (window_id, win) in &self.windows {
+            // Keep active downloads alive; WebView2 does not identify their source tab here.
+            if win.permission_bar_open
+                || win
+                    .downloads
+                    .values()
+                    .any(|download| download["state"] == "InProgress")
+            {
+                continue;
+            }
+            let active = win.tab_manager.active_tab_id();
+            for tab in win.tab_manager.tabs() {
+                if Some(tab.id) == active
+                    || tab.status == evergreen_core::tabs::TabStatus::Crashed
+                    || tab.keep_awake
+                    || tab.is_loading
+                    || tab.is_audio_playing
+                    || tab.pinned
+                    || now_secs.saturating_sub(tab.last_active_timestamp_secs) < idle_after
+                    || !(tab.url.starts_with("http://") || tab.url.starts_with("https://"))
+                    || !win.tabs.contains_key(&tab.id)
+                    || self.suspending_tabs.contains(&(*window_id, tab.id))
+                {
+                    continue;
+                }
+                candidates.push((*window_id, tab.id));
+            }
+        }
+        for (window_id, tab_id) in candidates {
+            let Some(view) = self
+                .windows
+                .get(&window_id)
+                .and_then(|win| win.tabs.get(&tab_id))
+            else {
+                continue;
+            };
+            self.suspending_tabs.insert((window_id, tab_id));
+            if accelerator::suspend_webview(view, window_id, tab_id, self.proxy.clone()).is_err() {
+                self.suspending_tabs.remove(&(window_id, tab_id));
+            }
+        }
     }
 
     fn create_browser_window(
@@ -1121,7 +1792,11 @@ impl BrowserApp {
         }
 
         let mut win_ctx = WindowContext {
-            downloads: HashMap::new(),
+            downloads: if private {
+                HashMap::new()
+            } else {
+                load_download_history(&profile_id)
+            },
             proxy: self.proxy.clone(),
             profile_id: profile_id.clone(),
             private,
@@ -1159,7 +1834,8 @@ impl BrowserApp {
 
         let chrome_builder = WebViewBuilder::new()
             .with_additional_browser_args(dns_proxy_browser_args(win_ctx.dns_proxy_port))
-            .with_bounds(chrome_bounds);
+            .with_bounds(chrome_bounds)
+            .with_browser_extensions_enabled(true);
         match chrome_builder
             .with_html(&chrome_html)
             .with_navigation_handler(|url| {
@@ -1262,6 +1938,7 @@ impl BrowserApp {
         let mut builder = WebViewBuilder::new()
             .with_additional_browser_args(dns_proxy_browser_args(context.dns_proxy_port))
             .with_bounds(bounds)
+            .with_browser_extensions_enabled(true)
             .with_incognito(!is_persistent)
             .with_profile_name(&profile_id)
             .with_transparent(true)
@@ -1462,6 +2139,7 @@ impl BrowserApp {
                 is_audio_playing: false,
                 is_muted: false,
                 pinned: false,
+                keep_awake: false,
                 group: None,
                 status: evergreen_core::tabs::TabStatus::Active,
                 last_active_timestamp_secs: Self::now_secs(),
@@ -1530,6 +2208,146 @@ impl BrowserApp {
                 .join("library.json"),
         )
     }
+
+    fn save_download_history(&self, profile_id: &str) {
+        let mut downloads = self
+            .windows
+            .values()
+            .filter(|win| !win.private && win.profile_id == profile_id)
+            .flat_map(|win| win.downloads.iter())
+            .filter(|(_, item)| item["state"] == "Completed" || item["state"] == "Interrupted")
+            .map(|(id, item)| (*id, item.clone()))
+            .collect::<HashMap<_, _>>();
+        if downloads.len() > 500 {
+            let mut ids = downloads.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            for id in ids.into_iter().take(downloads.len() - 500) {
+                downloads.remove(&id);
+            }
+        }
+        let mut entries = downloads.into_values().collect::<Vec<_>>();
+        entries.sort_by_key(|item| item["download_id"].as_u64().unwrap_or_default());
+        let path = download_history_path(profile_id);
+        let staging = path.with_file_name(format!("downloads-{}.json.tmp", std::process::id()));
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        if let Ok(bytes) = serde_json::to_vec(&entries) {
+            if let Err(error) =
+                std::fs::write(&staging, bytes).and_then(|_| std::fs::rename(staging, path))
+            {
+                eprintln!("Save download history: {error}");
+            }
+        }
+    }
+
+    fn clear_download_history(&mut self, win_id: WindowId) {
+        let Some((profile_id, private)) = self
+            .windows
+            .get(&win_id)
+            .map(|win| (win.profile_id.clone(), win.private))
+        else {
+            return;
+        };
+        if private {
+            downloads::clear_finished(win_id);
+            if let Some(win) = self.windows.get_mut(&win_id) {
+                win.downloads
+                    .retain(|_, item| item["state"] == "InProgress");
+                win.update_sidebar_sync(&self.cert_cache);
+            }
+            return;
+        }
+        let profile_windows = self
+            .windows
+            .values()
+            .filter(|win| !win.private && win.profile_id == profile_id)
+            .map(|win| win.id)
+            .collect::<Vec<_>>();
+        for profile_window in profile_windows {
+            downloads::clear_finished(profile_window);
+        }
+        for win in self
+            .windows
+            .values_mut()
+            .filter(|win| !win.private && win.profile_id == profile_id)
+        {
+            win.downloads
+                .retain(|_, item| item["state"] == "InProgress");
+            win.update_sidebar_sync(&self.cert_cache);
+        }
+        self.save_download_history(&profile_id);
+    }
+
+    fn passwords_path(&self, win_id: WindowId) -> Option<std::path::PathBuf> {
+        let profile = &self.windows.get(&win_id)?.profile_id;
+        Some(
+            get_data_directory()
+                .join("profiles")
+                .join(profile)
+                .join("passwords.bin"),
+        )
+    }
+
+    fn sync_passwords(&self, win_id: WindowId) {
+        let Some(win) = self.windows.get(&win_id) else {
+            return;
+        };
+        if win.private {
+            return;
+        }
+        let profile_id = win.profile_id.clone();
+        let result = self
+            .passwords_path(win_id)
+            .ok_or_else(|| "Không tìm thấy hồ sơ Pip.".to_string())
+            .and_then(|path| passwords::load(&path));
+        let entries = match result {
+            Ok(entries) => passwords::summaries(&entries),
+            Err(message) => {
+                self.notify_settings(win_id, &message);
+                return;
+            }
+        };
+        let json = serde_json::to_string(&entries)
+            .unwrap_or_else(|_| "[]".into())
+            .replace('<', "\\u003c");
+        for window in self
+            .windows
+            .values()
+            .filter(|window| !window.private && window.profile_id == profile_id)
+        {
+            let targets = window
+                .tab_manager
+                .tabs()
+                .iter()
+                .filter_map(|tab| {
+                    let origin = passwords::normalize_origin(&tab.url)?;
+                    Some(serde_json::json!({
+                        "id": tab.id.0,
+                        "origin": origin,
+                        "title": tab.title,
+                    }))
+                })
+                .collect::<Vec<_>>();
+            let targets = serde_json::to_string(&targets)
+                .unwrap_or_else(|_| "[]".into())
+                .replace('<', "\\u003c");
+            for (tab_id, view) in &window.tabs {
+                if window
+                    .tab_manager
+                    .get_tab_by_id(*tab_id)
+                    .is_some_and(|tab| tab.url.starts_with("evergreen://settings"))
+                {
+                    let _ = view.evaluate_script(&format!(
+                        "if(window.__renderPasswords)window.__renderPasswords({json},{targets})"
+                    ));
+                }
+            }
+        }
+    }
+
     fn sync_library(&self, win_id: WindowId) {
         if let Some(win) = self.windows.get(&win_id) {
             if let Some(chrome) = &win.chrome_webview {
@@ -1559,7 +2377,8 @@ impl BrowserApp {
                 "if(window.__renderBookmark)window.__renderBookmark({bookmarked});"
             ));
         }
-        let data = serde_json::json!({"bookmarks":library.bookmarks,"history":if win.private {vec![]}else{library.history},"private":win.private});
+        let shortcuts = library.home_shortcuts();
+        let data = serde_json::json!({"bookmarks":library.bookmarks,"history":if win.private {vec![]}else{library.history},"shortcuts":shortcuts,"private":win.private});
         let script = format!("if(window.__renderLibrary)window.__renderLibrary({data});");
         for (id, view) in &win.tabs {
             if win
@@ -1571,29 +2390,168 @@ impl BrowserApp {
             }
         }
     }
+
+    fn suggest_omnibox(&self, win_id: WindowId, query: String) {
+        let Some(win) = self.windows.get(&win_id) else {
+            return;
+        };
+        let private = win.private;
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let library = evergreen_core::library::Library::load(&path).unwrap_or_default();
+        let bookmarks = library
+            .bookmarks
+            .iter()
+            .map(|page| page.url.as_str())
+            .collect::<HashSet<_>>();
+        let suggestions = if query.chars().count() <= 128 {
+            library.suggestions(&query, !private, 8)
+        } else {
+            Vec::new()
+        };
+        let items = suggestions
+            .into_iter()
+            .map(|page| {
+                serde_json::json!({
+                    "url": page.url,
+                    "title": page.title,
+                    "bookmarked": bookmarks.contains(page.url.as_str()),
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Some(chrome) = self
+            .windows
+            .get(&win_id)
+            .and_then(|win| win.chrome_webview.as_ref())
+        {
+            let query = serde_json::to_string(&query).unwrap_or_else(|_| "\"\"".into());
+            let items = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+            let _ = chrome.evaluate_script(&format!(
+                "if(window.__renderOmniboxSuggestions)window.__renderOmniboxSuggestions({query},{items});"
+            ));
+        }
+    }
     fn edit_library(
-        &self,
+        &mut self,
         win_id: WindowId,
         edit: impl FnOnce(&mut evergreen_core::library::Library),
     ) {
         let Some(path) = self.library_path(win_id) else {
             return;
         };
-        let result = (|| -> std::io::Result<()> {
+        let result = (|| -> std::io::Result<bool> {
             let mut library = evergreen_core::library::Library::load(&path)?;
+            let before = library.clone();
             edit(&mut library);
-            library.save(&path)
+            let bookmarks_changed = bookmark_sync_state_changed(&before, &library);
+            if before == library {
+                return Ok(false);
+            }
+            library.save(&path).map(|()| bookmarks_changed)
         })();
-        if let Err(error) = result {
-            if let Some(win) = self.windows.get(&win_id) {
-                win.window
-                    .set_title(&format!("Pip — Không lưu được thư viện: {error}"));
+        let bookmarks_changed = match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                if let Some(win) = self.windows.get(&win_id) {
+                    win.window
+                        .set_title(&format!("Pip — Không lưu được thư viện: {error}"));
+                }
+                return;
+            }
+        };
+        let Some(profile) = self.windows.get(&win_id).map(|win| win.profile_id.clone()) else {
+            return;
+        };
+        for win in self
+            .windows
+            .values()
+            .filter(|win| win.profile_id == profile)
+        {
+            self.sync_library(win.id);
+        }
+        if bookmarks_changed {
+            self.start_bookmark_sync(win_id, false);
+        }
+    }
+
+    fn start_bookmark_sync(&mut self, win_id: WindowId, manual: bool) {
+        let Some(profile_id) = self
+            .windows
+            .get(&win_id)
+            .filter(|win| !win.private)
+            .map(|win| win.profile_id.clone())
+        else {
+            return;
+        };
+        if self.syncing_profiles.contains(&profile_id) {
+            if manual {
+                self.notify_settings(win_id, "Pip Sync của hồ sơ này đang chạy.");
             }
             return;
         }
-        let profile = &self.windows.get(&win_id).unwrap().profile_id;
-        for win in self.windows.values().filter(|w| &w.profile_id == profile) {
-            self.sync_library(win.id);
+        let Some(protected) = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.sync_credentials_protected.as_deref())
+        else {
+            if manual {
+                self.notify_settings(win_id, "Tạo hoặc nhập mã Pip Sync trước.");
+            }
+            return;
+        };
+        let credentials = match sync::unprotect_credentials(protected) {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                if manual {
+                    self.notify_settings(win_id, &error.to_string());
+                }
+                return;
+            }
+        };
+        let Some(path) = self.library_path(win_id) else {
+            return;
+        };
+        let library = match evergreen_core::library::Library::load(&path) {
+            Ok(library) => library,
+            Err(_) => {
+                if manual {
+                    self.notify_settings(win_id, "Không đọc được dấu trang hồ sơ này.");
+                }
+                return;
+            }
+        };
+        let snapshot = sync::BookmarkSnapshot {
+            version: 1,
+            bookmarks: library.bookmarks,
+            removed_bookmarks: library.removed_bookmarks,
+        };
+        let proxy = self.proxy.clone();
+        self.syncing_profiles.insert(profile_id.clone());
+        let event_profile_id = profile_id.clone();
+        if std::thread::Builder::new()
+            .name("pip-bookmark-sync".into())
+            .spawn(move || {
+                let result = sync::sync_bookmarks(&credentials, snapshot);
+                let _ = proxy.send_event(BrowserEvent::SyncBookmarksDone(
+                    win_id,
+                    event_profile_id,
+                    manual,
+                    result,
+                ));
+            })
+            .is_ok()
+        {
+            if manual {
+                self.notify_settings(win_id, "Đang mã hóa và đồng bộ dấu trang…");
+            }
+        } else {
+            self.syncing_profiles.remove(&profile_id);
+            if manual {
+                self.notify_settings(win_id, "Không khởi chạy được đồng bộ.");
+            }
         }
     }
 
@@ -1660,6 +2618,9 @@ impl BrowserApp {
         match result {
             Ok(imported) => {
                 self.sync_library_profile(&profile_id);
+                if imported > 0 {
+                    self.start_bookmark_sync(win_id, false);
+                }
                 let message = if imported == 0 {
                     "Không có dấu trang mới để nhập. Mục trùng được bỏ qua; hồ sơ đã đủ 200 mục cũng không nhận thêm.".to_string()
                 } else {
@@ -1710,6 +2671,37 @@ impl BrowserApp {
             }
         }
         self.handle_create_tab(win_id, Some("evergreen://settings".to_string()));
+    }
+
+    fn handle_open_clear_data_settings(&mut self, win_id: WindowId) {
+        if let Some(win) = self.windows.get_mut(&win_id) {
+            win.close_sidebar();
+            if let Some(tab) = win
+                .tab_manager
+                .tabs()
+                .iter()
+                .find(|tab| tab.url.starts_with("evergreen://settings"))
+            {
+                let id = tab.id;
+                win.handle_switch_tab(id, &self.cert_cache);
+                if let Some(view) = win.tabs.get(&id) {
+                    let _ = view
+                        .evaluate_script("if(window.__focusClearData)window.__focusClearData()");
+                }
+                return;
+            }
+        }
+        self.handle_create_tab(win_id, Some("evergreen://settings?clear-data".into()));
+    }
+
+    fn close_window(&mut self, win_id: WindowId, event_loop: &ActiveEventLoop) {
+        if self.windows.contains_key(&win_id) {
+            self.save_session(win_id);
+            self.windows.remove(&win_id);
+            if self.windows.is_empty() {
+                event_loop.exit();
+            }
+        }
     }
 
     fn handle_close_tab(
@@ -1842,17 +2834,91 @@ impl BrowserApp {
             Ok(target) if target.starts_with("evergreen://settings") => {
                 self.handle_open_settings(win_id)
             }
+            Ok(target) if target.starts_with("evergreen://newtab") => {
+                self.handle_navigate_to_newtab(win_id, &target);
+            }
             Ok(target) => {
                 if let Some(win) = self.windows.get_mut(&win_id) {
                     if let Some(id) = win.tab_manager.active_tab_id() {
                         if let Some(view) = win.tabs.get(&id) {
                             // SourceChanged is the authoritative committed URL.
-                            let _ = view.load_url(&target);
+                            if let Err(error) = view.load_url(&target) {
+                                eprintln!("Pip navigation failed for {target}: {error}");
+                            }
                         }
                     }
                 }
             }
             Err(error) => eprintln!("Navigation error: {error}"),
+        }
+    }
+
+    fn handle_navigate_to_newtab(&mut self, win_id: WindowId, target: &str) {
+        let Some((tab_id, window, width, height, sidebar_open, chrome_height)) =
+            self.windows.get(&win_id).and_then(|win| {
+                Some((
+                    win.tab_manager.active_tab_id()?,
+                    win.window.clone(),
+                    win.window_width,
+                    win.window_height,
+                    win.is_sidebar_open,
+                    win.current_chrome_height(),
+                ))
+            })
+        else {
+            return;
+        };
+
+        let replacement = match self.create_tab_webview(
+            win_id,
+            tab_id,
+            target,
+            window.as_ref(),
+            width,
+            height,
+            sidebar_open,
+            chrome_height,
+        ) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                eprintln!("Pip could not create its start page: {error}");
+                self.notify_user(win_id, "Không mở được trang chủ Pip.");
+                return;
+            }
+        };
+        let _ = replacement.set_visible(false);
+        accelerator::cancel_permissions(win_id, Some(tab_id), None);
+
+        if let Some(win) = self.windows.get_mut(&win_id) {
+            if let Some(previous) = win.tabs.remove(&tab_id) {
+                accelerator::hide_webview(&previous);
+                drop(previous);
+            }
+            win.tabs.insert(tab_id, replacement);
+            win.tab_manager.update_url(tab_id, target.to_string());
+            win.tab_manager
+                .update_title(tab_id, "Tab mới — Pip".to_string());
+            win.tab_manager.update_favicon(tab_id, None);
+            win.tab_manager.update_history_state(tab_id, false, false);
+            if let Some(tab) = win
+                .tab_manager
+                .tabs_mut()
+                .iter_mut()
+                .find(|tab| tab.id == tab_id)
+            {
+                tab.is_loading = false;
+                tab.status = evergreen_core::tabs::TabStatus::Active;
+                tab.is_audio_playing = false;
+                tab.is_muted = false;
+            }
+            win.close_sidebar();
+            if let Some(view) = win.tabs.get(&tab_id) {
+                let _ = view.set_visible(true);
+            }
+            win.update_layout();
+            win.sync_ui_state();
+            win.update_sidebar_sync(&self.cert_cache);
+            win.sync_zoom(win.get_active_zoom());
         }
     }
 
@@ -1959,6 +3025,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now >= self.next_background_tab_check {
+            self.suspend_idle_tabs(BrowserApp::now_secs());
+            self.next_background_tab_check = now + Duration::from_secs(15);
+        }
+        if now >= self.next_session_autosave {
+            let open_windows = self.windows.keys().copied().collect::<Vec<_>>();
+            for win_id in open_windows {
+                self.save_session(win_id);
+            }
+            self.next_session_autosave = now + SESSION_AUTOSAVE_INTERVAL;
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            self.next_session_autosave
+                .min(self.next_background_tab_check),
+        ));
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: BrowserEvent) {
         match event {
             BrowserEvent::Ipc(win_id, action) => match action {
@@ -1975,8 +3060,10 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     self.sync_library(win_id);
                     self.sync_settings();
                     self.sync_profiles();
+                    self.start_bookmark_sync(win_id, false);
                 }
                 UiToHostMessage::GetLibrary => self.sync_library(win_id),
+                UiToHostMessage::SuggestOmnibox { query } => self.suggest_omnibox(win_id, query),
                 UiToHostMessage::ToggleBookmark => {
                     let page = self
                         .windows
@@ -1989,6 +3076,38 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
                 UiToHostMessage::RemoveBookmark { url } => {
                     self.edit_library(win_id, |library| library.remove_bookmark(&url))
+                }
+                UiToHostMessage::AddHomeShortcut { url, title } => {
+                    let mut added = false;
+                    self.edit_library(win_id, |library| {
+                        added = library.add_home_shortcut(&url, &title);
+                    });
+                    self.notify_library(
+                        win_id,
+                        if added {
+                            "Đã thêm lối tắt vào trang chủ Pip."
+                        } else {
+                            "Không thêm được lối tắt. Địa chỉ có thể đã tồn tại hoặc trang chủ đã đủ 12 mục."
+                        },
+                    );
+                }
+                UiToHostMessage::RemoveHomeShortcut { url } => {
+                    let mut removed = false;
+                    self.edit_library(win_id, |library| {
+                        removed = library.remove_home_shortcut(&url);
+                    });
+                    if !removed {
+                        self.notify_library(win_id, "Không tìm thấy lối tắt cần xóa.");
+                    }
+                }
+                UiToHostMessage::MoveHomeShortcut { url, direction } => {
+                    let mut moved = false;
+                    self.edit_library(win_id, |library| {
+                        moved = library.move_home_shortcut(&url, direction);
+                    });
+                    if !moved {
+                        self.notify_library(win_id, "Lối tắt không thể di chuyển theo hướng đó.");
+                    }
                 }
                 UiToHostMessage::RemoveHistory { url } => {
                     if self.windows.get(&win_id).is_some_and(|win| !win.private) {
@@ -2016,6 +3135,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         BrowserEvent::Shortcut(win_id, "Ctrl+Shift+A".into()),
                     );
                 }
+                UiToHostMessage::RepairPlayback => {
+                    self.user_event(
+                        event_loop,
+                        BrowserEvent::Shortcut(win_id, "RepairPlayback".into()),
+                    );
+                }
                 UiToHostMessage::CreateTab { url } => {
                     self.handle_create_tab(win_id, url);
                 }
@@ -2034,11 +3159,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::WindowClose => {
-                    self.save_session(win_id);
-                    self.windows.remove(&win_id);
-                    if self.windows.is_empty() {
-                        event_loop.exit();
-                    }
+                    self.close_window(win_id, event_loop);
                 }
                 UiToHostMessage::WindowDrag => {
                     if let Some(win) = self.windows.get(&win_id) {
@@ -2088,11 +3209,139 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                UiToHostMessage::DeleteProfile { id } => {
+                    if self
+                        .windows
+                        .get(&win_id)
+                        .is_some_and(|window| window.private)
+                    {
+                        self.notify_settings(win_id, "Không thể xóa hồ sơ trong cửa sổ ẩn danh.");
+                        return;
+                    }
+                    if !evergreen_core::settings::valid_profile_id(&id) || id == "Default" {
+                        self.notify_settings(win_id, "Không thể xóa hồ sơ mặc định.");
+                        return;
+                    }
+                    let Some(profile) = self
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == id)
+                    else {
+                        self.notify_settings(win_id, "Không tìm thấy hồ sơ cần xóa.");
+                        return;
+                    };
+                    if profile.sync_credentials_protected.is_some() {
+                        self.notify_settings(
+                            win_id,
+                            "Hãy tắt và xóa Pip Sync của hồ sơ trước khi xóa hồ sơ.",
+                        );
+                        return;
+                    }
+                    let profile_view = self
+                        .windows
+                        .values()
+                        .find(|window| window.profile_id == id)
+                        .and_then(|window| window.tabs.values().next());
+                    let Some(profile_view) = profile_view else {
+                        self.notify_settings(win_id, "Hãy mở hồ sơ cần xóa trước.");
+                        return;
+                    };
+
+                    // Save the restart list before destructive work so other open profiles
+                    // return after the WebView2 profile has been deleted and Pip restarts.
+                    let restart_profiles: std::collections::HashSet<String> = self
+                        .windows
+                        .values()
+                        .filter(|window| !window.private && window.profile_id != id)
+                        .map(|window| window.profile_id.clone())
+                        .collect();
+                    for window_id in self.windows.keys().copied().collect::<Vec<_>>() {
+                        if self
+                            .windows
+                            .get(&window_id)
+                            .is_some_and(|window| window.profile_id != id)
+                        {
+                            self.save_session(window_id);
+                        }
+                    }
+                    let restart_profiles = restart_profiles.into_iter().collect::<Vec<_>>();
+                    let restart_list_saved = serde_json::to_vec(&restart_profiles)
+                        .map_err(std::io::Error::other)
+                        .and_then(|data| std::fs::write(restart_profiles_path(), data));
+                    if restart_list_saved.is_err() {
+                        self.notify_settings(
+                            win_id,
+                            "Không thể chuẩn bị khởi động lại Pip; hồ sơ chưa bị xóa.",
+                        );
+                        return;
+                    }
+
+                    let previous_settings = self.settings.clone();
+                    let mut settings = previous_settings.clone();
+                    settings.profiles.retain(|profile| profile.id != id);
+                    if settings.save_to_path(&get_settings_path()).is_err() {
+                        let _ = std::fs::remove_file(restart_profiles_path());
+                        self.notify_settings(win_id, "Không thể lưu thay đổi; hồ sơ chưa bị xóa.");
+                        return;
+                    }
+
+                    use webview2_com::Microsoft::Web::WebView2::Win32::{
+                        ICoreWebView2Profile8, ICoreWebView2_13,
+                    };
+                    use windows::core::Interface;
+                    use wry::WebViewExtWindows;
+                    let deletion = unsafe {
+                        profile_view
+                            .controller()
+                            .CoreWebView2()
+                            .and_then(|core| core.cast::<ICoreWebView2_13>())
+                            .and_then(|core| core.Profile())
+                            .and_then(|profile| profile.cast::<ICoreWebView2Profile8>())
+                            .and_then(|profile| profile.Delete())
+                    };
+                    if deletion.is_err() {
+                        let _ = previous_settings.save_to_path(&get_settings_path());
+                        let _ = std::fs::remove_file(restart_profiles_path());
+                        self.notify_settings(win_id, "WebView2 không thể xóa hồ sơ này. Hãy cập nhật WebView2 Runtime rồi thử lại.");
+                        return;
+                    }
+
+                    self.settings = settings;
+                    let data_dir = get_data_directory();
+                    let _ =
+                        std::fs::remove_file(data_dir.join("sessions").join(format!("{id}.json")));
+                    let _ = std::fs::remove_file(
+                        data_dir.join("profiles").join(&id).join("library.json"),
+                    );
+                    let _ = std::fs::remove_file(
+                        data_dir.join("profiles").join(&id).join("downloads.json"),
+                    );
+                    self.restart_requested = true;
+                    self.windows.clear();
+                    event_loop.exit();
+                }
                 UiToHostMessage::TogglePinTab => {
                     if let Some(win) = self.windows.get_mut(&win_id) {
                         if let Some(id) = win.tab_manager.active_tab_id() {
                             win.tab_manager.toggle_pin(id);
                             win.sync_ui_state();
+                        }
+                    }
+                }
+                UiToHostMessage::ToggleKeepAwakeTab => {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        if let Some(id) = win.tab_manager.active_tab_id() {
+                            if let Some(enabled) = win.tab_manager.toggle_keep_awake(id) {
+                                win.sync_ui_state();
+                                win.update_sidebar_sync(&self.cert_cache);
+                                let message = if enabled {
+                                    "Tab này sẽ không tự ngủ khi Pip chạy nền."
+                                } else {
+                                    "Tab này đã bật lại chế độ tự ngủ."
+                                };
+                                self.notify_settings(win_id, message);
+                            }
                         }
                     }
                 }
@@ -2134,6 +3383,18 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     if self.windows.get(&win_id).is_none_or(|win| win.private) {
                         return;
                     }
+                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
+                    if self.syncing_profiles.contains(&profile_id)
+                        || self.settings.profiles.iter().any(|profile| {
+                            profile.id == profile_id && profile.sync_credentials_protected.is_some()
+                        })
+                    {
+                        self.notify_settings(
+                            win_id,
+                            "Pip Sync đã được bật hoặc đang thiết lập cho hồ sơ này.",
+                        );
+                        return;
+                    }
                     let credentials = sync::SyncCredentials::generate();
                     let protected = match sync::protect_credentials(&credentials) {
                         Ok(value) => value,
@@ -2142,7 +3403,6 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             return;
                         }
                     };
-                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
                     let mut settings = self.settings.clone();
                     if let Some(profile) = settings
                         .profiles
@@ -2170,6 +3430,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }) {
                         let _ = view.evaluate_script(&format!("window.showStatus('Đã tạo mã Pip Sync. Hãy cất mã khôi phục ở nơi riêng; người có mã có thể truy cập dấu trang đã đồng bộ.');prompt('Lưu mã khôi phục ở nơi an toàn. Mã chỉ hiện lần này:',{code});"));
                     }
+                    self.start_bookmark_sync(win_id, false);
                 }
                 UiToHostMessage::ShowBookmarkSyncCode => {
                     let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
@@ -2211,6 +3472,13 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         return;
                     };
                     let profile_id = win.profile_id.clone();
+                    if self.syncing_profiles.contains(&profile_id) {
+                        self.notify_settings(
+                            win_id,
+                            "Pip Sync đang chạy. Hãy thử tắt và xóa lại sau khi đồng bộ xong.",
+                        );
+                        return;
+                    }
                     let Some(protected) = self
                         .settings
                         .profiles
@@ -2230,23 +3498,37 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     };
                     let vault_id = credentials.vault_id.clone();
                     let proxy = self.proxy.clone();
+                    let event_profile_id = profile_id.clone();
+                    self.syncing_profiles.insert(profile_id.clone());
                     if std::thread::Builder::new()
                         .name("pip-bookmark-sync-delete".into())
                         .spawn(move || {
                             let result = sync::delete_vault(&credentials);
                             let _ = proxy.send_event(BrowserEvent::SyncDisabled(
-                                win_id, profile_id, vault_id, result,
+                                win_id,
+                                event_profile_id,
+                                vault_id,
+                                result,
                             ));
                         })
                         .is_ok()
                     {
                         self.notify_settings(win_id, "Đang xóa bản đồng bộ trên máy chủ…");
                     } else {
+                        self.syncing_profiles.remove(&profile_id);
                         self.notify_settings(win_id, "Không khởi chạy được yêu cầu xóa.");
                     }
                 }
                 UiToHostMessage::ImportBookmarkSync { recovery_code } => {
                     if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                        return;
+                    }
+                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
+                    if self.syncing_profiles.contains(&profile_id) {
+                        self.notify_settings(
+                            win_id,
+                            "Hãy đợi đồng bộ đang chạy xong trước khi thay mã khôi phục.",
+                        );
                         return;
                     }
                     let credentials =
@@ -2264,7 +3546,6 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             return;
                         }
                     };
-                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
                     let mut settings = self.settings.clone();
                     if let Some(profile) = settings
                         .profiles
@@ -2278,63 +3559,19 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.sync_profiles();
                         self.notify_settings(
                             win_id,
-                            "Đã lưu mã khôi phục vào hồ sơ này. Bấm Đồng bộ ngay để tải dấu trang.",
+                            "Đã lưu mã khôi phục. Pip đang đồng bộ dấu trang và sẽ tự cập nhật khi có thay đổi.",
                         );
+                        self.start_bookmark_sync(win_id, false);
                     } else {
                         self.notify_settings(win_id, "Không thể lưu mã đồng bộ trên thiết bị.");
                     }
                 }
                 UiToHostMessage::SyncBookmarks => {
-                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
-                        return;
-                    };
-                    let profile_id = win.profile_id.clone();
-                    let Some(protected) = self
-                        .settings
-                        .profiles
-                        .iter()
-                        .find(|profile| profile.id == profile_id)
-                        .and_then(|profile| profile.sync_credentials_protected.as_deref())
-                    else {
-                        self.notify_settings(win_id, "Tạo hoặc nhập mã Pip Sync trước.");
-                        return;
-                    };
-                    let credentials = match sync::unprotect_credentials(protected) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            self.notify_settings(win_id, &error.to_string());
-                            return;
-                        }
-                    };
-                    let Some(path) = self.library_path(win_id) else {
-                        return;
-                    };
-                    let library = match evergreen_core::library::Library::load(&path) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            self.notify_settings(win_id, "Không đọc được dấu trang hồ sơ này.");
-                            return;
-                        }
-                    };
-                    let snapshot = sync::BookmarkSnapshot {
-                        version: 1,
-                        bookmarks: library.bookmarks,
-                        removed_bookmarks: library.removed_bookmarks,
-                    };
-                    let proxy = self.proxy.clone();
-                    if std::thread::Builder::new()
-                        .name("pip-bookmark-sync".into())
-                        .spawn(move || {
-                            let result = sync::sync_bookmarks(&credentials, snapshot);
-                            let _ =
-                                proxy.send_event(BrowserEvent::SyncBookmarksDone(win_id, result));
-                        })
-                        .is_ok()
-                    {
-                        self.notify_settings(win_id, "Đang mã hóa và đồng bộ dấu trang…");
-                    } else {
-                        self.notify_settings(win_id, "Không khởi chạy được đồng bộ.");
-                    }
+                    self.start_bookmark_sync(win_id, true);
+                }
+                UiToHostMessage::GetSitePermissions => self.request_site_permissions(win_id),
+                UiToHostMessage::ResetSitePermission { origin, kind } => {
+                    self.reset_site_permission(win_id, origin, kind)
                 }
                 UiToHostMessage::SetAutofill { enabled } => {
                     if let Some(win) = self.windows.get(&win_id) {
@@ -2357,6 +3594,188 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                 }
                             }
                         }
+                    }
+                }
+                UiToHostMessage::GetBrowserExtensions => self.request_browser_extensions(win_id),
+                UiToHostMessage::SelectBrowserExtensionFolder => {
+                    let window = self
+                        .windows
+                        .get(&win_id)
+                        .filter(|window| !window.private)
+                        .map(|window| window.window.clone());
+                    if let Some(window) = window {
+                        match choose_browser_extension_folder(&window) {
+                            Ok(path) => self.install_browser_extension(win_id, path),
+                            Err(error) if error.code().0 as u32 == 1223 => {}
+                            Err(error) => self.notify_settings(
+                                win_id,
+                                &format!("Không mở được hộp chọn thư mục tiện ích: {error}"),
+                            ),
+                        }
+                    }
+                }
+                UiToHostMessage::SetBrowserExtensionEnabled { id, enabled } => {
+                    self.change_browser_extension(win_id, id, Some(enabled));
+                }
+                UiToHostMessage::RemoveBrowserExtension { id } => {
+                    self.change_browser_extension(win_id, id, None);
+                }
+                UiToHostMessage::GetSavedPasswords => self.sync_passwords(win_id),
+                UiToHostMessage::SavePassword {
+                    origin,
+                    username,
+                    password,
+                } => {
+                    if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                        return;
+                    }
+                    let Some(path) = self.passwords_path(win_id) else {
+                        return;
+                    };
+                    let mut entries = match passwords::load(&path) {
+                        Ok(entries) => entries,
+                        Err(message) => {
+                            self.notify_settings(win_id, &message);
+                            return;
+                        }
+                    };
+                    if let Err(message) =
+                        passwords::upsert(&mut entries, &origin, &username, &password)
+                            .and_then(|_| passwords::save(&path, &entries))
+                    {
+                        self.notify_settings(win_id, &message);
+                        return;
+                    }
+                    self.sync_passwords(win_id);
+                    self.notify_settings(
+                        win_id,
+                        "Đã lưu mật khẩu được mã hóa bằng tài khoản Windows này.",
+                    );
+                }
+                UiToHostMessage::DeletePassword { id } => {
+                    if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                        return;
+                    }
+                    let Some(path) = self.passwords_path(win_id) else {
+                        return;
+                    };
+                    let mut entries = match passwords::load(&path) {
+                        Ok(entries) => entries,
+                        Err(message) => {
+                            self.notify_settings(win_id, &message);
+                            return;
+                        }
+                    };
+                    let old_len = entries.len();
+                    entries.retain(|entry| entry.id != id);
+                    if old_len == entries.len() {
+                        self.notify_settings(win_id, "Mật khẩu này không còn trong kho.");
+                        self.sync_passwords(win_id);
+                        return;
+                    }
+                    if let Err(message) = passwords::save(&path, &entries) {
+                        self.notify_settings(win_id, &message);
+                        return;
+                    }
+                    self.sync_passwords(win_id);
+                    self.notify_settings(win_id, "Đã xóa mật khẩu khỏi hồ sơ.");
+                }
+                UiToHostMessage::RevealPassword { id } => {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
+                        return;
+                    };
+                    let Some(path) = self.passwords_path(win_id) else {
+                        return;
+                    };
+                    let entries = match passwords::load(&path) {
+                        Ok(entries) => entries,
+                        Err(message) => {
+                            self.notify_settings(win_id, &message);
+                            return;
+                        }
+                    };
+                    let Some(entry) = passwords::find(&entries, id) else {
+                        self.notify_settings(win_id, "Mật khẩu này không còn trong kho.");
+                        return;
+                    };
+                    let Some(view) = win.tab_manager.active_tab_id().and_then(|tab_id| {
+                        win.tab_manager
+                            .get_tab_by_id(tab_id)
+                            .filter(|tab| tab.url.starts_with("evergreen://settings"))
+                            .and_then(|_| win.tabs.get(&tab_id))
+                    }) else {
+                        return;
+                    };
+                    let password = serde_json::to_string(&entry.password)
+                        .unwrap_or_else(|_| "\"\"".into())
+                        .replace('<', "\\u003c");
+                    let _ = view.evaluate_script(&format!(
+                        "if(window.__showSavedPassword)window.__showSavedPassword({id},{password})"
+                    ));
+                }
+                UiToHostMessage::FillPassword { id, tab_id } => {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
+                        return;
+                    };
+                    let tab_id = TabId(tab_id);
+                    let Some(url) = win
+                        .tab_manager
+                        .get_tab_by_id(tab_id)
+                        .map(|tab| tab.url.clone())
+                    else {
+                        self.notify_settings(win_id, "Tab đích không còn mở.");
+                        return;
+                    };
+                    let Some(origin) = passwords::normalize_origin(&url) else {
+                        self.notify_settings(
+                            win_id,
+                            "Hãy mở đúng website đã lưu trước khi điền mật khẩu.",
+                        );
+                        return;
+                    };
+                    let Some(path) = self.passwords_path(win_id) else {
+                        return;
+                    };
+                    let entries = match passwords::load(&path) {
+                        Ok(entries) => entries,
+                        Err(message) => {
+                            self.notify_settings(win_id, &message);
+                            return;
+                        }
+                    };
+                    let Some(entry) = passwords::find(&entries, id) else {
+                        self.notify_settings(win_id, "Mật khẩu này không còn trong kho.");
+                        return;
+                    };
+                    if entry.origin != origin {
+                        self.notify_settings(
+                            win_id,
+                            "Pip chỉ điền mật khẩu khi hostname, giao thức và cổng khớp chính xác.",
+                        );
+                        return;
+                    }
+                    let Some(view) = win.tabs.get(&tab_id) else {
+                        return;
+                    };
+                    let credentials = serde_json::to_string(&serde_json::json!({
+                        "origin": entry.origin,
+                        "username": entry.username,
+                        "password": entry.password,
+                    }))
+                    .unwrap_or_else(|_| "{}".into())
+                    .replace('<', "\\u003c");
+                    let script = format!(
+                        r#"(()=>{{const c={credentials};if(location.origin!==c.origin)return false;const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);const p=[...document.querySelectorAll('input[type=password]')].find(visible);if(!p)return false;const root=p.form||document;const fields=[...root.querySelectorAll('input')].filter(e=>visible(e)&&!['password','hidden','checkbox','radio','submit','button','file'].includes((e.type||'').toLowerCase()));const user=fields.find(e=>e.type==='email')||fields.find(e=>/user|email|login|account/i.test([e.name,e.id,e.autocomplete].join(' ')))||fields.find(e=>e.type==='text');const set=(e,v)=>{{const d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{{bubbles:true}}));e.dispatchEvent(new Event('change',{{bubbles:true}}))}};if(user)set(user,c.username);set(p,c.password);p.focus();return true}})()"#
+                    );
+                    let proxy = self.proxy.clone();
+                    if let Err(error) = view.evaluate_script_with_callback(&script, move |result| {
+                        let _ = proxy.send_event(BrowserEvent::PasswordFillDone(
+                            win_id,
+                            result.trim_matches('"') == "true",
+                        ));
+                    }) {
+                        eprintln!("Pip password fill: {error}");
+                        self.notify_settings(win_id, "Không thể điền mật khẩu vào trang này.");
                     }
                 }
                 action @ (UiToHostMessage::ClearSavedPasswords
@@ -2415,6 +3834,9 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                         BrowsingDataClearKind::SiteData => {
                                             COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE
                                         }
+                                        BrowsingDataClearKind::Selected { .. } => {
+                                            COREWEBVIEW2_BROWSING_DATA_KINDS(0)
+                                        }
                                     };
                                     if profile.ClearBrowsingData(data_kind, &callback).is_err() {
                                         let _ = self.proxy.send_event(
@@ -2431,6 +3853,99 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                 }
                             }
                         }
+                    }
+                }
+                UiToHostMessage::ClearSelectedBrowsingData {
+                    history,
+                    site_data,
+                    cache,
+                    passwords,
+                    autofill,
+                    download_history,
+                } => {
+                    if !(history || site_data || cache || passwords || autofill || download_history)
+                    {
+                        self.notify_settings(win_id, "Hãy chọn ít nhất một loại dữ liệu cần xóa.");
+                        return;
+                    }
+                    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+                    use windows::core::Interface;
+                    use wry::WebViewExtWindows;
+                    let Some(win) = self.windows.get(&win_id) else {
+                        return;
+                    };
+                    if win.private {
+                        self.notify_settings(
+                            win_id,
+                            "Dữ liệu ẩn danh được xóa khi đóng toàn bộ cửa sổ ẩn danh.",
+                        );
+                        return;
+                    }
+                    let Some(view) = win
+                        .tab_manager
+                        .active_tab_id()
+                        .and_then(|id| win.tabs.get(&id))
+                    else {
+                        self.notify_settings(win_id, "Không tìm thấy hồ sơ đang hoạt động.");
+                        return;
+                    };
+                    let profile = unsafe {
+                        view.controller()
+                            .CoreWebView2()
+                            .and_then(|core| core.cast::<ICoreWebView2_13>())
+                            .and_then(|core| core.Profile())
+                            .and_then(|profile| profile.cast::<ICoreWebView2Profile2>())
+                    };
+                    let Ok(profile) = profile else {
+                        self.notify_settings(
+                            win_id,
+                            "WebView2 hiện tại chưa hỗ trợ xóa dữ liệu duyệt web.",
+                        );
+                        return;
+                    };
+
+                    let mut data_kinds = COREWEBVIEW2_BROWSING_DATA_KINDS(0);
+                    if history {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY;
+                    }
+                    if site_data {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE;
+                    }
+                    if cache {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE;
+                    }
+                    if passwords {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE;
+                    }
+                    if autofill {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL;
+                    }
+                    if download_history {
+                        data_kinds |= COREWEBVIEW2_BROWSING_DATA_KINDS_DOWNLOAD_HISTORY;
+                    }
+
+                    let clear_kind = BrowsingDataClearKind::Selected {
+                        clear_pip_history: history,
+                        clear_pip_download_history: download_history,
+                        clear_pip_passwords: passwords,
+                    };
+                    let proxy = self.proxy.clone();
+                    let callback = webview2_com::ClearBrowsingDataCompletedHandler::create(
+                        Box::new(move |result| {
+                            let _ = proxy.send_event(BrowserEvent::BrowsingDataClearDone(
+                                win_id,
+                                clear_kind,
+                                result.is_ok(),
+                            ));
+                            Ok(())
+                        }),
+                    );
+                    if unsafe { profile.ClearBrowsingData(data_kinds, &callback) }.is_err() {
+                        let _ = self.proxy.send_event(BrowserEvent::BrowsingDataClearDone(
+                            win_id, clear_kind, false,
+                        ));
+                    } else {
+                        self.notify_settings(win_id, "Đang xóa dữ liệu đã chọn…");
                     }
                 }
                 UiToHostMessage::SetGoogleDns { enabled } => {
@@ -2727,6 +4242,34 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         win.update_layout();
                     }
                 }
+                UiToHostMessage::PrintPage => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(active) = win.tab_manager.active_tab() {
+                            if let Some(wv) = win.tabs.get(&active.id) {
+                                if let Err(error) = accelerator::print_page(wv) {
+                                    self.notify_user(
+                                        win_id,
+                                        &format!("Không mở được hộp thoại in: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                UiToHostMessage::SavePage => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(active) = win.tab_manager.active_tab() {
+                            if let Some(wv) = win.tabs.get(&active.id) {
+                                if let Err(error) = accelerator::save_page(wv) {
+                                    self.notify_user(
+                                        win_id,
+                                        &format!("Không lưu được trang: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 UiToHostMessage::FindInPage { query, forward } => {
                     if !self.settings.features.enable_find_in_page {
                         return;
@@ -2767,13 +4310,21 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 UiToHostMessage::OpenDownload {
                     download_id,
                     folder,
-                } => downloads::open(win_id, download_id, folder),
+                } => {
+                    let path = self
+                        .windows
+                        .get(&win_id)
+                        .filter(|win| !win.private)
+                        .and_then(|win| win.downloads.get(&download_id))
+                        .filter(|item| {
+                            item["state"] == "Completed" || item["state"] == "Interrupted"
+                        })
+                        .and_then(|item| item["path"].as_str())
+                        .map(std::path::PathBuf::from);
+                    downloads::open_with_fallback(win_id, download_id, folder, path);
+                }
                 UiToHostMessage::ClearDownloads => {
-                    downloads::clear_finished(win_id);
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        win.downloads.retain(|_, d| d["state"] == "InProgress");
-                        win.update_sidebar_sync(&self.cert_cache);
-                    }
+                    self.clear_download_history(win_id);
                 }
                 UiToHostMessage::OpenPermissionPrompt => {
                     if let Some(win) = self.windows.get_mut(&win_id) {
@@ -2857,6 +4408,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.notify_settings(win_id, "Đã lưu lựa chọn của bạn.");
                         self.sync_settings();
                     }
+                }
+                UiToHostMessage::CheckAppUpdates => {
+                    let proxy = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        let _ = proxy.send_event(BrowserEvent::AppUpdateCheckDone(
+                            win_id,
+                            app_updates::check(),
+                        ));
+                    });
+                }
+                UiToHostMessage::UpdateAdblockFilters => {
+                    let proxy = self.proxy.clone();
+                    let directory = get_data_directory();
+                    std::thread::spawn(move || {
+                        let _ = proxy.send_event(BrowserEvent::AdblockFilterUpdateDone(
+                            win_id,
+                            adblock_updates::fetch_and_store(directory),
+                        ));
+                    });
                 }
                 UiToHostMessage::RunEngineUpdate => {
                     let proxy = self.proxy.clone();
@@ -2988,6 +4558,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     self.edit_library(win_id, |library| library.visit(&url, &title, false));
                 }
             }
+            BrowserEvent::TabAudioChanged(win_id, tab_id, playing) => {
+                if let Some(win) = self.windows.get_mut(&win_id) {
+                    win.tab_manager.set_audio_playing(tab_id, playing);
+                    win.sync_ui_state();
+                }
+            }
             BrowserEvent::HistoryChanged(win_id, tab_id, can_back, can_forward) => {
                 if let Some(win) = self.windows.get_mut(&win_id) {
                     if win.tab_manager.get_tab_by_id(tab_id).is_none_or(|tab| {
@@ -3009,14 +4585,81 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 );
             }
             BrowserEvent::BrowsingDataClearDone(win_id, kind, success) => {
+                let clear_pip_passwords = match kind {
+                    BrowsingDataClearKind::Passwords => true,
+                    BrowsingDataClearKind::Selected {
+                        clear_pip_passwords,
+                        ..
+                    } => clear_pip_passwords,
+                    _ => false,
+                };
+                let pip_passwords_removed = if success && clear_pip_passwords {
+                    let removed =
+                        self.passwords_path(win_id)
+                            .is_some_and(|path| match std::fs::remove_file(path) {
+                                Ok(()) => true,
+                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                                Err(error) => {
+                                    eprintln!("Pip password vault removal failed: {error}");
+                                    false
+                                }
+                            });
+                    if removed {
+                        self.sync_passwords(win_id);
+                    }
+                    removed
+                } else {
+                    true
+                };
+                if success
+                    && matches!(
+                        kind,
+                        BrowsingDataClearKind::Selected {
+                            clear_pip_history: true,
+                            ..
+                        }
+                    )
+                {
+                    self.edit_library(win_id, |library| library.history.clear());
+                }
+                if success
+                    && matches!(
+                        kind,
+                        BrowsingDataClearKind::Selected {
+                            clear_pip_download_history: true,
+                            ..
+                        }
+                    )
+                {
+                    downloads::clear_finished(win_id);
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        win.downloads
+                            .retain(|_, download| download["state"] == "InProgress");
+                        win.update_sidebar_sync(&self.cert_cache);
+                    }
+                }
                 let message = if success {
                     match kind {
                         BrowsingDataClearKind::Cache => {
                             "Đã xóa bộ nhớ đệm; đăng nhập và lịch sử được giữ lại."
                         }
-                        BrowsingDataClearKind::Passwords => "Đã xóa mật khẩu đã lưu của hồ sơ.",
+                        BrowsingDataClearKind::Passwords if pip_passwords_removed => {
+                            "Đã xóa mật khẩu đã lưu của hồ sơ."
+                        }
+                        BrowsingDataClearKind::Passwords => {
+                            "WebView2 đã xóa mật khẩu; không xóa được kho mật khẩu Pip."
+                        }
                         BrowsingDataClearKind::SiteData => {
                             "Đã xóa cookie và dữ liệu website; tải lại các trang để đăng xuất."
+                        }
+                        BrowsingDataClearKind::Selected {
+                            clear_pip_passwords: true,
+                            ..
+                        } if !pip_passwords_removed => {
+                            "WebView2 đã xóa dữ liệu đã chọn nhưng không xóa được kho mật khẩu Pip."
+                        }
+                        BrowsingDataClearKind::Selected { .. } => {
+                            "Đã xóa dữ liệu đã chọn. Tệp đã tải xuống và dấu trang được giữ lại."
                         }
                     }
                 } else {
@@ -3026,9 +4669,101 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         BrowsingDataClearKind::SiteData => {
                             "Không thể xóa cookie và dữ liệu website."
                         }
+                        BrowsingDataClearKind::Selected { .. } => {
+                            "Không thể xóa dữ liệu duyệt web đã chọn."
+                        }
                     }
                 };
                 self.notify_settings(win_id, message);
+            }
+            BrowserEvent::BrowserExtensionsLoaded(win_id, result) => {
+                match result {
+                    Ok(extensions) => {
+                        let json = serde_json::to_string(&extensions)
+                            .unwrap_or_else(|_| "[]".into())
+                            .replace('<', "\\u003c");
+                        if let Some(profile_id) =
+                            self.windows.get(&win_id).map(|win| win.profile_id.clone())
+                        {
+                            for window in self
+                                .windows
+                                .values()
+                                .filter(|window| !window.private && window.profile_id == profile_id)
+                            {
+                                for (tab_id, view) in &window.tabs {
+                                    if window.tab_manager.get_tab_by_id(*tab_id).is_some_and(
+                                        |tab| tab.url.starts_with("evergreen://settings"),
+                                    ) {
+                                        let _ = view.evaluate_script(&format!(
+                                        "if(window.__renderBrowserExtensions)window.__renderBrowserExtensions({json})"
+                                    ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(message) => {
+                        let json = serde_json::to_string(&message)
+                            .unwrap_or_else(|_| "\"Không đọc được tiện ích.\"".into())
+                            .replace('<', "\\u003c");
+                        if let Some(win) = self.windows.get(&win_id) {
+                            for (tab_id, view) in &win.tabs {
+                                if win
+                                    .tab_manager
+                                    .get_tab_by_id(*tab_id)
+                                    .is_some_and(|tab| tab.url.starts_with("evergreen://settings"))
+                                {
+                                    let _ = view.evaluate_script(&format!(
+                                        "if(window.__renderBrowserExtensionsError)window.__renderBrowserExtensionsError({json})"
+                                    ));
+                                }
+                            }
+                        }
+                        self.notify_settings(win_id, &message);
+                    }
+                }
+            }
+            BrowserEvent::BrowserExtensionOperationDone(win_id, result) => match result {
+                Ok(()) => {
+                    self.notify_settings(win_id, "Đã cập nhật tiện ích của hồ sơ.");
+                    self.request_browser_extensions(win_id);
+                }
+                Err(message) => self.notify_settings(win_id, &message),
+            },
+            BrowserEvent::SitePermissionsLoaded(win_id, result) => match result {
+                Ok(permissions) => {
+                    let json = serde_json::to_string(&permissions)
+                        .unwrap_or_else(|_| "[]".into())
+                        .replace('<', "\\u003c");
+                    if let Some(win) = self.windows.get(&win_id) {
+                        for (tab_id, view) in &win.tabs {
+                            if win
+                                .tab_manager
+                                .get_tab_by_id(*tab_id)
+                                .is_some_and(|tab| tab.url == "evergreen://settings")
+                            {
+                                let _ = view.evaluate_script(&format!(
+                                    "if(window.__renderSitePermissions)window.__renderSitePermissions({json})"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Could not load website permissions: {error}");
+                    self.notify_settings(win_id, "Không thể đọc danh sách quyền website đã lưu.");
+                }
+            },
+            BrowserEvent::SitePermissionReset(win_id, success) => {
+                if success {
+                    self.notify_settings(
+                        win_id,
+                        "Đã đặt lại quyền website; trang sẽ hỏi lại lần sau.",
+                    );
+                    self.request_site_permissions(win_id);
+                } else {
+                    self.notify_settings(win_id, "Không thể đặt lại quyền website.");
+                }
             }
             BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
                 self.record_google_dns_health(&result);
@@ -3050,80 +4785,168 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     eprintln!("Pip Google DNS startup route check failed: {error}");
                 }
             }
-            BrowserEvent::SyncBookmarksDone(win_id, result) => match result {
-                Ok(snapshot) => {
-                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
-                        if let Some(path) = self.library_path(win_id) {
-                            if let Ok(mut library) = evergreen_core::library::Library::load(&path) {
-                                let uploaded = sync::BookmarkSnapshot {
-                                    version: 1,
-                                    bookmarks: snapshot.bookmarks,
-                                    removed_bookmarks: snapshot.removed_bookmarks,
-                                };
-                                let current = sync::BookmarkSnapshot {
-                                    version: 1,
-                                    bookmarks: library.bookmarks.clone(),
-                                    removed_bookmarks: library.removed_bookmarks.clone(),
-                                };
-                                let merged = sync::merge_snapshots(current, uploaded.clone());
-                                let needs_followup = merged != uploaded;
-                                library.bookmarks = merged.bookmarks;
-                                library.removed_bookmarks = merged.removed_bookmarks;
-                                if library.save(&path).is_ok() {
-                                    self.sync_library(win_id);
-                                    let message = if needs_followup {
-                                        "Đã nhận dấu trang. Có thay đổi mới trong lúc đồng bộ; bấm Đồng bộ ngay lần nữa để gửi chúng lên thiết bị khác."
-                                    } else {
-                                        &snapshot.message
+            BrowserEvent::AppUpdateCheckDone(win_id, result) => {
+                let payload = match result {
+                    Ok(info) => serde_json::to_string(&info).unwrap_or_else(|_| {
+                        "{\"error\":\"Không đọc được kết quả cập nhật.\"}".into()
+                    }),
+                    Err(error) => serde_json::to_string(&serde_json::json!({"error":error}))
+                        .unwrap_or_else(|_| "{\"error\":\"Không kiểm tra được cập nhật.\"}".into()),
+                }
+                .replace('<', "\\u003c");
+                if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+                    win.tab_manager.active_tab_id().and_then(|id| {
+                        win.tab_manager
+                            .get_tab_by_id(id)
+                            .filter(|tab| tab.url.starts_with("evergreen://settings"))
+                            .and_then(|_| win.tabs.get(&id))
+                    })
+                }) {
+                    let _ = view.evaluate_script(&format!(
+                        "if(window.__renderAppUpdate)window.__renderAppUpdate({payload})"
+                    ));
+                }
+            }
+            BrowserEvent::AdblockFilterUpdateDone(win_id, result) => {
+                let payload = match result {
+                    Ok(summary) => serde_json::to_string(&summary).unwrap_or_else(|_| {
+                        "{\"error\":\"Không đọc được kết quả cập nhật bộ lọc.\"}".into()
+                    }),
+                    Err(error) => serde_json::to_string(&serde_json::json!({"error":error}))
+                        .unwrap_or_else(|_| {
+                            "{\"error\":\"Không cập nhật được bộ lọc quảng cáo.\"}".into()
+                        }),
+                }
+                .replace('<', "\\u003c");
+                if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+                    win.tab_manager.active_tab_id().and_then(|id| {
+                        win.tab_manager
+                            .get_tab_by_id(id)
+                            .filter(|tab| tab.url.starts_with("evergreen://settings"))
+                            .and_then(|_| win.tabs.get(&id))
+                    })
+                }) {
+                    let _ = view.evaluate_script(&format!(
+                        "if(window.__renderAdblockFilterUpdate)window.__renderAdblockFilterUpdate({payload})"
+                    ));
+                }
+            }
+            BrowserEvent::TabSuspendResult(win_id, tab_id, suspended) => {
+                self.suspending_tabs.remove(&(win_id, tab_id));
+                if !suspended {
+                    return;
+                }
+                if let Some(win) = self.windows.get_mut(&win_id) {
+                    if win.tab_manager.active_tab_id() != Some(tab_id) {
+                        win.tab_manager.set_tab_suspended(tab_id, true);
+                        win.sync_ui_state();
+                    }
+                }
+            }
+            BrowserEvent::SyncBookmarksDone(win_id, profile_id, manual, result) => {
+                self.syncing_profiles.remove(&profile_id);
+                match result {
+                    Ok(snapshot) => {
+                        if self
+                            .settings
+                            .profiles
+                            .iter()
+                            .any(|profile| profile.id == profile_id)
+                        {
+                            if let Some(path) = self
+                                .windows
+                                .get(&win_id)
+                                .filter(|win| !win.private && win.profile_id == profile_id)
+                                .and_then(|_| self.library_path(win_id))
+                            {
+                                if let Ok(mut library) =
+                                    evergreen_core::library::Library::load(&path)
+                                {
+                                    let uploaded = sync::BookmarkSnapshot {
+                                        version: 1,
+                                        bookmarks: snapshot.bookmarks,
+                                        removed_bookmarks: snapshot.removed_bookmarks,
                                     };
-                                    self.notify_settings(win_id, message);
-                                } else {
-                                    self.notify_settings(
-                                        win_id,
-                                        "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
-                                    );
+                                    let current = sync::BookmarkSnapshot {
+                                        version: 1,
+                                        bookmarks: library.bookmarks.clone(),
+                                        removed_bookmarks: library.removed_bookmarks.clone(),
+                                    };
+                                    let merged = sync::merge_snapshots(current, uploaded.clone());
+                                    let needs_followup = merged != uploaded;
+                                    let local_changed = library.bookmarks != merged.bookmarks
+                                        || library.removed_bookmarks != merged.removed_bookmarks;
+                                    if local_changed {
+                                        library.bookmarks = merged.bookmarks;
+                                        library.removed_bookmarks = merged.removed_bookmarks;
+                                    }
+                                    if !local_changed || library.save(&path).is_ok() {
+                                        if local_changed {
+                                            self.sync_library_profile(&profile_id);
+                                        }
+                                        if needs_followup {
+                                            self.start_bookmark_sync(win_id, manual);
+                                        } else if manual {
+                                            self.notify_settings(win_id, &snapshot.message);
+                                        }
+                                    } else {
+                                        self.notify_settings(
+                                            win_id,
+                                            "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
+                                        );
+                                        self.notify_library(
+                                            win_id,
+                                            "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Err(message) => self.notify_settings(win_id, &message),
-            },
-            BrowserEvent::SyncDisabled(win_id, profile_id, vault_id, result) => match result {
-                Ok(()) => {
-                    let mut settings = self.settings.clone();
-                    let Some(profile) = settings
-                        .profiles
-                        .iter_mut()
-                        .find(|profile| profile.id == profile_id)
-                    else {
-                        return;
-                    };
-                    let still_same_vault = profile
-                        .sync_credentials_protected
-                        .as_deref()
-                        .and_then(|value| sync::unprotect_credentials(value).ok())
-                        .is_some_and(|credentials| credentials.vault_id == vault_id);
-                    if !still_same_vault {
-                        return;
-                    }
-                    profile.sync_credentials_protected = None;
-                    if settings.save_to_path(&get_settings_path()).is_ok() {
-                        self.settings = settings;
-                        self.sync_profiles();
-                        self.notify_settings(
-                            win_id,
-                            "Đã xóa kho đồng bộ trên máy chủ và tắt đồng bộ cho hồ sơ này.",
-                        );
-                    } else {
-                        self.notify_settings(
-                            win_id,
-                            "Máy chủ đã xóa dữ liệu, nhưng không lưu được thay đổi hồ sơ.",
-                        );
+                    Err(message) => {
+                        self.notify_settings(win_id, &message);
+                        self.notify_library(win_id, &message);
                     }
                 }
-                Err(message) => self.notify_settings(win_id, &message),
-            },
+            }
+            BrowserEvent::SyncDisabled(win_id, profile_id, vault_id, result) => {
+                self.syncing_profiles.remove(&profile_id);
+                match result {
+                    Ok(()) => {
+                        let mut settings = self.settings.clone();
+                        let Some(profile) = settings
+                            .profiles
+                            .iter_mut()
+                            .find(|profile| profile.id == profile_id)
+                        else {
+                            return;
+                        };
+                        let still_same_vault = profile
+                            .sync_credentials_protected
+                            .as_deref()
+                            .and_then(|value| sync::unprotect_credentials(value).ok())
+                            .is_some_and(|credentials| credentials.vault_id == vault_id);
+                        if !still_same_vault {
+                            return;
+                        }
+                        profile.sync_credentials_protected = None;
+                        if settings.save_to_path(&get_settings_path()).is_ok() {
+                            self.settings = settings;
+                            self.sync_profiles();
+                            self.notify_settings(
+                                win_id,
+                                "Đã xóa kho đồng bộ trên máy chủ và tắt đồng bộ cho hồ sơ này.",
+                            );
+                        } else {
+                            self.notify_settings(
+                                win_id,
+                                "Máy chủ đã xóa dữ liệu, nhưng không lưu được thay đổi hồ sơ.",
+                            );
+                        }
+                    }
+                    Err(message) => self.notify_settings(win_id, &message),
+                }
+            }
             BrowserEvent::DownloadRequested(win_id, id) => {
                 downloads::start(win_id, id, self.proxy.clone(), &self.settings);
             }
@@ -3131,6 +4954,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 window_id,
                 download_id,
                 filename,
+                path,
                 received_bytes,
                 total_bytes,
                 state,
@@ -3138,6 +4962,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 let json = serde_json::json!({
                     "download_id": download_id,
                     "filename": filename,
+                    "path": path,
                     "received_bytes": received_bytes,
                     "total_bytes": total_bytes,
                     "state": state,
@@ -3165,6 +4990,37 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 } else {
                     downloads::clear_finished(window_id);
                 }
+                if state != "InProgress" {
+                    let profile_id = self
+                        .windows
+                        .get(&window_id)
+                        .filter(|win| !win.private)
+                        .map(|win| win.profile_id.clone());
+                    if let Some(profile_id) = profile_id {
+                        for win in self
+                            .windows
+                            .values_mut()
+                            .filter(|win| !win.private && win.profile_id == profile_id)
+                        {
+                            win.downloads.insert(download_id, json.clone());
+                            trim_download_history(&mut win.downloads);
+                            win.update_sidebar_sync(&self.cert_cache);
+                        }
+                        self.save_download_history(&profile_id);
+                    }
+                }
+            }
+            BrowserEvent::PasswordFillDone(win_id, true) => {
+                self.notify_settings(
+                    win_id,
+                    "Đã điền vào biểu mẫu của tab đã chọn. Hãy kiểm tra trước khi gửi.",
+                );
+            }
+            BrowserEvent::PasswordFillDone(win_id, false) => {
+                self.notify_settings(
+                    win_id,
+                    "Không tìm thấy biểu mẫu đăng nhập trong tab đã chọn.",
+                );
             }
             BrowserEvent::PermissionPrompt {
                 window_id,
@@ -3254,6 +5110,15 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
             }
             BrowserEvent::Shortcut(win_id, shortcut) => match shortcut.as_str() {
+                "Ctrl+Shift+M" => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(chrome) = &win.chrome_webview {
+                            let _ = chrome.evaluate_script(
+                                "if(window.toggleProfileMenu)window.toggleProfileMenu()",
+                            );
+                        }
+                    }
+                }
                 "Ctrl+Shift+A" => {
                     let url = self
                         .windows
@@ -3293,6 +5158,122 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                "RepairPlayback" => {
+                    let Some(tab_id) = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|win| win.tab_manager.active_tab_id())
+                    else {
+                        return;
+                    };
+                    if !self.ensure_tab_view(win_id, tab_id) {
+                        self.notify_user(
+                            win_id,
+                            "Không thể mở tab hiện tại để sửa lỗi phát video.",
+                        );
+                        return;
+                    }
+                    let Some(url) = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|win| win.tab_manager.get_tab_by_id(tab_id))
+                        .map(|tab| tab.url.clone())
+                    else {
+                        return;
+                    };
+                    let was_enabled = match self.adblock.borrow_mut().disable_for_playback(&url) {
+                        Ok(Some(was_enabled)) => was_enabled,
+                        Ok(None) => {
+                            self.notify_user(
+                                win_id,
+                                "Sửa lỗi phát video chỉ áp dụng cho trang web HTTP hoặc HTTPS.",
+                            );
+                            return;
+                        }
+                        Err(error) => {
+                            self.notify_user(
+                                win_id,
+                                &format!("Không lưu được ngoại lệ chặn quảng cáo: {error}"),
+                            );
+                            return;
+                        }
+                    };
+                    if was_enabled {
+                        for window in self.windows.values() {
+                            for view in window.tabs.values() {
+                                let _ = adblock::refresh_scriptlets(view, &self.adblock);
+                            }
+                        }
+                    }
+                    let Some(view) = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|win| win.tabs.get(&tab_id))
+                    else {
+                        self.notify_user(win_id, "Không tìm thấy nội dung tab để tải lại.");
+                        return;
+                    };
+                    if let Err(error) = view.reload() {
+                        self.notify_user(
+                            win_id,
+                            &format!("Pip đã giữ thiết lập chặn quảng cáo nhưng không tải lại được trang: {error}"),
+                        );
+                        return;
+                    }
+                    self.notify_user(
+                        win_id,
+                        if was_enabled {
+                            "Đã tắt chặn quảng cáo cho website này; Pip đang tải lại trang để thử sửa video. Bật lại bằng nút chiếc khiên nếu cần."
+                        } else {
+                            "Đang tải lại trang với chặn quảng cáo đã tắt cho website này."
+                        },
+                    );
+                }
+                "Alt+Shift+P" => {
+                    let Some(win) = self.windows.get(&win_id) else {
+                        return;
+                    };
+                    if win.private {
+                        win.window
+                            .set_title("Pip — Kho mật khẩu tắt trong cửa sổ ẩn danh");
+                        return;
+                    }
+                    let Some(tab) = win.tab_manager.active_tab() else {
+                        return;
+                    };
+                    let tab_id = tab.id;
+                    let url = tab.url.clone();
+                    let Some(path) = self.passwords_path(win_id) else {
+                        return;
+                    };
+                    let entries = match passwords::load(&path) {
+                        Ok(entries) => entries,
+                        Err(error) => {
+                            win.window.set_title(&format!("Pip — {error}"));
+                            return;
+                        }
+                    };
+                    let matches = passwords::matching_origin(&entries, &url);
+                    match matches.as_slice() {
+                        [entry] => self.user_event(
+                            event_loop,
+                            BrowserEvent::Ipc(
+                                win_id,
+                                UiToHostMessage::FillPassword {
+                                    id: entry.id,
+                                    tab_id: tab_id.0,
+                                },
+                            ),
+                        ),
+                        [] => win
+                            .window
+                            .set_title("Pip — Không có mật khẩu đã lưu cho website này"),
+                        _ => win.window.set_title(&format!(
+                            "Pip — Có {} tài khoản; chọn trong Cài đặt → Mật khẩu và tự điền",
+                            matches.len()
+                        )),
+                    }
+                }
                 "Ctrl+T" => self.handle_create_tab(win_id, None),
                 "Ctrl+Shift+T" => {
                     let target_url = if let Some(win) = self.windows.get_mut(&win_id) {
@@ -3317,6 +5298,8 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                "Ctrl+Shift+W" => self.close_window(win_id, event_loop),
+                "Ctrl+Shift+Delete" => self.handle_open_clear_data_settings(win_id),
                 "Ctrl+L" | "Ctrl+E" | "Ctrl+K" => {
                     if let Some(win) = self.windows.get(&win_id) {
                         win.handle_focus_omnibox();
@@ -3367,7 +5350,26 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     if let Some(win) = self.windows.get(&win_id) {
                         if let Some(active) = win.tab_manager.active_tab() {
                             if let Some(wv) = win.tabs.get(&active.id) {
-                                let _ = wv.evaluate_script("window.print()");
+                                if let Err(error) = accelerator::print_page(wv) {
+                                    self.notify_user(
+                                        win_id,
+                                        &format!("Không mở được hộp thoại in: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                "Ctrl+S" => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(active) = win.tab_manager.active_tab() {
+                            if let Some(wv) = win.tabs.get(&active.id) {
+                                if let Err(error) = accelerator::save_page(wv) {
+                                    self.notify_user(
+                                        win_id,
+                                        &format!("Không lưu được trang: {error}"),
+                                    );
+                                }
                             }
                         }
                     }
@@ -3408,6 +5410,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                "Alt+Home" => self.handle_navigate(win_id, "evergreen://newtab"),
                 "Ctrl+Tab" => {
                     if let Some(win) = self.windows.get_mut(&win_id) {
                         let tabs = win.tab_manager.tabs();
@@ -3645,7 +5648,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         if let Some(win) = self.windows.get(&window_id) {
                             if let Some(active) = win.tab_manager.active_tab() {
                                 if let Some(wv) = win.tabs.get(&active.id) {
-                                    let _ = wv.evaluate_script("window.print()");
+                                    if let Err(error) = accelerator::print_page(wv) {
+                                        self.notify_user(
+                                            window_id,
+                                            &format!("Không mở được hộp thoại in: {error}"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Key::Character(ref s)
+                        if s.eq_ignore_ascii_case("s") && self.modifiers.control_key() =>
+                    {
+                        if let Some(win) = self.windows.get(&window_id) {
+                            if let Some(active) = win.tab_manager.active_tab() {
+                                if let Some(wv) = win.tabs.get(&active.id) {
+                                    if let Err(error) = accelerator::save_page(wv) {
+                                        self.notify_user(
+                                            window_id,
+                                            &format!("Không lưu được trang: {error}"),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -3749,6 +5773,9 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             }
                         }
                     }
+                    Key::Named(NamedKey::Home) if self.modifiers.alt_key() => {
+                        self.handle_navigate(window_id, "evergreen://newtab");
+                    }
                     Key::Named(NamedKey::Tab) if self.modifiers.control_key() => {
                         if let Some(win) = self.windows.get_mut(&window_id) {
                             let tabs = win.tab_manager.tabs();
@@ -3784,6 +5811,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|a| a == "--verify-google-dns-webview") {
+        headless_ui_tests::run_google_dns_webview();
+        return Ok(());
+    }
     #[cfg(debug_assertions)]
     if std::env::args().any(|a| a == "--verify-native-ui") {
         headless_ui_tests::run();
@@ -3902,6 +5934,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod google_dns_preferences_tests {
     use super::*;
+
+    #[test]
+    fn automatic_bookmark_sync_ignores_history_only_edits() {
+        let mut before = evergreen_core::library::Library::default();
+        before.bookmarks.push(evergreen_core::library::Page {
+            url: "https://saved.example/".into(),
+            title: "Saved".into(),
+        });
+        let mut after = evergreen_core::library::Library {
+            bookmarks: before.bookmarks.clone(),
+            history: vec![evergreen_core::library::Page {
+                url: "https://visited.example/".into(),
+                title: "Visited".into(),
+            }],
+            removed_bookmarks: Vec::new(),
+            ..Default::default()
+        };
+        assert!(!bookmark_sync_state_changed(&before, &after));
+        after
+            .removed_bookmarks
+            .push("https://deleted.example/".into());
+        assert!(bookmark_sync_state_changed(&before, &after));
+        before.bookmarks.push(evergreen_core::library::Page {
+            url: "https://another.example/".into(),
+            title: "Another".into(),
+        });
+        assert!(bookmark_sync_state_changed(&before, &after));
+    }
+
+    #[test]
+    fn session_snapshots_are_atomically_replaced_and_unchanged_bytes_are_skipped() {
+        let root = std::env::temp_dir().join(format!(
+            "pip-session-snapshot-test-{}-{}",
+            std::process::id(),
+            BrowserApp::now_secs()
+        ));
+        let path = root.join("Default.json");
+        assert!(persist_session_snapshot(&path, b"first").unwrap());
+        assert!(!persist_session_snapshot(&path, b"first").unwrap());
+        assert!(persist_session_snapshot(&path, b"second").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extension_folder_requires_a_valid_unpacked_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "pip-extension-folder-test-{}-{}",
+            std::process::id(),
+            BrowserApp::now_secs()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Pip smoke","version":"1.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_browser_extension_folder(&root).unwrap(),
+            root.canonicalize().unwrap()
+        );
+        std::fs::write(root.join("manifest.json"), r#"{"manifest_version":4}"#).unwrap();
+        assert!(validate_browser_extension_folder(&root).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn website_permission_origins_are_bounded_http_origins() {
+        assert!(valid_permission_origin("https://example.com"));
+        assert!(valid_permission_origin("http://localhost:8080"));
+        assert!(!valid_permission_origin("https://example.com/path"));
+        assert!(!valid_permission_origin("javascript:alert(1)"));
+        assert!(!valid_permission_origin("https://user@example.com"));
+        assert!(!valid_permission_origin("https://example.com\n"));
+    }
 
     #[test]
     fn dns_proxy_browser_args_preserve_wry_defaults_and_only_proxy_when_enabled() {

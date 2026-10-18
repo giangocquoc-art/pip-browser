@@ -68,19 +68,27 @@ fn test_tab_groups_are_validated_and_survive_session_restore() {
     assert!(!manager.set_group(first, "x".repeat(25).as_str()));
     assert!(!manager.set_group(first, "bad\nname"));
 
+    assert_eq!(manager.toggle_keep_awake(first), Some(true));
+    assert!(manager.get_tab_by_id(first).unwrap().keep_awake);
+    assert_eq!(manager.toggle_keep_awake(first), Some(false));
+    assert_eq!(manager.toggle_keep_awake(TabId(u64::MAX)), None);
+    assert_eq!(manager.toggle_keep_awake(first), Some(true));
     let snapshot = manager.snapshot();
     let serialized = serde_json::to_string(&snapshot).unwrap();
     let snapshot: Vec<TabState> = serde_json::from_str(&serialized).unwrap();
     let mut restored = TabManager::new();
     restored.restore_from_snapshot(snapshot);
     assert_eq!(restored.get_tab_by_id(first).unwrap().group, Some(group));
+    assert!(restored.get_tab_by_id(first).unwrap().keep_awake);
     assert!(restored.set_group(first, ""));
     assert!(restored.get_tab_by_id(first).unwrap().group.is_none());
 
     let mut legacy = serde_json::to_value(manager.snapshot()).unwrap();
     legacy[0].as_object_mut().unwrap().remove("group");
+    legacy[0].as_object_mut().unwrap().remove("keep_awake");
     let legacy: Vec<TabState> = serde_json::from_value(legacy).unwrap();
     assert!(legacy[0].group.is_none());
+    assert!(!legacy[0].keep_awake);
 }
 
 #[test]
@@ -158,6 +166,7 @@ fn test_ipc_serde_ui_to_host_all_variants() {
         UiToHostMessage::ReloadTab { tab_id: TabId(7) },
         UiToHostMessage::Stop,
         UiToHostMessage::OpenDevTools,
+        UiToHostMessage::RepairPlayback,
         UiToHostMessage::OpenMenu { x: 100.0, y: 50.0 },
         UiToHostMessage::MenuToggled { open: true },
         UiToHostMessage::ToggleMenuPanel,
@@ -448,6 +457,12 @@ fn test_settings_update_from_partial_json() {
     // Other settings untouched
     assert!(s.features.enable_downloads_manager);
     assert_eq!(s.appearance.default_zoom_level, 1.0);
+
+    s.update_from_json(&serde_json::json!({
+        "performance": { "background_throttling": false, "sleep_after_secs": 900 }
+    }));
+    assert!(!s.performance.background_throttling);
+    assert_eq!(s.performance.sleep_after_secs, 900);
 }
 
 #[test]

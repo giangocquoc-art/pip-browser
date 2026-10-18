@@ -1,3 +1,7 @@
+# Pip 0.1.12
+
+Added a Keep Awake option in the Pip menu. It protects the selected tab from automatic suspension, displays its state, and persists the choice with the tab session; legacy sessions default to normal sleeping behavior. Audio, downloads, pinned tabs, and user-protected tabs stay active. Added a guided video playback repair action in the Pip menu. After confirmation, Pip disables ad blocking for the current website only and reloads that page; the choice is saved until the user turns blocking back on. The prompt warns that unsent page content may be lost. Google DNS proxy handling now switches accepted Windows sockets to blocking mode before relaying traffic, so WebView2 HTTPS requests can pass through the local DoH proxy.
+
 # Pip 0.1.11
 
 Added persistent tab groups, on-device page translation where supported by WebView2, and optional encrypted bookmark sync across devices. Pip Sync encrypts bookmark data on the device, protects local credentials with Windows DPAPI, merges deletion markers, and uses revision checks to prevent stale writes. History, passwords, cookies, and sessions are not synced. The sync endpoint is deployed on Cloudflare and passed live HTTPS authentication, read/write, conflict, and deletion checks.

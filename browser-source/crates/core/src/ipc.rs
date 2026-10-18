@@ -9,12 +9,26 @@ pub enum UiToHostMessage {
     ChromeReady,
     SidebarReady,
     GetLibrary,
+    SuggestOmnibox {
+        query: String,
+    },
     ToggleBookmark,
     RemoveBookmark {
         url: String,
     },
     RemoveHistory {
         url: String,
+    },
+    AddHomeShortcut {
+        url: String,
+        title: String,
+    },
+    RemoveHomeShortcut {
+        url: String,
+    },
+    MoveHomeShortcut {
+        url: String,
+        direction: i8,
     },
     ImportBookmarks,
     ExportBookmarks,
@@ -23,6 +37,7 @@ pub enum UiToHostMessage {
         view: String,
     },
     ToggleAdblock,
+    RepairPlayback,
     /// Request creating a new tab
     CreateTab {
         url: Option<String>,
@@ -45,6 +60,9 @@ pub enum UiToHostMessage {
         id: String,
         name: String,
     },
+    DeleteProfile {
+        id: String,
+    },
     SetGoogleDns {
         enabled: bool,
     },
@@ -53,6 +71,7 @@ pub enum UiToHostMessage {
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,
+    ToggleKeepAwakeTab,
     SetTabGroup {
         tab_id: TabId,
         name: String,
@@ -70,9 +89,47 @@ pub enum UiToHostMessage {
     SetAutofill {
         enabled: bool,
     },
+    GetSavedPasswords,
+    SavePassword {
+        origin: String,
+        username: String,
+        password: String,
+    },
+    DeletePassword {
+        id: u64,
+    },
+    RevealPassword {
+        id: u64,
+    },
+    FillPassword {
+        id: u64,
+        tab_id: u64,
+    },
+    GetBrowserExtensions,
+    SelectBrowserExtensionFolder,
+    SetBrowserExtensionEnabled {
+        id: String,
+        enabled: bool,
+    },
+    RemoveBrowserExtension {
+        id: String,
+    },
     ClearSavedPasswords,
     ClearCache,
     ClearSiteData,
+    ClearSelectedBrowsingData {
+        history: bool,
+        site_data: bool,
+        cache: bool,
+        passwords: bool,
+        autofill: bool,
+        download_history: bool,
+    },
+    GetSitePermissions,
+    ResetSitePermission {
+        origin: String,
+        kind: i32,
+    },
     /// Switch active tab
     SwitchTab {
         id: TabId,
@@ -141,6 +198,8 @@ pub enum UiToHostMessage {
     ZoomReset,
     /// Find in page
     OpenFindInPage,
+    PrintPage,
+    SavePage,
     FindInPage {
         query: String,
         forward: bool,
@@ -189,6 +248,8 @@ pub enum UiToHostMessage {
     SaveSettings {
         settings_json: String,
     },
+    CheckAppUpdates,
+    UpdateAdblockFilters,
     RunEngineUpdate,
     RunForkUpdate,
     /// User explicit bypass of an untrusted TLS/SSL certificate
@@ -299,4 +360,24 @@ pub enum HostToUiMessage {
     },
     /// Link preview result
     LinkPreviewReady { url: String, title: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UiToHostMessage;
+
+    #[test]
+    fn selected_browsing_data_ipc_preserves_each_explicit_choice() {
+        let message = UiToHostMessage::ClearSelectedBrowsingData {
+            history: true,
+            site_data: false,
+            cache: true,
+            passwords: false,
+            autofill: true,
+            download_history: true,
+        };
+        let encoded = serde_json::to_string(&message).unwrap();
+        let decoded: UiToHostMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
 }

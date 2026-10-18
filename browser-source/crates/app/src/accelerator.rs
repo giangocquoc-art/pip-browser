@@ -121,6 +121,75 @@ pub fn reload_without_cache(wv: &WebView) {
     }
 }
 
+/// Open WebView2's native print experience instead of calling page-controlled `window.print()`.
+#[cfg(target_os = "windows")]
+pub fn print_page(wv: &WebView) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_16, COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER,
+    };
+    use wry::WebViewExtWindows;
+
+    let core = unsafe { wv.controller().CoreWebView2() }.map_err(|e| e.to_string())?;
+    let printable = core.cast::<ICoreWebView2_16>().map_err(|e| e.to_string())?;
+    unsafe { printable.ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER) }
+        .map_err(|e| e.to_string())
+}
+
+/// Save the active document with WebView2's built-in Save As flow and resource handling.
+#[cfg(target_os = "windows")]
+pub fn save_page(wv: &WebView) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_25;
+    use wry::WebViewExtWindows;
+
+    let core = unsafe { wv.controller().CoreWebView2() }.map_err(|e| e.to_string())?;
+    let save_as = core
+        .cast::<ICoreWebView2_25>()
+        .map_err(|e| format!("Lưu trang cần WebView2 Runtime mới hơn: {e}"))?;
+    let callback =
+        webview2_com::ShowSaveAsUICompletedHandler::create(Box::new(move |result, outcome| {
+            if let Err(error) = result {
+                eprintln!("Pip Save As failed: {error}");
+            } else if outcome.0 != 0 {
+                eprintln!("Pip Save As completed with WebView2 result {}", outcome.0);
+            }
+            Ok(())
+        }));
+    unsafe { save_as.ShowSaveAsUI(&callback) }.map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+pub fn suspend_webview(
+    wv: &WebView,
+    window_id: winit::window::WindowId,
+    tab_id: evergreen_core::tabs::TabId,
+    proxy: EventLoopProxy<crate::BrowserEvent>,
+) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
+    use windows::core::Interface;
+    use wry::WebViewExtWindows;
+
+    let mut visible = windows::core::BOOL(0);
+    unsafe { wv.controller().IsVisible(&mut visible) }.map_err(|error| error.to_string())?;
+    if visible.as_bool() {
+        return Err("tab is still visible".into());
+    }
+    let core = unsafe { wv.controller().CoreWebView2() }.map_err(|error| error.to_string())?;
+    let core3 = core
+        .cast::<ICoreWebView2_3>()
+        .map_err(|error| error.to_string())?;
+    let callback =
+        webview2_com::TrySuspendCompletedHandler::create(Box::new(move |result, suspended| {
+            let did_suspend = result.is_ok() && suspended;
+            let _ = proxy.send_event(crate::BrowserEvent::TabSuspendResult(
+                window_id,
+                tab_id,
+                did_suspend,
+            ));
+            Ok(())
+        }));
+    unsafe { core3.TrySuspend(&callback) }.map_err(|error| error.to_string())
+}
+
 #[cfg(target_os = "windows")]
 pub fn focus_webview(wv: &WebView) {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
@@ -175,6 +244,16 @@ pub fn attach_accelerator_keys(
 
                     if ctrl && !alt {
                         match vkey {
+                            0x2E if shift => {
+                                // Open the browser data-clear controls.
+                                shortcut = Some("Ctrl+Shift+Delete");
+                                handled = true;
+                            }
+                            0x4D if shift => {
+                                // Chrome-style profile switcher.
+                                shortcut = Some("Ctrl+Shift+M");
+                                handled = true;
+                            }
                             0x41 if shift => {
                                 shortcut = Some("Ctrl+Shift+A");
                                 handled = true;
@@ -190,7 +269,7 @@ pub fn attach_accelerator_keys(
                             }
                             0x57 => {
                                 // 'W'
-                                shortcut = Some("Ctrl+W");
+                                shortcut = Some(if shift { "Ctrl+Shift+W" } else { "Ctrl+W" });
                                 handled = true;
                             }
                             0x4C => {
@@ -241,6 +320,11 @@ pub fn attach_accelerator_keys(
                             0x50 => {
                                 // 'P'
                                 shortcut = Some("Ctrl+P");
+                                handled = true;
+                            }
+                            0x53 => {
+                                // 'S' opens WebView2's native Save As flow.
+                                shortcut = Some("Ctrl+S");
                                 handled = true;
                             }
                             0x52 => {
@@ -324,18 +408,29 @@ pub fn attach_accelerator_keys(
                             _ => {}
                         }
                     } else if alt && !ctrl {
-                        match vkey {
-                            0x25 => {
-                                // Left Arrow
-                                shortcut = Some("Alt+Left");
-                                handled = true;
+                        if shift && vkey == 0x50 {
+                            // Fill the only saved Pip password for this exact website.
+                            shortcut = Some("Alt+Shift+P");
+                            handled = true;
+                        } else if !shift {
+                            match vkey {
+                                0x25 => {
+                                    // Left Arrow
+                                    shortcut = Some("Alt+Left");
+                                    handled = true;
+                                }
+                                0x27 => {
+                                    // Right Arrow
+                                    shortcut = Some("Alt+Right");
+                                    handled = true;
+                                }
+                                0x24 => {
+                                    // Home
+                                    shortcut = Some("Alt+Home");
+                                    handled = true;
+                                }
+                                _ => {}
                             }
-                            0x27 => {
-                                // Right Arrow
-                                shortcut = Some("Alt+Right");
-                                handled = true;
-                            }
-                            _ => {}
                         }
                     } else if !ctrl && !alt {
                         match vkey {
@@ -387,11 +482,42 @@ pub fn attach_navigation_events(
     blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
 ) {
     use webview2_com::{
-        DocumentTitleChangedEventHandler, HistoryChangedEventHandler, SourceChangedEventHandler,
+        DocumentTitleChangedEventHandler, HistoryChangedEventHandler,
+        IsDocumentPlayingAudioChangedEventHandler, SourceChangedEventHandler,
     };
     use wry::WebViewExtWindows;
 
     if let Ok(core) = unsafe { webview.controller().CoreWebView2() } {
+        if let Ok(core8) =
+            core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8>()
+        {
+            let proxy_audio = proxy.clone();
+            let audio_handler = IsDocumentPlayingAudioChangedEventHandler::create(Box::new(
+                move |sender, _args| {
+                    if let Some(sender) = sender {
+                        if let Ok(core8) = sender.cast::<
+                            webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8,
+                        >() {
+                            let mut playing = windows::core::BOOL(0);
+                            if unsafe { core8.IsDocumentPlayingAudio(&mut playing) }.is_ok() {
+                                let _ = proxy_audio.send_event(
+                                    crate::BrowserEvent::TabAudioChanged(
+                                        window_id,
+                                        tab_id,
+                                        playing.as_bool(),
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            ));
+            let mut audio_token = Default::default();
+            let _ = unsafe {
+                core8.add_IsDocumentPlayingAudioChanged(&audio_handler, &mut audio_token)
+            };
+        }
         // 1. History Changed
         let proxy_history = proxy.clone();
         let history_handler = HistoryChangedEventHandler::create(Box::new(move |sender, _args| {

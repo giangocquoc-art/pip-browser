@@ -2,6 +2,9 @@
 #[allow(dead_code)]
 #[path = "../src/adblock.rs"]
 mod adblock;
+#[allow(dead_code)]
+#[path = "../src/adblock_updates.rs"]
+mod adblock_updates;
 use std::{
     cell::RefCell,
     rc::Rc,

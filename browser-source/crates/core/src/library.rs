@@ -5,14 +5,21 @@ use std::{io, path::Path};
 const MAX_BOOKMARKS: usize = 200;
 const MAX_BOOKMARK_TOMBSTONES: usize = 2000;
 const MAX_BOOKMARK_IMPORT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HOME_SHORTCUTS: usize = 12;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Library {
     pub bookmarks: Vec<Page>,
     pub history: Vec<Page>,
     /// URLs removed while sync is enabled; bounded so deletions propagate without unbounded growth.
     pub removed_bookmarks: Vec<String>,
+    /// User-managed start-page shortcuts. These stay local to the profile.
+    #[serde(default)]
+    pub home_shortcuts: Vec<Page>,
+    /// Distinguishes a user-cleared shortcut list from an old library without this setting.
+    #[serde(default)]
+    pub home_shortcuts_configured: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page {
@@ -89,6 +96,108 @@ impl Library {
 
     pub fn remove_history(&mut self, url: &str) {
         self.history.retain(|page| page.url != url);
+    }
+
+    pub fn home_shortcuts(&self) -> Vec<Page> {
+        if self.home_shortcuts_configured {
+            self.home_shortcuts
+                .iter()
+                .take(MAX_HOME_SHORTCUTS)
+                .cloned()
+                .collect()
+        } else {
+            default_home_shortcuts()
+        }
+    }
+
+    pub fn add_home_shortcut(&mut self, url: &str, title: &str) -> bool {
+        let Some(page) = Self::page(url.trim(), title.trim()) else {
+            return false;
+        };
+        if page.title.is_empty() {
+            return false;
+        }
+        self.initialize_home_shortcuts();
+        if self.home_shortcuts.len() >= MAX_HOME_SHORTCUTS
+            || self
+                .home_shortcuts
+                .iter()
+                .any(|existing| existing.url == page.url)
+        {
+            return false;
+        }
+        self.home_shortcuts.push(page);
+        true
+    }
+
+    pub fn remove_home_shortcut(&mut self, url: &str) -> bool {
+        self.initialize_home_shortcuts();
+        let old_len = self.home_shortcuts.len();
+        self.home_shortcuts.retain(|page| page.url != url);
+        old_len != self.home_shortcuts.len()
+    }
+
+    /// Move one quick link by a single place. Direction is restricted to -1 or 1.
+    pub fn move_home_shortcut(&mut self, url: &str, direction: i8) -> bool {
+        if !matches!(direction, -1 | 1) {
+            return false;
+        }
+        self.initialize_home_shortcuts();
+        let Some(index) = self.home_shortcuts.iter().position(|page| page.url == url) else {
+            return false;
+        };
+        let destination = if direction < 0 {
+            index.checked_sub(1)
+        } else {
+            (index + 1 < self.home_shortcuts.len()).then_some(index + 1)
+        };
+        let Some(destination) = destination else {
+            return false;
+        };
+        self.home_shortcuts.swap(index, destination);
+        true
+    }
+
+    fn initialize_home_shortcuts(&mut self) {
+        if !self.home_shortcuts_configured {
+            self.home_shortcuts = default_home_shortcuts();
+            self.home_shortcuts_configured = true;
+        }
+    }
+
+    /// Return a bounded, local-only address-bar suggestion list. Recent
+    /// history ranks first; bookmarks fill remaining slots. Private windows
+    /// can disable history matching while retaining saved bookmark matches.
+    pub fn suggestions(&self, query: &str, include_history: bool, limit: usize) -> Vec<Page> {
+        let query = query.trim();
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let query = query.to_lowercase();
+        let matches = |page: &Page| {
+            page.title.to_lowercase().contains(&query) || page.url.to_lowercase().contains(&query)
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut suggestions = Vec::with_capacity(limit.min(8));
+        if include_history {
+            for page in self.history.iter().filter(|page| matches(page)) {
+                if seen.insert(page.url.as_str()) {
+                    suggestions.push(page.clone());
+                    if suggestions.len() >= limit {
+                        return suggestions;
+                    }
+                }
+            }
+        }
+        for page in self.bookmarks.iter().filter(|page| matches(page)) {
+            if seen.insert(page.url.as_str()) {
+                suggestions.push(page.clone());
+                if suggestions.len() >= limit {
+                    break;
+                }
+            }
+        }
+        suggestions
     }
 
     pub fn import_netscape_bookmarks(&mut self, html: &str) -> io::Result<usize> {
@@ -173,6 +282,21 @@ impl Library {
         html.push_str("</DL><p>\n");
         html
     }
+}
+
+fn default_home_shortcuts() -> Vec<Page> {
+    [
+        ("https://www.google.com/", "Google"),
+        ("https://www.youtube.com/", "YouTube"),
+        ("https://github.com/", "GitHub"),
+        ("https://psharehub.com/", "Psharehub"),
+    ]
+    .into_iter()
+    .map(|(url, title)| Page {
+        url: url.into(),
+        title: title.into(),
+    })
+    .collect()
 }
 
 fn find_tag_end(html: &str, start: usize) -> Option<usize> {
@@ -346,6 +470,75 @@ mod tests {
             .iter()
             .any(|page| page.url == "https://example.com/history"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn address_bar_suggestions_are_local_bounded_deduplicated_and_private_safe() {
+        let mut library = Library::default();
+        library.visit("https://older.example/", "Pip history", false);
+        library.visit("https://recent.example/", "Pip browser", false);
+        library.toggle_bookmark("https://recent.example/", "Pip browser");
+        library.toggle_bookmark("https://saved.example/", "Pip release");
+
+        let normal = library.suggestions("pip", true, 8);
+        assert_eq!(
+            normal
+                .iter()
+                .map(|page| page.url.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "https://recent.example/",
+                "https://older.example/",
+                "https://saved.example/",
+            ]
+        );
+        let private = library.suggestions("pip", false, 8);
+        assert_eq!(
+            private
+                .iter()
+                .map(|page| page.url.as_str())
+                .collect::<Vec<_>>(),
+            ["https://saved.example/", "https://recent.example/"]
+        );
+        assert_eq!(library.suggestions("pip", true, 1).len(), 1);
+        assert!(library.suggestions("   ", true, 8).is_empty());
+    }
+
+    #[test]
+    fn home_shortcuts_migrate_defaults_and_support_bounded_safe_edits() {
+        let mut legacy: Library =
+            serde_json::from_str(r#"{"bookmarks":[],"history":[],"removed_bookmarks":[]}"#)
+                .unwrap();
+        assert_eq!(legacy.home_shortcuts()[0].title, "Google");
+        assert_eq!(legacy.home_shortcuts().len(), 4);
+
+        assert!(legacy.add_home_shortcut("https://docs.example/", "Docs"));
+        assert!(!legacy.add_home_shortcut("https://docs.example/", "Duplicate"));
+        assert!(!legacy.add_home_shortcut("javascript:alert(1)", "Unsafe"));
+        assert_eq!(legacy.home_shortcuts().len(), 5);
+        assert!(legacy.move_home_shortcut("https://docs.example/", -1));
+        assert_eq!(legacy.home_shortcuts()[3].title, "Docs");
+        assert!(legacy.move_home_shortcut("https://docs.example/", 1));
+        assert!(legacy.remove_home_shortcut("https://docs.example/"));
+        assert!(!legacy.remove_home_shortcut("https://missing.example/"));
+
+        for index in 0..8 {
+            assert!(legacy.add_home_shortcut(
+                &format!("https://extra-{index}.example/"),
+                &format!("Extra {index}")
+            ));
+        }
+        assert_eq!(legacy.home_shortcuts().len(), 12);
+        assert!(!legacy.add_home_shortcut("https://overflow.example/", "Overflow"));
+
+        for shortcut in legacy.home_shortcuts() {
+            assert!(legacy.remove_home_shortcut(&shortcut.url));
+        }
+        assert!(legacy.home_shortcuts().is_empty());
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        let restored: Library = serde_json::from_slice(&bytes).unwrap();
+        assert!(restored.home_shortcuts_configured);
+        assert!(restored.home_shortcuts().is_empty());
     }
 
     #[test]

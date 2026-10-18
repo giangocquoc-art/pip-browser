@@ -88,9 +88,7 @@ pub struct PrivacySettings {
 pub struct PerformanceSettings {
     /// Duration of inactivity in seconds before suspending a background tab (default: 300s = 5m)
     pub sleep_after_secs: u64,
-    /// Target memory level for suspended tabs ("low", "normal")
-    pub suspended_memory_target: String,
-    /// Enable background tab CPU throttling
+    /// Automatically suspend idle background tabs to reduce CPU and memory usage
     pub background_throttling: bool,
 }
 
@@ -195,7 +193,6 @@ impl Default for Settings {
             },
             performance: PerformanceSettings {
                 sleep_after_secs: 300,
-                suspended_memory_target: "low".to_string(),
                 background_throttling: true,
             },
             appearance: AppearanceSettings {
@@ -302,6 +299,22 @@ impl Settings {
                         "enableLinkPreview": v.get("enable_link_preview"),
                         "showStatusPreview": v.get("show_status_preview"),
                     })),
+                    "performance" => {
+                        if let Some(performance) = v.as_object() {
+                            if let Some(enabled) = performance
+                                .get("background_throttling")
+                                .and_then(|value| value.as_bool())
+                            {
+                                self.performance.background_throttling = enabled;
+                            }
+                            if let Some(seconds) = performance
+                                .get("sleep_after_secs")
+                                .and_then(|value| value.as_u64())
+                            {
+                                self.performance.sleep_after_secs = seconds.min(7200);
+                            }
+                        }
+                    }
                     "search_engine" => {
                         if let Some(s) = v.as_str() {
                             self.search_engine = s.to_string();

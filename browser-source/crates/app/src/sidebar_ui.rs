@@ -495,6 +495,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <button type="button" class="action-item" title="Mở cửa sổ không ghi lịch sử; tệp tải xuống vẫn được giữ." onclick="sendAction('OpenPrivateWindow')"><svg viewBox="0 0 24 24"><path d="M3 12h3m12 0h3M6 12a4 4 0 1 1 8 0m4 0a4 4 0 1 0-8 0"/><path d="M2 8h20"/></svg><span class="action-label">Cửa sổ ẩn danh</span><span class="action-shortcut">Ctrl+Shift+N</span></button>
         <button type="button" class="action-item" title="Mở một tab mới từ địa chỉ hiện tại; nội dung đang nhập không được sao chép." onclick="sendAction('DuplicateTab')"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg><span class="action-label">Nhân đôi tab</span></button>
         <button type="button" class="action-item" title="Giữ tab ở đầu thanh tab. Ghim không giảm bộ nhớ của website." onclick="sendAction('TogglePinTab')"><svg viewBox="0 0 24 24"><path d="M8 4h8l-1 6 3 3v1h-5l-1 6-1-6H6v-1l3-3z"/></svg><span class="action-label">Ghim / bỏ ghim tab</span></button>
+        <button type="button" class="action-item" id="keepAwakeTabButton" aria-pressed="false" title="Giữ tab hiện tại hoạt động thay vì tự ngủ. Dùng cho cuộc gọi hoặc tác vụ nền." onclick="sendAction('ToggleKeepAwakeTab')"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.4 2.9 8.1 7 10 4.1-1.9 7-5.6 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="action-label" id="keepAwakeTabLabel">Giữ tab này thức</span></button>
         <button type="button" class="action-item" title="Bật hoặc tắt âm thanh của tab đang chọn." onclick="sendAction('ToggleMuteTab')"><svg viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6l-5 4zM17 9l4 6m0-6-4 6"/></svg><span class="action-label">Tắt / bật tiếng tab</span></button>
         <button type="button" class="action-item" title="Mở lại địa chỉ của tab vừa đóng; nội dung chưa lưu không được khôi phục." onclick="sendAction('ReopenClosedTab')"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5m4-1v5l3 2"/></svg><span class="action-label">Mở lại tab đã đóng</span><span class="action-shortcut">Ctrl+Shift+T</span></button>
         <button type="button" class="action-item" title="Mở lại địa chỉ các tab đã lưu của hồ sơ. Tab chỉ tải khi bạn chọn." onclick="sendAction('RestoreSession')"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M8 21h8m-4-4v4m-4-9 3-3 3 3m-3-3v7"/></svg><span class="action-label">Mở lại phiên đã lưu</span></button>
@@ -521,10 +522,21 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <button type="button" class="action-item" title="Xem các trang bạn đã lưu bằng nút ngôi sao (Ctrl+D)." onclick="postIpc('OpenLibrary',{view:'bookmarks'})"><svg viewBox="0 0 24 24"><path d="M6 4h12v17l-6-4-6 4z"/></svg><span class="action-label">Dấu trang</span><span class="action-shortcut">Ctrl+Shift+O</span></button>
         <button type="button" class="action-item" title="Xem tối đa 500 trang gần nhất của hồ sơ; không ghi trong ẩn danh." onclick="postIpc('OpenLibrary',{view:'history'})"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span class="action-label">Lịch sử</span><span class="action-shortcut">Ctrl+H</span></button>
         <button type="button" class="action-item" title="Đổi chặn quảng cáo cho trang hiện tại; nhấn F5 sau khi đổi." onclick="sendAction('ToggleAdblock')"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg><span class="action-label">Chặn quảng cáo trên trang</span><span class="action-shortcut">Ctrl+Shift+A</span></button>
+        <button type="button" class="action-item" title="Nếu video bị lỗi, xác nhận để tắt bộ lọc cho website hiện tại rồi tải lại trang. Nội dung chưa gửi có thể mất." onclick="if(confirm('Sửa lỗi phát video? Pip sẽ tắt chặn quảng cáo cho website hiện tại và tải lại trang. Website khác không đổi; nội dung chưa gửi trên trang này có thể mất.'))sendAction('RepairPlayback')"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 8.5 6M12 7v5l3 2"/><path d="M15 3h6v6"/><path d="m21 3-6 6"/></svg><span class="action-label">Sửa lỗi phát video</span></button>
         <button type="button" class="action-item" onclick="sendAction('OpenFindInPage')">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <span class="action-label">Tìm trong trang</span>
           <span class="action-shortcut">Ctrl+F</span>
+        </button>
+        <button type="button" class="action-item" title="Lưu trang hiện tại bằng hộp thoại Save As của WebView2." onclick="sendAction('SavePage')">
+          <svg viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3z"/><path d="M7 3v6h10V3M7 21v-7h10v7"/></svg>
+          <span class="action-label">Lưu trang thành…</span>
+          <span class="action-shortcut">Ctrl+S</span>
+        </button>
+        <button type="button" class="action-item" title="Mở hộp thoại in trang hiện tại." onclick="sendAction('PrintPage')">
+          <svg viewBox="0 0 24 24"><path d="M7 8V3h10v5M7 17H4V9h16v8h-3M7 14h10v7H7z"/><path d="M17 11h.01"/></svg>
+          <span class="action-label">In trang</span>
+          <span class="action-shortcut">Ctrl+P</span>
         </button>
         <button type="button" class="action-item" title="Dịch nội dung trang sang tiếng Việt bằng mô hình trên thiết bị; nhấn lại để khôi phục văn bản gốc." onclick="sendAction('TranslatePage')">
           <svg viewBox="0 0 24 24"><path d="M4 5h10M9 3v2m2 0c-.8 4-3.2 7-7 9m1-6c1.2 2.1 3.1 3.8 5.4 4.8M14 20l4.2-10 4.2 10m-7-3h5.6"/></svg>
@@ -623,7 +635,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <!-- VIEW 3: Downloads Mode -->
     <div class="view-section" id="viewDownloads">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><img src="data:image/webp;base64,{{DOWNLOAD_MASCOT_BASE64}}" alt="" width="72" height="88" style="object-fit:contain"><p class="status-desc">Tệp trong phiên cửa sổ này. Bấm Mở tệp sau khi tải xong hoặc Mở thư mục để tìm trên máy. Xóa danh sách giữ nguyên các tệp đã tải.</p></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><img src="data:image/webp;base64,{{DOWNLOAD_MASCOT_BASE64}}" alt="" width="72" height="88" style="object-fit:contain"><p class="status-desc">Lịch sử tải xuống của hồ sơ này được giữ sau khi đóng Pip. Bấm Mở tệp hoặc Mở thư mục để tìm trên máy. Xóa danh sách vẫn giữ tệp đã tải và không hủy lượt đang chạy.</p></div>
       <div class="card" style="padding: 12px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
           <span class="card-title">Tải xuống</span>
@@ -642,6 +654,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <div class="prop-row"><span class="prop-label">Cửa sổ mới</span><kbd>Ctrl+N</kbd></div>
         <div class="prop-row"><span class="prop-label">Cửa sổ ẩn danh</span><kbd>Ctrl+Shift+N</kbd></div>
         <div class="prop-row"><span class="prop-label">Đóng tab</span><kbd>Ctrl+W</kbd></div>
+        <div class="prop-row"><span class="prop-label">Đóng cửa sổ</span><kbd>Ctrl+Shift+W</kbd></div>
         <div class="prop-row"><span class="prop-label">Mở lại tab vừa đóng</span><kbd>Ctrl+Shift+T</kbd></div>
         <div class="prop-row"><span class="prop-label">Chuyển tab kế / trước</span><kbd>Ctrl+Tab</kbd> <kbd>Ctrl+Shift+Tab</kbd></div>
         <div class="prop-row"><span class="prop-label">Chuyển đến tab 1–8 / cuối</span><kbd>Ctrl+1…8</kbd> <kbd>Ctrl+9</kbd></div>
@@ -650,17 +663,22 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <div class="prop-row"><span class="prop-label">Thanh địa chỉ / tìm kiếm</span><kbd>Ctrl+L</kbd> <kbd>Ctrl+K</kbd></div>
         <div class="prop-row"><span class="prop-label">Tìm trong trang</span><kbd>Ctrl+F</kbd></div>
         <div class="prop-row"><span class="prop-label">Lịch sử</span><kbd>Ctrl+H</kbd></div>
+        <div class="prop-row"><span class="prop-label">Xóa dữ liệu duyệt web</span><kbd>Ctrl+Shift+Delete</kbd></div>
         <div class="prop-row"><span class="prop-label">Quản lý dấu trang</span><kbd>Ctrl+Shift+O</kbd></div>
         <div class="prop-row"><span class="prop-label">Tải xuống</span><kbd>Ctrl+J</kbd></div>
         <div class="prop-row"><span class="prop-label">Thêm / bỏ dấu trang</span><kbd>Ctrl+D</kbd></div>
         <div class="prop-row"><span class="prop-label">In trang hiện tại</span><kbd>Ctrl+P</kbd></div>
+        <div class="prop-row"><span class="prop-label">Lưu trang web</span><kbd>Ctrl+S</kbd></div>
         <div class="prop-row"><span class="prop-label">Quay lại / tiến tới</span><kbd>Alt+←</kbd> <kbd>Alt+→</kbd></div>
         <div class="prop-row"><span class="prop-label">Tải lại / tải lại bỏ bộ nhớ đệm</span><kbd>Ctrl+R</kbd> <kbd>Ctrl+Shift+R</kbd></div>
+        <div class="prop-row"><span class="prop-label">Về trang chủ Pip</span><kbd>Alt+Home</kbd></div>
         <div class="prop-row"><span class="prop-label">Dừng tải trang</span><kbd>Esc</kbd></div>
       </div>
       <div class="card"><span class="card-title">Thu phóng và Pip</span>
         <div class="prop-row"><span class="prop-label">Phóng to / thu nhỏ / đặt lại</span><kbd>Ctrl++</kbd> <kbd>Ctrl+-</kbd> <kbd>Ctrl+0</kbd></div>
+        <div class="prop-row"><span class="prop-label">Mở menu hồ sơ và chuyển tài khoản</span><kbd>Ctrl+Shift+M</kbd></div>
         <div class="prop-row"><span class="prop-label">Bật / tắt chặn quảng cáo cho trang</span><kbd>Ctrl+Shift+A</kbd></div>
+        <div class="prop-row"><span class="prop-label">Điền mật khẩu đã lưu khi chỉ có một tài khoản khớp</span><kbd>Alt+Shift+P</kbd></div>
         <div class="prop-row"><span class="prop-label">Công cụ nhà phát triển</span><kbd>F12</kbd> <kbd>Ctrl+Shift+J</kbd></div>
         <p class="status-desc">Phím tắt áp dụng khi cửa sổ Pip đang hoạt động. Khi đang nhập trong ô văn bản, Pip giữ nguyên các tổ hợp chỉnh sửa thông dụng của trang.</p>
       </div>
@@ -766,7 +784,9 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
           : (item.state === 'Interrupted' ? '<span style="color: var(--danger-color);">Đã gián đoạn</span>' : `<span>${pct}% · Đang tải</span>`);
         const actionHtml = isDone
           ? `<button onclick="postIpc('OpenDownload',{download_id:${id},folder:true})" style="border:0;background:transparent;color:#b84b08;cursor:pointer">Mở thư mục</button><button onclick="postIpc('OpenDownload',{download_id:${id},folder:false})" style="border:0;border-radius:6px;background:#f97316;color:white;padding:4px 9px;cursor:pointer">Mở tệp</button>`
-          : `<button onclick="sendAction('CancelDownload', { download_id: ${id} })" style="background: transparent; border: none; color: var(--danger-color); cursor: pointer; font-size: 11px;">Hủy</button>`;
+          : item.state === 'Interrupted'
+            ? `<button onclick="postIpc('OpenDownload',{download_id:${id},folder:true})" style="border:0;background:transparent;color:#b84b08;cursor:pointer">Mở thư mục</button>`
+            : `<button onclick="sendAction('CancelDownload', { download_id: ${id} })" style="background: transparent; border: none; color: var(--danger-color); cursor: pointer; font-size: 11px;">Hủy</button>`;
         html += `
           <div class="download-card" id="sidebar-dl-${id}" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
 
@@ -795,6 +815,17 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
       const host = document.getElementById('propHost').textContent;
       postIpc('OpenCertificateDialog', { host });
     }
+
+    window.__setKeepAwake = function(enabled) {
+      const button = document.getElementById('keepAwakeTabButton');
+      const label = document.getElementById('keepAwakeTabLabel');
+      if (!button || !label) return;
+      button.setAttribute('aria-pressed', String(!!enabled));
+      label.textContent = enabled ? 'Cho tab này tự ngủ' : 'Giữ tab này thức';
+      button.title = enabled
+        ? 'Tab hiện tại được giữ thức. Bấm để cho phép Pip tự ngủ tab này.'
+        : 'Giữ tab hiện tại hoạt động thay vì tự ngủ. Dùng cho cuộc gọi hoặc tác vụ nền.';
+    };
 
     // Called by host to update sidebar data
     window.__sidebarSync = function(msg) {
@@ -870,3 +901,16 @@ pub fn get_sidebar_html() -> String {
 }
 
 pub static SIDEBAR_HTML: LazyLock<String> = LazyLock::new(get_sidebar_html);
+
+#[cfg(test)]
+mod tests {
+    use super::SIDEBAR_HTML;
+
+    #[test]
+    fn menu_exposes_keep_awake_with_toggle_state() {
+        assert!(SIDEBAR_HTML.contains("ToggleKeepAwakeTab"));
+        assert!(SIDEBAR_HTML.contains("keepAwakeTabButton"));
+        assert!(SIDEBAR_HTML.contains("aria-pressed"));
+        assert!(SIDEBAR_HTML.contains("window.__setKeepAwake"));
+    }
+}

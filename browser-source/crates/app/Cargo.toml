@@ -1,6 +1,6 @@
 [package]
 name = "evergreen-browser"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 authors = ["Evergreen Browser Contributors"]
 description = "Ultra-lightweight, privacy-first desktop browser shell for Windows"
@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 evergreen-core = { path = "../core" }
+base64 = "0.22"
 winit = "0.30"
 wry = { version = "0.57", features = ["devtools"] }
 serde_json = "1.0"
@@ -16,8 +17,9 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 rand = "0.8"
 sha2 = "0.10"
+semver = "1.0"
 thiserror = "2.0"
-adblock = { version = "0.13.3", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling", "single-thread"] }
+adblock = { version = "0.13.3", default-features = false, features = ["css-validation", "embedded-domain-resolver", "full-regex-handling", "single-thread"] }
 
 [target."cfg(windows)".dependencies]
 webview2-com = "0.39"
@@ -27,6 +29,7 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_Security_Cryptography",
 ] }
 

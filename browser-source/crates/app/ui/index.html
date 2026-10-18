@@ -104,6 +104,15 @@
       border-top: 3px solid var(--tab-group-color);
     }
 
+    .tab.sleeping .tab-title {
+      opacity: 0.72;
+    }
+
+    .tab.keep-awake .tab-title {
+      text-decoration: underline dotted var(--accent);
+      text-underline-offset: 3px;
+    }
+
     .tab-group-label {
       flex: 0 1 auto;
       max-width: 58px;
@@ -379,6 +388,44 @@
       border-color: var(--border-focus);
       background: var(--bg-omnibox-focus);
     }
+
+    .omnibox-suggestions {
+      position: absolute;
+      z-index: 1200;
+      top: calc(100% + 5px);
+      left: 0;
+      right: 0;
+      max-height: 320px;
+      overflow: auto;
+      padding: 5px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: var(--bg-tab-active, #fff);
+      box-shadow: 0 8px 24px rgba(25, 32, 44, .18);
+    }
+
+    .omnibox-suggestions[hidden] { display: none; }
+    .omnibox-suggestion {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-main);
+      text-align: left;
+      cursor: pointer;
+    }
+    .omnibox-suggestion:hover,
+    .omnibox-suggestion[aria-selected="true"] { background: var(--bg-tab-hover, #f2f4f8); }
+    .omnibox-suggestion-icon { flex: 0 0 16px; color: var(--text-muted); text-align: center; }
+    .omnibox-suggestion-copy { min-width: 0; display: grid; gap: 2px; }
+    .omnibox-suggestion-title,
+    .omnibox-suggestion-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .omnibox-suggestion-title { font-size: 12px; }
+    .omnibox-suggestion-url { color: var(--text-muted); font-size: 10px; }
 
     /* Tab Dragging Styles */
     .tab.dragging {
@@ -777,6 +824,9 @@
         <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
       </svg>
     </button>
+    <button class="nav-btn" id="btnHome" onclick="postIpc('Navigate',{url:'evergreen://newtab'})" title="Trang chủ Pip (Alt+Home)" aria-label="Trang chủ">
+      <svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-6v-7h-4v7H4a1 1 0 0 1-1-1z"/></svg>
+    </button>
 
     <div class="omnibox-container">
       <!-- Interactive Padlock Button -->
@@ -795,10 +845,14 @@
         aria-expanded="false"
         aria-autocomplete="list"
         aria-haspopup="listbox"
+        aria-controls="omniboxSuggestions"
         aria-label="Địa chỉ và tìm kiếm"
         placeholder="Tìm kiếm {{SEARCH_ENGINE_NAME}} hoặc nhập địa chỉ web..."
+        oninput="requestOmniboxSuggestions(event)"
+        onblur="setTimeout(closeOmniboxSuggestions, 100)"
         onkeydown="handleOmniboxKey(event)"
       />
+      <div id="omniboxSuggestions" class="omnibox-suggestions" role="listbox" aria-label="Gợi ý dấu trang và lịch sử" hidden></div>
 
       <!-- Zoom Badge & Dialog -->
       <button class="zoom-badge" id="zoomBadge" onclick="toggleZoomDialog(event)" style="display: none;">100%</button>
@@ -914,6 +968,7 @@
         closeProfileMenu();
       }
     }
+    window.toggleProfileMenu = toggleProfileMenu;
     function closeProfileMenu() {
       const popover = document.getElementById('profilePopover');
       if (!popover || popover.hidden) return;
@@ -972,6 +1027,83 @@
       postIpc('CreateTab', { url: null });
     }
 
+    let omniboxSuggestionItems = [];
+    let omniboxSuggestionIndex = -1;
+    let omniboxSuggestionTimer = null;
+    function closeOmniboxSuggestions() {
+      const list = document.getElementById('omniboxSuggestions');
+      if (!list) return;
+      list.hidden = true;
+      document.getElementById('omnibox').setAttribute('aria-expanded', 'false');
+      document.getElementById('omnibox').removeAttribute('aria-activedescendant');
+      omniboxSuggestionItems = [];
+      omniboxSuggestionIndex = -1;
+    }
+    function requestOmniboxSuggestions(event) {
+      const query = event.target.value.trim();
+      clearTimeout(omniboxSuggestionTimer);
+      if (!query) {
+        closeOmniboxSuggestions();
+        return;
+      }
+      omniboxSuggestionTimer = setTimeout(() => postIpc('SuggestOmnibox', { query }), 90);
+    }
+    window.__renderOmniboxSuggestions = function(query, items) {
+      const input = document.getElementById('omnibox');
+      const list = document.getElementById('omniboxSuggestions');
+      if (!input || !list || input.value.trim() !== String(query).trim() || document.activeElement !== input) return;
+      list.replaceChildren();
+      omniboxSuggestionItems = Array.isArray(items) ? items.slice(0, 8) : [];
+      omniboxSuggestionIndex = -1;
+      if (!omniboxSuggestionItems.length) {
+        closeOmniboxSuggestions();
+        return;
+      }
+      for (let i = 0; i < omniboxSuggestionItems.length; i++) {
+        const item = omniboxSuggestionItems[i];
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = `omnibox-suggestion-${i}`;
+        button.className = 'omnibox-suggestion';
+        button.setAttribute('role', 'option');
+        button.setAttribute('aria-selected', 'false');
+        button.addEventListener('mousedown', event => event.preventDefault());
+        button.addEventListener('click', () => navigateOmnibox(item.url));
+        const icon = document.createElement('span');
+        icon.className = 'omnibox-suggestion-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = item.bookmarked ? '★' : '◷';
+        const copy = document.createElement('span');
+        copy.className = 'omnibox-suggestion-copy';
+        const title = document.createElement('span');
+        title.className = 'omnibox-suggestion-title';
+        title.textContent = item.title || item.url;
+        const url = document.createElement('span');
+        url.className = 'omnibox-suggestion-url';
+        url.textContent = item.url;
+        copy.append(title, url);
+        button.append(icon, copy);
+        list.append(button);
+      }
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    };
+    function selectOmniboxSuggestion(index) {
+      if (!omniboxSuggestionItems.length) return false;
+      omniboxSuggestionIndex = (index + omniboxSuggestionItems.length) % omniboxSuggestionItems.length;
+      const input = document.getElementById('omnibox');
+      for (let i = 0; i < omniboxSuggestionItems.length; i++) {
+        document.getElementById(`omnibox-suggestion-${i}`)?.setAttribute('aria-selected', String(i === omniboxSuggestionIndex));
+      }
+      input.setAttribute('aria-activedescendant', `omnibox-suggestion-${omniboxSuggestionIndex}`);
+      document.getElementById(`omnibox-suggestion-${omniboxSuggestionIndex}`)?.scrollIntoView({block:'nearest'});
+      return true;
+    }
+    function navigateOmnibox(url) {
+      closeOmniboxSuggestions();
+      postIpc('Navigate', {url});
+    }
+
     function closeTab(id, event) {
       if (event) event.stopPropagation();
       const tabEl = document.getElementById('tab-' + id);
@@ -984,10 +1116,17 @@
     }
 
     function handleOmniboxKey(e) {
+      if (e.key === 'ArrowDown' && selectOmniboxSuggestion(omniboxSuggestionIndex + 1)) { e.preventDefault(); return; }
+      if (e.key === 'ArrowUp' && selectOmniboxSuggestion(omniboxSuggestionIndex < 0 ? omniboxSuggestionItems.length - 1 : omniboxSuggestionIndex - 1)) { e.preventDefault(); return; }
+      if (e.key === 'Escape' && !document.getElementById('omniboxSuggestions').hidden) { closeOmniboxSuggestions(); e.preventDefault(); return; }
       if (e.key === 'Enter') {
+        if (omniboxSuggestionIndex >= 0 && omniboxSuggestionItems[omniboxSuggestionIndex]) {
+          navigateOmnibox(omniboxSuggestionItems[omniboxSuggestionIndex].url);
+          return;
+        }
         const val = e.target.value.trim();
         if (val) {
-          postIpc('Navigate', { url: val });
+          navigateOmnibox(val);
         }
       }
     }
@@ -1223,6 +1362,15 @@
       window.__showStatusPreview('');
     };
 
+    window.__notifyUser = function(message) {
+      const bar = document.getElementById('statusPreviewBar');
+      if (!bar) return;
+      bar.textContent = message;
+      bar.style.display = 'block';
+      clearTimeout(window.__pipNoticeTimer);
+      window.__pipNoticeTimer = setTimeout(() => { bar.style.display = 'none'; }, 5000);
+    };
+
     /* Tab Rendering & Drag Reorder */
     const NEWTAB_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239595a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='3'/%3E%3Cpath d='M3 9h18'/%3E%3Cpath d='M9 3v6'/%3E%3C/svg%3E";
     const SETTINGS_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239595a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E";
@@ -1375,11 +1523,16 @@
           const name = window.prompt(promptText, currentName);
           if (name !== null) postIpc('SetTabGroup', {tab_id: tab.id, name});
         };
-        if (tab.group) {
-          tabEl.setAttribute('aria-label', `${tab.title || 'Tab mới'}, nhóm ${tab.group.name}`);
-        } else {
-          tabEl.removeAttribute('aria-label');
-        }
+        const tabName = tab.title || 'Tab mới';
+        const sleeping = tab.status === 'Suspended';
+        const keepAwake = !!tab.keep_awake;
+        tabEl.classList.toggle('sleeping', sleeping);
+        tabEl.classList.toggle('keep-awake', keepAwake);
+        const groupDescription = tab.group ? `, nhóm ${tab.group.name}` : '';
+        const sleepDescription = sleeping ? ', tab đang ngủ; chọn để tiếp tục' : '';
+        const awakeDescription = keepAwake ? ', được giữ thức' : '';
+        tabEl.setAttribute('aria-label', `${tabName}${groupDescription}${sleepDescription}${awakeDescription}`);
+        tabEl.title = `${tabName}${sleeping ? ' · Tab đang ngủ — chọn để tiếp tục' : keepAwake ? ' · Pip sẽ không tự ngủ tab này' : ''}`;
 
         if (isActive) {
           tabEl.classList.add('active');
@@ -1411,7 +1564,7 @@
 
           let shortcutNum = (index < 8) ? (index + 1) : (index === state.tabs.length - 1 ? 9 : null);
           let shortcutStr = shortcutNum ? ` (Ctrl+${shortcutNum})` : '';
-          tabEl.title = `${displayTitle}${shortcutStr}`;
+          tabEl.title = `${displayTitle}${shortcutStr}${sleeping ? ' · Tab đang ngủ — chọn để tiếp tục' : keepAwake ? ' · Pip sẽ không tự ngủ tab này' : ''}`;
           titleEl.title = tabEl.title;
           if (shortcutNum) {
             tabEl.setAttribute('aria-keyshortcuts', `Control+${shortcutNum}`);

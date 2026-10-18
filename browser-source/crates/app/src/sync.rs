@@ -117,9 +117,17 @@ pub fn protect_credentials(credentials: &SyncCredentials) -> Result<String, Sync
 }
 
 pub fn unprotect_credentials(value: &str) -> Result<SyncCredentials, SyncCryptoError> {
-    let bytes = decode_hex(value).ok_or(SyncCryptoError::InvalidEnvelope)?;
-    let plaintext = unprotect_local_secret(&bytes)?;
+    let plaintext = unprotect_local_data(value)?;
     serde_json::from_slice(&plaintext).map_err(|_| SyncCryptoError::InvalidEnvelope)
+}
+
+pub(crate) fn protect_local_data(bytes: &[u8]) -> Result<String, SyncCryptoError> {
+    protect_local_secret(bytes)
+}
+
+pub(crate) fn unprotect_local_data(value: &str) -> Result<Vec<u8>, SyncCryptoError> {
+    let bytes = decode_hex(value).ok_or(SyncCryptoError::InvalidEnvelope)?;
+    unprotect_local_secret(&bytes)
 }
 
 #[cfg(windows)]

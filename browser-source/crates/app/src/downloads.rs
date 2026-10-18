@@ -35,6 +35,7 @@ pub fn attach(
     window: WindowId,
     proxy: EventLoopProxy<BrowserEvent>,
 ) -> windows::core::Result<()> {
+    NEXT_ID.fetch_max(download_id_seed(), Ordering::Relaxed);
     let core = unsafe {
         view.controller()
             .CoreWebView2()?
@@ -193,6 +194,7 @@ fn report(id: u64, proxy: &EventLoopProxy<BrowserEvent>) {
             window_id: d.window,
             download_id: id,
             filename: d.path.file_name()?.to_string_lossy().into(),
+            path: d.path.to_string_lossy().into_owned(),
             received_bytes: received,
             total_bytes: total,
             state: if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
@@ -223,24 +225,26 @@ pub fn cancel(window: WindowId, id: u64) {
         }
     }
 }
-pub fn open(window: WindowId, id: u64, folder: bool) {
+pub fn open_with_fallback(window: WindowId, id: u64, folder: bool, fallback: Option<PathBuf>) {
     let entry = ACTIVE.with(|s| {
         s.borrow()
             .get(&id)
             .filter(|d| d.window == window)
             .map(|d| (d.path.clone(), d.operation.clone()))
     });
-    let path = entry.and_then(|(path, op)| {
-        let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
-        unsafe {
-            op.State(&mut state).ok()?;
-        }
-        if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
-            Some(path)
-        } else {
-            None
-        }
-    });
+    let path = entry
+        .and_then(|(path, op)| {
+            let mut state = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;
+            unsafe {
+                op.State(&mut state).ok()?;
+            }
+            if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .or_else(|| fallback.filter(|path| path.is_file()));
     if let Some(path) = path.filter(|p| p.is_file()) {
         if folder {
             let _ = std::process::Command::new("explorer.exe")
@@ -259,6 +263,14 @@ pub fn open(window: WindowId, id: u64, folder: bool) {
             }
         }
     }
+}
+
+fn download_id_seed() -> u64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    millis.saturating_mul(1024) + u64::from(std::process::id() % 1024)
 }
 pub fn clear_finished(window: WindowId) {
     let operations = ACTIVE.with(|s| {

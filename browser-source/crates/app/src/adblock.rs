@@ -1,10 +1,11 @@
-//! One Brave engine shared by tabs; native filtering, CSS and upstream YouTube scriptlets.
+//! One Brave engine shared by tabs; native filtering, cosmetic rules and upstream scriptlets.
 use adblock::{
     lists::{FilterSet, ParseOptions},
     request::Request,
     resources::{PermissionMask, Resource},
     Engine,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -25,7 +26,13 @@ pub struct Blocker {
     disabled: HashSet<String>,
     exceptions_path: PathBuf,
     pub blocked: u64,
+    pub redirected: u64,
     bootstraps: HashMap<String, Weak<RefCell<Bootstrap>>>,
+}
+
+pub(crate) enum FilterAction {
+    Block,
+    Redirect(String),
 }
 
 #[derive(Default)]
@@ -212,18 +219,81 @@ impl Blocker {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let updated_lists = crate::adblock_updates::load_cached(&directory);
         let mut filters = FilterSet::new(false);
-        let easylist = include_str!("../filters/easylist.txt");
-        filters.add_filter_list(easylist.to_owned(), ParseOptions::default());
+        let easylist = updated_lists
+            .as_ref()
+            .map(|lists| lists.easylist.as_str())
+            .unwrap_or(include_str!("../filters/easylist.txt"));
+        filters.add_filter_list(
+            easylist.to_owned(),
+            if updated_lists.is_some() {
+                ParseOptions {
+                    rule_types: adblock::lists::RuleTypes::NetworkOnly,
+                    ..Default::default()
+                }
+            } else {
+                ParseOptions::default()
+            },
+        );
+        let ublock_network_rules = [
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_filters.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
+                )),
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_quick_fixes.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/quick-fixes.txt"
+                )),
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_unbreak.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
+                )),
+        ]
+        .join("\n");
+        filters.add_filter_list(
+            ublock_network_rules,
+            ParseOptions {
+                rule_types: adblock::lists::RuleTypes::NetworkOnly,
+                ..Default::default()
+            },
+        );
         // adblock-rust does not implement ABP popup/popunder resource types.
         // Translate those options into a dedicated engine queried only for
         // WebView2 popup destinations. Use bundled popup rules, the dedicated
         // HaGeZi popup ads domain list, and reviewed Pip overrides.
         let popup_rules = [
             popup_rules(easylist),
-            popup_rules(include_str!(
-                "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
-            )),
+            popup_rules(
+                updated_lists
+                    .as_ref()
+                    .map(|lists| lists.ublock_filters.as_str())
+                    .unwrap_or(include_str!(
+                        "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
+                    )),
+            ),
+            popup_rules(
+                updated_lists
+                    .as_ref()
+                    .map(|lists| lists.ublock_quick_fixes.as_str())
+                    .unwrap_or(include_str!(
+                        "../filters/upstream/uBlockOrigin/uAssets/filters/quick-fixes.txt"
+                    )),
+            ),
+            popup_rules(
+                updated_lists
+                    .as_ref()
+                    .map(|lists| lists.ublock_unbreak.as_str())
+                    .unwrap_or(include_str!(
+                        "../filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
+                    )),
+            ),
             include_str!("../filters/popupads-hagezi.txt").to_owned(),
             include_str!("../filters/popup-overrides.txt").to_owned(),
         ]
@@ -238,9 +308,44 @@ impl Blocker {
             },
         );
         let mut engine = Engine::new_with_filter_set(filters);
-        let resources: Vec<Resource> =
+        let mut resources: Vec<Resource> =
             serde_json::from_str(include_str!("../filters/scriptlet-resources.json"))
                 .expect("bundled upstream resources must be valid");
+        resources.push(Resource {
+            name: "noopjs".into(),
+            aliases: vec!["noop.js".into()],
+            kind: adblock::resources::ResourceType::Mime(
+                adblock::resources::MimeType::ApplicationJavascript,
+            ),
+            content: BASE64_STANDARD.encode("void 0;"),
+            dependencies: Vec::new(),
+            permission: PermissionMask::default(),
+        });
+        resources.push(Resource {
+            name: "nooptext".into(),
+            aliases: vec!["noop.txt".into()],
+            kind: adblock::resources::ResourceType::Mime(adblock::resources::MimeType::TextPlain),
+            content: BASE64_STANDARD.encode(""),
+            dependencies: Vec::new(),
+            permission: PermissionMask::default(),
+        });
+        resources.push(Resource {
+            name: "noopframe".into(),
+            aliases: vec!["noop.html".into()],
+            kind: adblock::resources::ResourceType::Mime(adblock::resources::MimeType::TextHtml),
+            content: BASE64_STANDARD
+                .encode("<!doctype html><meta name=referrer content=no-referrer>"),
+            dependencies: Vec::new(),
+            permission: PermissionMask::default(),
+        });
+        resources.push(Resource {
+            name: "1x1.gif".into(),
+            aliases: Vec::new(),
+            kind: adblock::resources::ResourceType::Mime(adblock::resources::MimeType::ImageGif),
+            content: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==".into(),
+            dependencies: Vec::new(),
+            permission: PermissionMask::default(),
+        });
         engine.use_resources(resources);
         Self {
             engine,
@@ -249,6 +354,7 @@ impl Blocker {
             disabled,
             exceptions_path,
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         }
     }
@@ -270,20 +376,51 @@ impl Blocker {
         Ok(Some(enabled))
     }
 
-    fn should_block(&self, url: &str, top: &str, source: &str, kind: &str, method: &str) -> bool {
-        let Some(host) = site(top) else {
-            return false;
+    /// Disable filtering on one supported site without flipping an existing exception back on.
+    /// Returns whether the site had filtering enabled before this operation.
+    pub fn disable_for_playback(
+        &mut self,
+        url: &str,
+    ) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+        let Some(was_enabled) = self.enabled(url) else {
+            return Ok(None);
         };
+        if was_enabled {
+            self.toggle(url)?;
+        }
+        Ok(Some(was_enabled))
+    }
+
+    pub(crate) fn filter_action(
+        &self,
+        url: &str,
+        top: &str,
+        source: &str,
+        kind: &str,
+        method: &str,
+    ) -> Option<FilterAction> {
+        let host = site(top)?;
         if self.disabled.contains(&host) || site(source).is_none() {
-            return false;
+            return None;
         }
         // Never blank the top-level page. Media is classified by WebView2, not its extension.
         if kind == "document" {
-            return false;
+            return None;
         }
-        Request::new(url, source, kind, method)
-            .ok()
-            .is_some_and(|r| self.engine.check_network_request(&r).should_block())
+        let request = Request::new(url, source, kind, method).ok()?;
+        let result = self.engine.check_network_request(&request);
+        if !result.should_block() {
+            return None;
+        }
+        Some(match result.redirect {
+            Some(resource) => FilterAction::Redirect(resource),
+            None => FilterAction::Block,
+        })
+    }
+
+    #[cfg(test)]
+    fn should_block(&self, url: &str, top: &str, source: &str, kind: &str, method: &str) -> bool {
+        self.filter_action(url, top, source, kind, method).is_some()
     }
 
     pub(crate) fn should_block_popup(&self, url: &str, source: &str, user_initiated: bool) -> bool {
@@ -327,17 +464,17 @@ impl Blocker {
         if self.disabled.contains(&host) {
             return None;
         }
-        // ponytail: static URL selectors only; procedural CSS needs a separate DOM executor.
-        // CSS also applies to matching elements inserted later by SPA pages.
-        let selectors = self.engine.url_cosmetic_resources(url).hide_selectors;
-        if selectors.is_empty() {
+        let resources = self.engine.url_cosmetic_resources(url);
+        if resources.hide_selectors.is_empty() && resources.procedural_actions.is_empty() {
             return None;
         }
-        Some(format!(
-            "(()=>{{if(location.href!=={})return;const sheet=new CSSStyleSheet();for(const selector of {}){{try{{sheet.insertRule(selector+'{{display:none!important}}');}}catch(_){{}}}}document.adoptedStyleSheets=[...document.adoptedStyleSheets,sheet];}})()",
-            serde_json::to_string(url).unwrap(),
-            serde_json::to_string(&selectors).unwrap(),
-        ))
+        let actions = resources
+            .procedural_actions
+            .into_iter()
+            .take(128)
+            .filter_map(|action| serde_json::from_str::<serde_json::Value>(&action).ok())
+            .collect::<Vec<_>>();
+        Some(cosmetic_script(url, &resources.hide_selectors, &actions))
     }
 
     pub(crate) fn youtube_script(&self) -> String {
@@ -369,6 +506,58 @@ impl Blocker {
         script.push_str("}})();");
         script
     }
+}
+
+pub(crate) fn decode_redirect_data_uri(uri: &str) -> Option<(String, Vec<u8>)> {
+    const MAX_REDIRECT_BYTES: usize = 8 * 1024 * 1024;
+    if uri.len() > MAX_REDIRECT_BYTES.saturating_mul(4) / 3 + 256 {
+        return None;
+    }
+    let (header, encoded) = uri.strip_prefix("data:")?.split_once(',')?;
+    let (mime, encoding) = header.split_once(';')?;
+    if encoding != "base64"
+        || mime.is_empty()
+        || !mime
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
+    (bytes.len() <= MAX_REDIRECT_BYTES).then(|| (mime.to_ascii_lowercase(), bytes))
+}
+
+fn cosmetic_script(
+    url: &str,
+    selectors: &HashSet<String>,
+    procedural_actions: &[serde_json::Value],
+) -> String {
+    let url = serde_json::to_string(url).unwrap();
+    let selectors = serde_json::to_string(selectors).unwrap();
+    let actions = serde_json::to_string(procedural_actions).unwrap();
+    format!(
+        r#"(()=>{{if(location.href!=={url})return;
+const css={selectors},rules={actions};
+if(css.length){{const sheet=new CSSStyleSheet();for(const selector of css){{try{{sheet.insertRule(selector+'{{display:none!important}}')}}catch(_){{}}}}document.adoptedStyleSheets=[...document.adoptedStyleSheets,sheet]}}
+const test=(value,pattern)=>{{value=String(value??'').slice(0,2048);pattern=String(pattern??'').trim();if(!pattern)return false;if(pattern[0]==='/'){{const end=pattern.lastIndexOf('/');if(end>0){{try{{return new RegExp(pattern.slice(1,end),pattern.slice(end+1).replace(/[^dgimsuvy]/g,'')).test(value)}}catch(_){{return false}}}}}}return value.toLowerCase().includes(pattern.toLowerCase())}};
+const matchArg=(value,arg)=>{{arg=String(arg??'');const equal=arg.indexOf('=');const name=(equal<0?arg:arg.slice(0,equal)).trim();if(!name)return false;const actual=value.getAttribute(name);if(actual===null)return false;return equal<0||test(actual,arg.slice(equal+1).trim())}};
+const apply=()=>{{let visited=0;for(const rule of rules){{if(++visited>128)break;let current=[];for(const op of rule.selector||[]){{const type=op.type,arg=op.arg;if(type==='css-selector'){{try{{current=Array.from(document.querySelectorAll(arg)).slice(0,300)}}catch(_){{current=[]}}continue}}if(type==='xpath'){{try{{const next=[];for(const node of current){{const result=document.evaluate(arg,node,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);for(let i=0;i<Math.min(result.snapshotLength,100);i++){{const item=result.snapshotItem(i);if(item instanceof Element)next.push(item)}}}}current=next.slice(0,300)}}catch(_){{current=[]}}continue}}current=current.filter(node=>{{try{{switch(type){{case'has-text':return test(node.textContent,arg);case'matches-attr':return matchArg(node,arg);case'matches-css':{{const [property,...rest]=String(arg).split(':');return test(getComputedStyle(node).getPropertyValue(property.trim()),rest.join(':'))}}case'matches-css-before':case'matches-css-after':{{const [property,...rest]=String(arg).split(':');return test(getComputedStyle(node,type.endsWith('before')?'::before':'::after').getPropertyValue(property.trim()),rest.join(':'))}}case'matches-path':return test(location.pathname,arg);case'min-text-length':return (node.textContent||'').trim().length>=Math.min(10000,Math.max(0,Number(arg)||0));case'upward':{{if(/^\d+$/.test(String(arg))){{let parent=node;for(let i=0;i<Math.min(20,Number(arg));i++)parent=parent?.parentElement;return !!parent}}return !!node.closest(arg)}}default:return false}}}}catch(_){{return false}}}})}}if(!current.length)continue;const action=rule.action;if(!action){{for(const node of current)node.style.setProperty('display','none','important');continue}}for(const node of current){{try{{switch(action.type){{case'remove':node.remove();break;case'style':node.style.cssText+=';'+action.arg;break;case'remove-attr':node.removeAttribute(action.arg);break;case'remove-class':node.classList.remove(action.arg);break}}}}catch(_){{}}}}}}}};
+apply();let runs=0,timer=0;const observer=new MutationObserver(records=>{{if(runs>=16||!records.some(record=>record.addedNodes.length))return;clearTimeout(timer);timer=setTimeout(()=>{{runs++;apply()}},300)}});if(document.documentElement)observer.observe(document.documentElement,{{childList:true,subtree:true}});return rules.length;
+}})();"#,
+    )
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn procedural_test_script(url: &str) -> String {
+    let host = site(url).unwrap();
+    let test_engine = engine(&format!("{host}##.ad:has-text(Casino):remove()"));
+    let resources = test_engine.url_cosmetic_resources(url);
+    let actions = resources
+        .procedural_actions
+        .into_iter()
+        .filter_map(|action| serde_json::from_str::<serde_json::Value>(&action).ok())
+        .collect::<Vec<_>>();
+    cosmetic_script(url, &resources.hide_selectors, &actions)
 }
 
 fn looks_like_gambling_popup_url(url: &str) -> bool {
@@ -549,23 +738,65 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER => "other",
             _ => return Ok(()),
         };
-        if blocker
+        let action = blocker
             .borrow()
-            .should_block(&url, &top, &source, kind, &method)
-        {
-            // Empty response prevents the network request; no proxy or injected script.
-            let response = unsafe {
-                environment.CreateWebResourceResponse(
-                    None,
-                    204,
-                    w!("No Content"),
-                    w!("Cache-Control: no-store\r\n"),
-                )?
+            .filter_action(&url, &top, &source, kind, &method);
+        if let Some(action) = action {
+            let redirected = matches!(action, FilterAction::Redirect(_));
+            let response = match action {
+                FilterAction::Redirect(data_uri) => {
+                    if let Some((mime, body)) = decode_redirect_data_uri(&data_uri) {
+                        let stream = unsafe {
+                            windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal(
+                                windows::Win32::Foundation::HGLOBAL::default(),
+                                true,
+                            )?
+                        };
+                        unsafe {
+                            stream
+                                .Write(body.as_ptr().cast(), body.len() as u32, None)
+                                .ok()?;
+                            stream.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None)?;
+                        }
+                        let headers = HSTRING::from(format!(
+                            "Content-Type: {mime}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+                        ));
+                        unsafe {
+                            environment.CreateWebResourceResponse(
+                                Some(&stream),
+                                200,
+                                w!("OK"),
+                                windows::core::PCWSTR(headers.as_ptr()),
+                            )?
+                        }
+                    } else {
+                        unsafe {
+                            environment.CreateWebResourceResponse(
+                                None,
+                                204,
+                                w!("No Content"),
+                                w!("Cache-Control: no-store\r\n"),
+                            )?
+                        }
+                    }
+                }
+                FilterAction::Block => unsafe {
+                    environment.CreateWebResourceResponse(
+                        None,
+                        204,
+                        w!("No Content"),
+                        w!("Cache-Control: no-store\r\n"),
+                    )?
+                },
             };
             unsafe {
                 args.SetResponse(&response)?;
             }
-            blocker.borrow_mut().blocked += 1;
+            let mut blocker = blocker.borrow_mut();
+            blocker.blocked += 1;
+            if redirected {
+                blocker.redirected += 1;
+            }
         }
         Ok(())
     }));
@@ -598,6 +829,34 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
                 }
             }
         }
+        if let Some(modern) = &modern {
+            // Each Wry WebView owns its own CoreWebView2Environment. Register one combined
+            // worker-source filter per view/environment so shared worker requests are not
+            // duplicated within an environment and service-worker traffic is still covered.
+            let worker_sources = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER.0
+                    | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER.0,
+            );
+            for context in [
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
+            ] {
+                for pattern in [w!("https://*"), w!("http://*")] {
+                    modern.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                        pattern,
+                        context,
+                        worker_sources,
+                    )?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -605,6 +864,54 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_network_filter_updates_are_loaded_without_enabling_remote_scriptlets() {
+        let directory = std::env::temp_dir().join(format!(
+            "pip-adblock-updates-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut easylist = (0..120)
+            .map(|index| format!("||refreshed-ad-{index}.example^"))
+            .collect::<Vec<_>>();
+        easylist.push("||dynamic-ad.example^$script".into());
+        let ordinary = (0..120)
+            .map(|index| format!("||ublock-ad-{index}.example^"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lists = crate::adblock_updates::UpdatedLists {
+            version: 1,
+            easylist: format!("! Title: Updated EasyList\n{}", easylist.join("\n")),
+            ublock_filters: ordinary.clone(),
+            ublock_quick_fixes: ordinary.clone(),
+            ublock_unbreak: ordinary,
+        };
+        std::fs::write(
+            directory.join("adblock-updated-lists.json"),
+            serde_json::to_vec(&lists).unwrap(),
+        )
+        .unwrap();
+
+        let blocker = Blocker::load(directory.clone());
+        let top = "https://news.example/";
+        assert!(blocker.should_block(
+            "https://dynamic-ad.example/banner.js",
+            top,
+            top,
+            "script",
+            "GET"
+        ));
+        let cosmetic = blocker.engine.url_cosmetic_resources(top);
+        assert!(cosmetic.hide_selectors.is_empty());
+
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
     #[test]
     fn youtube_resources_resolve_and_exceptions_remove_document_start_code() {
         let mut blocker = Blocker::load(std::env::temp_dir().join("pip-unused-test-path"));
@@ -631,6 +938,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         let top = "https://news.example/";
@@ -710,6 +1018,99 @@ mod tests {
     }
 
     #[test]
+    fn playback_repair_disables_once_and_persists_site_exception() {
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "pip-playback-repair-{}-{run_id}",
+            std::process::id()
+        ));
+        let mut blocker = Blocker::load(directory.clone());
+
+        assert_eq!(
+            blocker
+                .disable_for_playback("https://www.youtube.com/watch?v=test")
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(blocker.enabled("https://www.youtube.com/"), Some(false));
+        assert_eq!(
+            blocker
+                .disable_for_playback("https://www.youtube.com/watch?v=again")
+                .unwrap(),
+            Some(false),
+            "using repair a second time must not re-enable the blocker"
+        );
+
+        let reloaded = Blocker::load(directory.clone());
+        assert_eq!(reloaded.enabled("https://www.youtube.com/"), Some(false));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn bundled_redirect_resources_are_available_to_the_webview_response_layer() {
+        let mut redirect_engine = engine("||ads.example^$script,redirect=noop.js");
+        redirect_engine.use_resources([Resource {
+            name: "noop.js".into(),
+            aliases: Vec::new(),
+            kind: adblock::resources::ResourceType::Mime(
+                adblock::resources::MimeType::ApplicationJavascript,
+            ),
+            content: "bm9vcCgpOw==".into(),
+            dependencies: Vec::new(),
+            permission: PermissionMask::default(),
+        }]);
+        let request = Request::new(
+            "https://ads.example/ad.js",
+            "https://news.example/",
+            "script",
+            "GET",
+        )
+        .unwrap();
+        let response = redirect_engine.check_network_request(&request);
+        assert!(response.should_block());
+        let (mime, body) = decode_redirect_data_uri(response.redirect.as_deref().unwrap()).unwrap();
+        assert_eq!(mime, "application/javascript");
+        assert_eq!(body, b"noop();");
+    }
+
+    #[test]
+    fn bundled_ublock_network_rules_redirect_known_ad_scripts_to_local_noop() {
+        let blocker = Blocker::load(std::env::temp_dir().join("pip-unused-test-path"));
+        let action = blocker
+            .filter_action(
+                "https://go.oclasrv.com/apu.php",
+                "https://news.example/",
+                "https://news.example/",
+                "script",
+                "GET",
+            )
+            .expect("pinned uBlock filter should match");
+        let FilterAction::Redirect(data_uri) = action else {
+            panic!("uBlock redirect rule was reduced to an empty block");
+        };
+        let (mime, body) = decode_redirect_data_uri(&data_uri).unwrap();
+        assert_eq!(mime, "application/javascript");
+        assert_eq!(body, b"void 0;");
+    }
+
+    #[test]
+    fn redirect_data_uri_decoder_rejects_untrusted_schemes_and_malformed_mime() {
+        assert!(decode_redirect_data_uri("https://example.test/redirect.js").is_none());
+        assert!(decode_redirect_data_uri("data:text/html;name=x;base64,PGI+").is_none());
+        assert_eq!(
+            decode_redirect_data_uri(
+                "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+            )
+            .unwrap()
+            .0,
+            "image/gif"
+        );
+    }
+
+    #[test]
     fn popup_filters_block_listed_or_automatic_popups_only() {
         let source = "https://news.example/article";
         let blocker = Blocker {
@@ -721,6 +1122,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         assert!(blocker.should_block_popup("https://random.example/", source, false));
@@ -739,6 +1141,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         assert!(blocker.should_block_popup(
@@ -757,6 +1160,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         let source = "https://news.example/article";
@@ -801,6 +1205,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         let source = "https://news.example/article";
@@ -829,6 +1234,7 @@ mod tests {
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
+            redirected: 0,
             bootstraps: HashMap::new(),
         };
         let script = b.cosmetic_script("https://news.example/").unwrap();
@@ -837,5 +1243,22 @@ mod tests {
         assert!(b.cosmetic_script("evergreen://newtab").is_none());
         b.disabled.insert("news.example".into());
         assert!(b.cosmetic_script("https://news.example/").is_none());
+    }
+
+    #[test]
+    fn procedural_cosmetic_rules_are_serialized_for_bounded_page_execution() {
+        let script = procedural_test_script("https://example.test/");
+        assert!(script.contains("has-text"));
+        assert!(script.contains("remove"));
+        assert!(
+            script.contains("Casino"),
+            "procedural filter was not included"
+        );
+        assert!(
+            script.contains(".ad"),
+            "procedural CSS selector was not included"
+        );
+        assert!(script.contains("MutationObserver"));
+        assert!(script.contains("runs>=16"));
     }
 }

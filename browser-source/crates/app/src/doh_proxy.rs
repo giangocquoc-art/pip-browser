@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+#[cfg(debug_assertions)]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -18,6 +20,8 @@ const CACHE_MAX_ENTRIES: usize = 2048;
 pub struct DohProxy {
     port: u16,
     running: Arc<AtomicBool>,
+    #[cfg(debug_assertions)]
+    accepted_connections: Arc<AtomicU64>,
     listener_thread: Option<JoinHandle<()>>,
 }
 
@@ -47,12 +51,18 @@ impl DohProxy {
         let cache = Arc::new(Mutex::new(HashMap::<String, CachedAnswers>::new()));
         let running = Arc::new(AtomicBool::new(true));
         let thread_running = running.clone();
+        #[cfg(debug_assertions)]
+        let accepted_connections = Arc::new(AtomicU64::new(0));
+        #[cfg(debug_assertions)]
+        let thread_connection_count = accepted_connections.clone();
         let listener_thread = thread::Builder::new()
             .name("pip-google-dns-proxy".to_string())
             .spawn(move || {
                 while thread_running.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            #[cfg(debug_assertions)]
+                            thread_connection_count.fetch_add(1, Ordering::Relaxed);
                             let client = client.clone();
                             let cache = cache.clone();
                             let _ = thread::Builder::new()
@@ -74,12 +84,19 @@ impl DohProxy {
         Ok(Self {
             port,
             running,
+            #[cfg(debug_assertions)]
+            accepted_connections,
             listener_thread: Some(listener_thread),
         })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn accepted_connections(&self) -> u64 {
+        self.accepted_connections.load(Ordering::Relaxed)
     }
 }
 
@@ -137,6 +154,12 @@ fn handle_client_with_resolver(
     mut client_stream: TcpStream,
     resolve: impl Fn(&str) -> Option<Vec<IpAddr>>,
 ) {
+    // Windows accepted sockets inherit the listener's nonblocking mode.
+    // The listener must stay nonblocking so its shutdown loop can poll, but
+    // each per-connection stream is consumed with blocking read/write APIs.
+    if client_stream.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = client_stream.set_read_timeout(Some(Duration::from_secs(20)));
     let _ = client_stream.set_write_timeout(Some(Duration::from_secs(20)));
     let Ok(head) = read_request_head(&mut client_stream) else {
@@ -362,8 +385,21 @@ fn connect_to_host(
         return TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(4)).ok();
     }
     let addresses = resolve(host)?;
-    addresses.into_iter().find_map(|ip| {
-        TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(3)).ok()
+    let (ipv6, ipv4): (Vec<_>, Vec<_>) =
+        addresses.into_iter().partition(|address| address.is_ipv6());
+    // On dual-stack Windows networks, IPv4 can complete a TCP handshake
+    // through a filtering gateway and then reset TLS. Try IPv6 quickly first,
+    // then fall back to IPv4 so IPv4-only networks keep working.
+    for ip in ipv6.into_iter().take(4) {
+        let result =
+            TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_millis(250));
+        if let Ok(stream) = result {
+            return Some(stream);
+        }
+    }
+    ipv4.into_iter().find_map(|ip| {
+        let result = TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_secs(3));
+        result.ok()
     })
 }
 
@@ -408,7 +444,7 @@ fn resolve_google_doh(
         addresses.extend(found);
         ttl = ttl.min(result_ttl);
     }
-    addresses.sort();
+    addresses.sort_by_key(|address| (u8::from(address.is_ipv4()), *address));
     addresses.dedup();
     if addresses.is_empty() {
         return Err("Google DNS returned no address".to_string());
@@ -489,17 +525,18 @@ fn respond_error(stream: &mut TcpStream, status: &str) {
 }
 
 fn tunnel(mut client: TcpStream, mut upstream: TcpStream) {
-    let Ok(mut client_to_upstream) = client.try_clone() else {
+    let Ok(mut client_reader) = client.try_clone() else {
         return;
     };
-    let Ok(mut upstream_to_client) = upstream.try_clone() else {
+    let Ok(mut upstream_writer) = upstream.try_clone() else {
         return;
     };
     let outbound = thread::spawn(move || {
-        let _ = std::io::copy(&mut client_to_upstream, &mut upstream);
-        let _ = upstream.shutdown(std::net::Shutdown::Write);
+        let result = std::io::copy(&mut client_reader, &mut upstream_writer);
+        let _ = upstream_writer.shutdown(std::net::Shutdown::Write);
+        result
     });
-    let _ = std::io::copy(&mut upstream_to_client, &mut client);
+    let _ = std::io::copy(&mut upstream, &mut client);
     let _ = client.shutdown(std::net::Shutdown::Write);
     let _ = outbound.join();
 }
