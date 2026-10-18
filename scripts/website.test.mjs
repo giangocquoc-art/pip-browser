@@ -107,3 +107,11 @@ test("feature page documents the available UX features and their limits", async 
   assert.match(features, /Sync không bao gồm lịch sử, mật khẩu, cookie, dữ liệu website hoặc phiên tab/);
   assert.match(features, /Pip không có kho mật khẩu riêng/);
 });
+
+test("unreleased feature claims identify their required public release", async () => {
+  const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
+  assert.match(features, /id="feature-release-status"/);
+  assert.equal((features.match(/data-release-version="0\.1\.11"/g) || []).length, 3);
+  assert.match(features, /releases\/latest/);
+  assert.match(features, /chưa có trong bản tải công khai mới nhất/);
+});
