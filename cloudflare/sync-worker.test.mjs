@@ -74,6 +74,23 @@ test("rejects stale writes instead of silently overwriting a newer device", asyn
   assert.equal(stale.status, 412);
 });
 
+test("accepts the exact weak ETag form added by Cloudflare on reads", async () => {
+  const env = testEnv();
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
+  const created = await worker.fetch(new Request(url, {
+    method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope,
+  }), env);
+  const etag = created.headers.get("ETag");
+  const updated = await worker.fetch(new Request(url, {
+    method: "PUT", headers: auth({ "If-Match": `W/${etag}` }), body: envelope,
+  }), env);
+  assert.equal(updated.status, 204);
+  const current = await worker.fetch(new Request(url, { headers: auth() }), env);
+  assert.equal((await worker.fetch(new Request(url, {
+    method: "DELETE", headers: auth({ "If-Match": `W/${current.headers.get("ETag")}` }),
+  }), env)).status, 204);
+});
+
 test("serializes concurrent conditional writes so only one revision wins", async () => {
   const env = testEnv();
   const url = `https://sync.psharehub.com/v1/vault/${id}`;

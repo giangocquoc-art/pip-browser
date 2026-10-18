@@ -34,6 +34,12 @@ function constantTimeEqual(left, right) {
   return mismatch === 0;
 }
 
+function matchesRevision(condition, etag) {
+  // Cloudflare's edge can mark an ETag weak on a compressed GET response.
+  // Accept that exact wrapped value as the same opaque SHA-256 revision.
+  return condition === "*" || condition === etag || condition === `W/${etag}`;
+}
+
 async function readLimitedText(request) {
   const declared = Number(request.headers.get("Content-Length"));
   if (Number.isFinite(declared) && declared > MAX_PAYLOAD_BYTES) return null;
@@ -130,7 +136,7 @@ export class PipSyncVault {
         if (revoked) return response(null, 204);
         if (stored) {
           const condition = request.headers.get("If-Match");
-          if (condition !== stored.etag && condition !== "*") return response("Conflict", 412);
+          if (!matchesRevision(condition, stored.etag)) return response("Conflict", 412);
         }
         await txn.delete("envelope");
         // Retain only a one-bit tombstone and the access-token hash. This prevents another
@@ -142,7 +148,7 @@ export class PipSyncVault {
       if (revoked) return response("Vault deleted", 410);
       const condition = request.headers.get("If-Match");
       const create = request.headers.get("If-None-Match") === "*";
-      if (stored ? condition !== stored.etag : !create) return response("Conflict", 412);
+      if (stored ? !matchesRevision(condition, stored.etag) : !create) return response("Conflict", 412);
       await txn.put({ envelope: { body, etag }, tokenHash: savedTokenHash || tokenHash });
       return response(null, 204, { ETag: etag });
     });
