@@ -9,7 +9,10 @@ const envelope = JSON.stringify({ version: 1, salt: "b".repeat(32), iv: "c".repe
 class MemoryStorage {
   values = new Map();
   tail = Promise.resolve();
-  async get(key) { return this.values.get(key); }
+  async get(key) {
+    if (Array.isArray(key)) return new Map(key.flatMap((entryKey) => this.values.has(entryKey) ? [[entryKey, this.values.get(entryKey)]] : []));
+    return this.values.get(key);
+  }
   async put(key, value) {
     if (typeof key === "object") {
       for (const [entryKey, entryValue] of Object.entries(key)) this.values.set(entryKey, entryValue);

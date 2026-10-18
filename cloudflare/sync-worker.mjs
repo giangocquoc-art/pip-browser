@@ -111,9 +111,10 @@ export class PipSyncVault {
     // Durable Object transaction. Hashing and body parsing happen beforehand,
     // so overlapping requests cannot both pass an If-Match check on stale data.
     return this.storage.transaction(async (txn) => {
-      const [stored, savedTokenHash, revoked] = await Promise.all([
-        txn.get("envelope"), txn.get("tokenHash"), txn.get("revoked"),
-      ]);
+      const values = await txn.get(["envelope", "tokenHash", "revoked"]);
+      const stored = values.get("envelope");
+      const savedTokenHash = values.get("tokenHash");
+      const revoked = values.get("revoked");
       if (savedTokenHash && !constantTimeEqual(tokenHash, savedTokenHash)) return response("Unauthorized", 401);
 
       if (request.method === "GET") {
