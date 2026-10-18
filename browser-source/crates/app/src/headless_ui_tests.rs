@@ -219,6 +219,22 @@ impl Check {
             }
             38=>self.query(id,true,"getComputedStyle(document.getElementById('findBar')).display==='flex'&&document.activeElement===document.getElementById('findInput')"),
             39=>{
+                let tab_id=self.app.windows[&id].tab_manager.active_tab_id().unwrap();
+                self.app.user_event(events,BrowserEvent::Ipc(id,UiToHostMessage::SetTabGroup{tab_id,name:"Research".into()}));
+                self.query(id,true,"(()=>{const tab=document.getElementById('tab-'+activeTabId);return !!tab&&tab.classList.contains('grouped')&&tab.style.getPropertyValue('--tab-group-color')!==''&&tab.getAttribute('aria-label').includes('nhóm Research')&&typeof tab.oncontextmenu==='function'})()");
+            }
+            40=>{
+                let tab_id=self.app.windows[&id].tab_manager.active_tab_id().unwrap();
+                if self.app.windows[&id].tab_manager.get_tab_by_id(tab_id).and_then(|tab|tab.group.as_ref()).map(|group|group.name.as_str())!=Some("Research") {return Err("Tab group assignment did not reach native tab state".into());}
+                self.app.user_event(events,BrowserEvent::Ipc(id,UiToHostMessage::TranslatePage));
+                self.step+=1;
+            }
+            41=>self.query(id,false,"document.getElementById('translationTarget')?.textContent==='VI:Hello from Pip' ? true : null"),
+            42=>{
+                self.app.user_event(events,BrowserEvent::Ipc(id,UiToHostMessage::TranslatePage));
+                self.query(id,false,"document.getElementById('translationTarget')?.textContent==='Hello from Pip' ? true : null");
+            }
+            43=>{
                 self.app.settings.features.enable_downloads_manager=false;
                 self.app.windows.get_mut(&id).unwrap().close_sidebar();
                 self.app.user_event(events,BrowserEvent::Shortcut(id,"Ctrl+J".into()));
@@ -307,7 +323,7 @@ pub fn run() {
             } else {
                 (
                     "Content-Type: text/html\r\n",
-                    "<!doctype html><title>Pip native test</title><p>Normal page</p><input id='draft' aria-label='Draft'>",
+                    "<!doctype html><title>Pip native test</title><p id='translationTarget'>Hello from Pip</p><p>Normal page</p><input id='draft' aria-label='Draft'><script>window.LanguageDetector={create:async()=>({detect:async()=>[{detectedLanguage:'en'}],destroy(){}})};window.Translator={availability:async()=> 'available',create:async()=>({translate:async text=>'VI:'+text,destroy(){}})};</script>",
                 )
             };
             let _=socket.write_all(format!("HTTP/1.1 200 OK\r\n{extra}Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes());
@@ -352,6 +368,6 @@ pub fn run() {
     assert!(check.complete, "{:?}", check.error);
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/native-ui-verification.json");
-    std::fs::write(artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","bookmarks/history","InPrivate storage/history","distinct downloads/no overwrite","profile cookie/storage isolation","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search; disabled downloads manager stays closed"]})).unwrap()).unwrap();
-    println!("PASS: hidden native app: profiles, DNS, settings, downloads/cleanup, 12-tab state preservation, lazy restore, centered mascot home, and cache cleanup without logout.");
+    std::fs::write(artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","bookmarks/history","InPrivate storage/history","distinct downloads/no overwrite","profile cookie/storage isolation","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search","Tab group action syncs to native state and draws a visible group indicator","Page translation invokes local Translator API and restores original text","disabled downloads manager stays closed"]})).unwrap()).unwrap();
+    println!("PASS: hidden native app: profiles, DNS, tab groups, on-device translation, settings, downloads/cleanup, 12-tab state preservation, lazy restore, centered mascot home, and cache cleanup without logout.");
 }

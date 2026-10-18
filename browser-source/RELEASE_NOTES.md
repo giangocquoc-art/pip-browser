@@ -1,3 +1,9 @@
+# Pip 0.1.11
+
+Added persistent tab groups, on-device page translation where supported by WebView2, and optional encrypted bookmark sync across devices. Pip Sync encrypts bookmark data on the device, protects local credentials with Windows DPAPI, merges deletion markers, and uses revision checks to prevent stale writes. History, passwords, cookies, and sessions are not synced. The sync endpoint is deployed on Cloudflare and passed live HTTPS authentication, read/write, conflict, and deletion checks.
+
+Google DNS remains a Pip-only HTTPS proxy and does not change Windows DNS. The Windows installer remains unsigned with Authenticode; SHA-256 and build attestations do not remove SmartScreen warnings.
+
 # Pip 0.1.10
 
 Google DNS now runs a startup check through the same local HTTPS proxy used by Pip's tabs. The toolbar and settings distinguish an open proxy from a verified route, show an actionable failure state, and never claim the route works before a real page loads. When a saved DNS change needs a restart, the toolbar button now changes to “Áp dụng” and can restart Pip directly after confirmation. The check only affects Pip; Windows DNS is unchanged.

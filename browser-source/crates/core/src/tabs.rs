@@ -31,8 +31,17 @@ pub struct TabState {
     pub is_muted: bool,
     #[serde(default)]
     pub pinned: bool,
+    /// Optional visual grouping metadata, persisted with the tab session.
+    #[serde(default)]
+    pub group: Option<TabGroup>,
     pub status: TabStatus,
     pub last_active_timestamp_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabGroup {
+    pub name: String,
+    pub color: String,
 }
 
 /// Pure state manager for all tabs inside a single window.
@@ -69,6 +78,7 @@ impl TabManager {
             is_audio_playing: false,
             is_muted: false,
             pinned: false,
+            group: None,
             status: TabStatus::Active,
             last_active_timestamp_secs: current_time_secs,
         };
@@ -194,6 +204,33 @@ impl TabManager {
             tab.pinned = !tab.pinned;
             self.tabs.sort_by_key(|t| !t.pinned);
         }
+    }
+
+    /// Assign a tab to a named group, or remove it from its group when `name` is empty.
+    /// Returns false if the tab doesn't exist or the group name is invalid.
+    pub fn set_group(&mut self, id: TabId, name: &str) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+            return false;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            tab.group = None;
+            return true;
+        }
+        if name.chars().count() > 24 || name.chars().any(char::is_control) {
+            return false;
+        }
+        const COLORS: [&str; 8] = [
+            "#e85d0d", "#3b82f6", "#8b5cf6", "#0f9d8a", "#d9467a", "#ca8a04", "#0891b2", "#64748b",
+        ];
+        let hash = name.to_lowercase().chars().fold(0usize, |hash, character| {
+            hash.wrapping_mul(31).wrapping_add(character as usize)
+        });
+        tab.group = Some(TabGroup {
+            name: name.to_string(),
+            color: COLORS[hash % COLORS.len()].to_string(),
+        });
+        true
     }
 
     pub fn set_muted(&mut self, id: TabId, muted: bool) {

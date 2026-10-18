@@ -15,6 +15,8 @@ mod home_ui;
 mod loading_ui;
 mod settings_ui;
 mod sidebar_ui;
+mod sync;
+mod translate;
 mod window;
 
 use chrome::{create_bounds, get_chrome_html, normalize_url, CHROME_HEIGHT};
@@ -116,6 +118,8 @@ pub(crate) enum BrowserEvent {
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
     GoogleDnsCheckDone(WindowId, Result<(), String>),
     GoogleDnsHealthCheckDone(Result<(), String>),
+    SyncBookmarksDone(WindowId, Result<sync::SyncOutcome, String>),
+    SyncDisabled(WindowId, String, String, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
     DownloadProgress {
@@ -875,7 +879,20 @@ impl BrowserApp {
     }
 
     fn sync_profiles(&self) {
-        let json = serde_json::to_string(&self.settings.profiles).unwrap();
+        let public_profiles = self
+            .settings
+            .profiles
+            .iter()
+            .map(|profile| {
+                serde_json::json!({
+                    "id": profile.id,
+                    "name": profile.name,
+                    "autofill": profile.autofill,
+                    "syncEnabled": profile.sync_credentials_protected.is_some(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let json = serde_json::to_string(&public_profiles).unwrap();
         for win in self.windows.values() {
             if let Some(profile) = self
                 .settings
@@ -1445,6 +1462,7 @@ impl BrowserApp {
                 is_audio_playing: false,
                 is_muted: false,
                 pinned: false,
+                group: None,
                 status: evergreen_core::tabs::TabStatus::Active,
                 last_active_timestamp_secs: Self::now_secs(),
             };
@@ -1970,7 +1988,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::RemoveBookmark { url } => {
-                    self.edit_library(win_id, |library| library.bookmarks.retain(|p| p.url != url))
+                    self.edit_library(win_id, |library| library.remove_bookmark(&url))
                 }
                 UiToHostMessage::RemoveHistory { url } => {
                     if self.windows.get(&win_id).is_some_and(|win| !win.private) {
@@ -2048,6 +2066,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     id: id.clone(),
                                     name: name.trim().into(),
                                     autofill: true,
+                                    sync_credentials_protected: None,
                                 });
                             if settings.save_to_path(&get_settings_path()).is_ok() {
                                 self.settings = settings;
@@ -2077,6 +2096,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                UiToHostMessage::SetTabGroup { tab_id, name } => {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        if !win.tab_manager.set_group(tab_id, &name) {
+                            eprintln!("Pip ignored an invalid tab group name");
+                        }
+                        win.sync_ui_state();
+                    }
+                }
                 UiToHostMessage::RestoreSession => self.restore_session(win_id),
                 UiToHostMessage::ReopenClosedTab => {
                     let url = self
@@ -2085,6 +2112,228 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         .and_then(|w| w.tab_manager.pop_last_closed());
                     if let Some(url) = url {
                         self.handle_create_tab(win_id, Some(url));
+                    }
+                }
+                UiToHostMessage::TranslatePage => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        let Some(tab_id) = win.tab_manager.active_tab_id() else {
+                            return;
+                        };
+                        let Some(tab) = win.tab_manager.get_tab_by_id(tab_id) else {
+                            return;
+                        };
+                        if !(tab.url.starts_with("https://") || tab.url.starts_with("http://")) {
+                            return;
+                        }
+                        if let Some(view) = win.tabs.get(&tab_id) {
+                            let _ = view.evaluate_script(translate::PAGE_TRANSLATION_SCRIPT);
+                        }
+                    }
+                }
+                UiToHostMessage::EnableBookmarkSync => {
+                    if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                        return;
+                    }
+                    let credentials = sync::SyncCredentials::generate();
+                    let protected = match sync::protect_credentials(&credentials) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.notify_settings(win_id, &error.to_string());
+                            return;
+                        }
+                    };
+                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
+                    let mut settings = self.settings.clone();
+                    if let Some(profile) = settings
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == profile_id)
+                    {
+                        profile.sync_credentials_protected = Some(protected);
+                    }
+                    if settings.save_to_path(&get_settings_path()).is_err() {
+                        self.notify_settings(win_id, "Không thể lưu cài đặt đồng bộ.");
+                        return;
+                    }
+                    self.settings = settings;
+                    self.sync_profiles();
+                    let code = serde_json::to_string(&credentials.recovery_code()).unwrap();
+                    if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+                        win.tab_manager
+                            .active_tab_id()
+                            .and_then(|id| {
+                                win.tab_manager
+                                    .get_tab_by_id(id)
+                                    .filter(|tab| tab.url == "evergreen://settings")
+                            })
+                            .and_then(|tab| win.tabs.get(&tab.id))
+                    }) {
+                        let _ = view.evaluate_script(&format!("window.showStatus('Đã tạo mã Pip Sync. Hãy cất mã khôi phục ở nơi riêng; người có mã có thể truy cập dấu trang đã đồng bộ.');prompt('Lưu mã khôi phục ở nơi an toàn. Mã chỉ hiện lần này:',{code});"));
+                    }
+                }
+                UiToHostMessage::ShowBookmarkSyncCode => {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
+                        return;
+                    };
+                    let Some(protected) = self
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == win.profile_id)
+                        .and_then(|profile| profile.sync_credentials_protected.as_deref())
+                    else {
+                        self.notify_settings(win_id, "Hồ sơ này chưa thiết lập Pip Sync.");
+                        return;
+                    };
+                    let credentials = match sync::unprotect_credentials(protected) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.notify_settings(win_id, &error.to_string());
+                            return;
+                        }
+                    };
+                    let code = serde_json::to_string(&credentials.recovery_code()).unwrap();
+                    if let Some(view) = self.windows.get(&win_id).and_then(|win| {
+                        win.tab_manager
+                            .active_tab_id()
+                            .and_then(|id| {
+                                win.tab_manager
+                                    .get_tab_by_id(id)
+                                    .filter(|tab| tab.url == "evergreen://settings")
+                            })
+                            .and_then(|tab| win.tabs.get(&tab.id))
+                    }) {
+                        let _ = view.evaluate_script(&format!("prompt('Mã khôi phục Pip Sync. Bất kỳ ai có mã này đều có thể truy cập dấu trang đã đồng bộ:',{code});"));
+                    }
+                }
+                UiToHostMessage::DisableBookmarkSync => {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
+                        return;
+                    };
+                    let profile_id = win.profile_id.clone();
+                    let Some(protected) = self
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == profile_id)
+                        .and_then(|profile| profile.sync_credentials_protected.as_deref())
+                    else {
+                        self.notify_settings(win_id, "Hồ sơ này chưa bật Pip Sync.");
+                        return;
+                    };
+                    let credentials = match sync::unprotect_credentials(protected) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.notify_settings(win_id, &error.to_string());
+                            return;
+                        }
+                    };
+                    let vault_id = credentials.vault_id.clone();
+                    let proxy = self.proxy.clone();
+                    if std::thread::Builder::new()
+                        .name("pip-bookmark-sync-delete".into())
+                        .spawn(move || {
+                            let result = sync::delete_vault(&credentials);
+                            let _ = proxy.send_event(BrowserEvent::SyncDisabled(
+                                win_id, profile_id, vault_id, result,
+                            ));
+                        })
+                        .is_ok()
+                    {
+                        self.notify_settings(win_id, "Đang xóa bản đồng bộ trên máy chủ…");
+                    } else {
+                        self.notify_settings(win_id, "Không khởi chạy được yêu cầu xóa.");
+                    }
+                }
+                UiToHostMessage::ImportBookmarkSync { recovery_code } => {
+                    if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                        return;
+                    }
+                    let credentials =
+                        match sync::SyncCredentials::from_recovery_code(&recovery_code) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                self.notify_settings(win_id, &error.to_string());
+                                return;
+                            }
+                        };
+                    let protected = match sync::protect_credentials(&credentials) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.notify_settings(win_id, &error.to_string());
+                            return;
+                        }
+                    };
+                    let profile_id = self.windows.get(&win_id).unwrap().profile_id.clone();
+                    let mut settings = self.settings.clone();
+                    if let Some(profile) = settings
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == profile_id)
+                    {
+                        profile.sync_credentials_protected = Some(protected);
+                    }
+                    if settings.save_to_path(&get_settings_path()).is_ok() {
+                        self.settings = settings;
+                        self.sync_profiles();
+                        self.notify_settings(
+                            win_id,
+                            "Đã lưu mã khôi phục vào hồ sơ này. Bấm Đồng bộ ngay để tải dấu trang.",
+                        );
+                    } else {
+                        self.notify_settings(win_id, "Không thể lưu mã đồng bộ trên thiết bị.");
+                    }
+                }
+                UiToHostMessage::SyncBookmarks => {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
+                        return;
+                    };
+                    let profile_id = win.profile_id.clone();
+                    let Some(protected) = self
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == profile_id)
+                        .and_then(|profile| profile.sync_credentials_protected.as_deref())
+                    else {
+                        self.notify_settings(win_id, "Tạo hoặc nhập mã Pip Sync trước.");
+                        return;
+                    };
+                    let credentials = match sync::unprotect_credentials(protected) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            self.notify_settings(win_id, &error.to_string());
+                            return;
+                        }
+                    };
+                    let Some(path) = self.library_path(win_id) else {
+                        return;
+                    };
+                    let library = match evergreen_core::library::Library::load(&path) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            self.notify_settings(win_id, "Không đọc được dấu trang hồ sơ này.");
+                            return;
+                        }
+                    };
+                    let snapshot = sync::BookmarkSnapshot {
+                        version: 1,
+                        bookmarks: library.bookmarks,
+                        removed_bookmarks: library.removed_bookmarks,
+                    };
+                    let proxy = self.proxy.clone();
+                    if std::thread::Builder::new()
+                        .name("pip-bookmark-sync".into())
+                        .spawn(move || {
+                            let result = sync::sync_bookmarks(&credentials, snapshot);
+                            let _ =
+                                proxy.send_event(BrowserEvent::SyncBookmarksDone(win_id, result));
+                        })
+                        .is_ok()
+                    {
+                        self.notify_settings(win_id, "Đang mã hóa và đồng bộ dấu trang…");
+                    } else {
+                        self.notify_settings(win_id, "Không khởi chạy được đồng bộ.");
                     }
                 }
                 UiToHostMessage::SetAutofill { enabled } => {
@@ -2801,6 +3050,80 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     eprintln!("Pip Google DNS startup route check failed: {error}");
                 }
             }
+            BrowserEvent::SyncBookmarksDone(win_id, result) => match result {
+                Ok(snapshot) => {
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        if let Some(path) = self.library_path(win_id) {
+                            if let Ok(mut library) = evergreen_core::library::Library::load(&path) {
+                                let uploaded = sync::BookmarkSnapshot {
+                                    version: 1,
+                                    bookmarks: snapshot.bookmarks,
+                                    removed_bookmarks: snapshot.removed_bookmarks,
+                                };
+                                let current = sync::BookmarkSnapshot {
+                                    version: 1,
+                                    bookmarks: library.bookmarks.clone(),
+                                    removed_bookmarks: library.removed_bookmarks.clone(),
+                                };
+                                let merged = sync::merge_snapshots(current, uploaded.clone());
+                                let needs_followup = merged != uploaded;
+                                library.bookmarks = merged.bookmarks;
+                                library.removed_bookmarks = merged.removed_bookmarks;
+                                if library.save(&path).is_ok() {
+                                    self.sync_library(win_id);
+                                    let message = if needs_followup {
+                                        "Đã nhận dấu trang. Có thay đổi mới trong lúc đồng bộ; bấm Đồng bộ ngay lần nữa để gửi chúng lên thiết bị khác."
+                                    } else {
+                                        &snapshot.message
+                                    };
+                                    self.notify_settings(win_id, message);
+                                } else {
+                                    self.notify_settings(
+                                        win_id,
+                                        "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(message) => self.notify_settings(win_id, &message),
+            },
+            BrowserEvent::SyncDisabled(win_id, profile_id, vault_id, result) => match result {
+                Ok(()) => {
+                    let mut settings = self.settings.clone();
+                    let Some(profile) = settings
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == profile_id)
+                    else {
+                        return;
+                    };
+                    let still_same_vault = profile
+                        .sync_credentials_protected
+                        .as_deref()
+                        .and_then(|value| sync::unprotect_credentials(value).ok())
+                        .is_some_and(|credentials| credentials.vault_id == vault_id);
+                    if !still_same_vault {
+                        return;
+                    }
+                    profile.sync_credentials_protected = None;
+                    if settings.save_to_path(&get_settings_path()).is_ok() {
+                        self.settings = settings;
+                        self.sync_profiles();
+                        self.notify_settings(
+                            win_id,
+                            "Đã xóa kho đồng bộ trên máy chủ và tắt đồng bộ cho hồ sơ này.",
+                        );
+                    } else {
+                        self.notify_settings(
+                            win_id,
+                            "Máy chủ đã xóa dữ liệu, nhưng không lưu được thay đổi hồ sơ.",
+                        );
+                    }
+                }
+                Err(message) => self.notify_settings(win_id, &message),
+            },
             BrowserEvent::DownloadRequested(win_id, id) => {
                 downloads::start(win_id, id, self.proxy.clone(), &self.settings);
             }

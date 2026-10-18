@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, path::Path};
 
 const MAX_BOOKMARKS: usize = 200;
+const MAX_BOOKMARK_TOMBSTONES: usize = 2000;
 const MAX_BOOKMARK_IMPORT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -10,8 +11,10 @@ const MAX_BOOKMARK_IMPORT_BYTES: usize = 8 * 1024 * 1024;
 pub struct Library {
     pub bookmarks: Vec<Page>,
     pub history: Vec<Page>,
+    /// URLs removed while sync is enabled; bounded so deletions propagate without unbounded growth.
+    pub removed_bookmarks: Vec<String>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page {
     pub url: String,
     pub title: String,
@@ -64,10 +67,23 @@ impl Library {
     }
     pub fn toggle_bookmark(&mut self, url: &str, title: &str) {
         if self.bookmarks.iter().any(|p| p.url == url) {
-            self.bookmarks.retain(|p| p.url != url);
+            self.remove_bookmark(url);
         } else if let Some(page) = Self::page(url, title) {
+            self.removed_bookmarks.retain(|removed| removed != url);
             self.bookmarks.insert(0, page);
             self.bookmarks.truncate(MAX_BOOKMARKS);
+        }
+    }
+
+    pub fn remove_bookmark(&mut self, url: &str) {
+        if self.bookmarks.iter().any(|page| page.url == url) {
+            self.bookmarks.retain(|page| page.url != url);
+            self.removed_bookmarks.retain(|removed| removed != url);
+            self.removed_bookmarks.push(url.to_string());
+            if self.removed_bookmarks.len() > MAX_BOOKMARK_TOMBSTONES {
+                let excess = self.removed_bookmarks.len() - MAX_BOOKMARK_TOMBSTONES;
+                self.removed_bookmarks.drain(..excess);
+            }
         }
     }
 
@@ -135,6 +151,10 @@ impl Library {
         let available = MAX_BOOKMARKS.saturating_sub(self.bookmarks.len());
         imported.truncate(available);
         let count = imported.len();
+        for page in &imported {
+            self.removed_bookmarks
+                .retain(|removed| removed != &page.url);
+        }
         self.bookmarks.splice(0..0, imported);
         Ok(count)
     }
@@ -314,6 +334,11 @@ mod tests {
         assert_eq!(restored.bookmarks[0].title, "<untrusted>");
         restored.toggle_bookmark("https://example.com/", "Page");
         assert!(restored.bookmarks.is_empty());
+        assert_eq!(restored.removed_bookmarks, vec!["https://example.com/"]);
+        restored.toggle_bookmark("https://example.com/", "Added again");
+        assert!(restored.removed_bookmarks.is_empty());
+        restored.toggle_bookmark("https://example.com/", "Page");
+        assert_eq!(restored.removed_bookmarks, vec!["https://example.com/"]);
         restored.visit("https://example.com/history", "History", false);
         restored.remove_history("https://example.com/history");
         assert!(!restored

@@ -526,6 +526,10 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
           <span class="action-label">Tìm trong trang</span>
           <span class="action-shortcut">Ctrl+F</span>
         </button>
+        <button type="button" class="action-item" title="Dịch nội dung trang sang tiếng Việt bằng mô hình trên thiết bị; nhấn lại để khôi phục văn bản gốc." onclick="sendAction('TranslatePage')">
+          <svg viewBox="0 0 24 24"><path d="M4 5h10M9 3v2m2 0c-.8 4-3.2 7-7 9m1-6c1.2 2.1 3.1 3.8 5.4 4.8M14 20l4.2-10 4.2 10m-7-3h5.6"/></svg>
+          <span class="action-label">Dịch trang sang tiếng Việt</span>
+        </button>
         <button type="button" class="action-item" title="Xem tiến trình và mở các tệp tải trong phiên của cửa sổ này." onclick="sendAction('OpenDownloads')">
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
           <span class="action-label">Tải xuống</span>

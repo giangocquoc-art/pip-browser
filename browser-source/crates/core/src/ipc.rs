@@ -53,8 +53,20 @@ pub enum UiToHostMessage {
     DuplicateTab,
     ToggleMuteTab,
     TogglePinTab,
+    SetTabGroup {
+        tab_id: TabId,
+        name: String,
+    },
     RestoreSession,
     ReopenClosedTab,
+    TranslatePage,
+    EnableBookmarkSync,
+    ShowBookmarkSyncCode,
+    DisableBookmarkSync,
+    ImportBookmarkSync {
+        recovery_code: String,
+    },
+    SyncBookmarks,
     SetAutofill {
         enabled: bool,
     },

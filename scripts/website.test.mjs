@@ -90,3 +90,20 @@ test("homepage download CTA stays visible and trust page clearly states signatur
   assert.match(trustPage, /artifact attestation/i);
   assert.match(trustPage, /SHA256SUMS\.txt/);
 });
+
+test("homepage fallback version matches the public version manifest", async () => {
+  const homepage = await readFile(path.join(root, "index.html"), "utf8");
+  const manifest = JSON.parse(await readFile(path.join(root, "version.json"), "utf8"));
+  const fallbackVersion = homepage.match(/id="version">([^<]+)</)?.[1];
+  assert.ok(fallbackVersion, "homepage version fallback is missing");
+  assert.equal(fallbackVersion, manifest.version);
+});
+
+test("feature page documents the available UX features and their limits", async () => {
+  const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
+  assert.match(features, /Nhóm tab và khôi phục phiên/);
+  assert.match(features, /Dịch trang trên thiết bị/);
+  assert.match(features, /Đồng bộ dấu trang tùy chọn/);
+  assert.match(features, /Sync không bao gồm lịch sử, mật khẩu, cookie, dữ liệu website hoặc phiên tab/);
+  assert.match(features, /Pip không có kho mật khẩu riêng/);
+});
