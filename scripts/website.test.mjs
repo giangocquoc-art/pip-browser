@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -91,6 +92,14 @@ test("homepage download CTA stays visible and trust page clearly states signatur
   assert.match(trustPage, /SHA256SUMS\.txt/);
 });
 
+test("homepage explains WebView2 setup accurately and exposes keyboard focus", async () => {
+  const homepage = await readFile(path.join(root, "index.html"), "utf8");
+  const styles = await readFile(path.join(root, "styles.css"), "utf8");
+  assert.match(homepage, /Nếu máy chưa có Runtime, bộ cài sẽ hướng dẫn/);
+  assert.doesNotMatch(homepage, /WebView2 có sẵn trên Windows/);
+  assert.match(styles, /:where\(a,button,\[tabindex\]\):focus-visible\s*\{[^}]*outline:\s*3px solid var\(--deep-orange\)/);
+});
+
 test("homepage fallback version matches the public version manifest", async () => {
   const homepage = await readFile(path.join(root, "index.html"), "utf8");
   const manifest = JSON.parse(await readFile(path.join(root, "version.json"), "utf8"));
@@ -99,19 +108,65 @@ test("homepage fallback version matches the public version manifest", async () =
   assert.equal(fallbackVersion, manifest.version);
 });
 
+test("homepage preview tabs support keyboard navigation", async () => {
+  const homepage = await readFile(path.join(root, "index.html"), "utf8");
+  const script = await readFile(path.join(root, "app.js"), "utf8");
+  assert.match(homepage, /role="tablist"/);
+  assert.match(homepage, /role="tabpanel"/);
+  assert.match(script, /event\.key === 'ArrowRight'/);
+  assert.match(script, /event\.key === 'ArrowLeft'/);
+  assert.match(script, /event\.key === 'Home'/);
+  assert.match(script, /event\.key === 'End'/);
+  assert.match(script, /item\.tabIndex = active \? 0 : -1/);
+});
+
 test("feature page documents the available UX features and their limits", async () => {
   const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
   assert.match(features, /Nhóm tab và khôi phục phiên/);
   assert.match(features, /Dịch trang trên thiết bị/);
-  assert.match(features, /Đồng bộ dấu trang tùy chọn/);
-  assert.match(features, /Sync không bao gồm lịch sử, mật khẩu, cookie, dữ liệu website hoặc phiên tab/);
-  assert.match(features, /Pip không có kho mật khẩu riêng/);
+  assert.match(features, /Dùng Microsoft Edge WebView2/);
+  assert.doesNotMatch(features, /WebView2 có sẵn trên Windows/);
+  assert.match(features, /Đồng bộ Pip tùy chọn/);
+  assert.match(features, /dấu trang, lịch sử, tab thường và một số cài đặt/);
+  assert.match(features, /mật khẩu do WebView2 lưu không được đồng bộ/);
+  assert.match(features, /kho mật khẩu riêng được bảo vệ bằng Windows DPAPI/);
 });
 
 test("unreleased feature claims identify their required public release", async () => {
   const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
   assert.match(features, /id="feature-release-status"/);
-  assert.equal((features.match(/data-release-version="0\.1\.11"/g) || []).length, 3);
-  assert.match(features, /releases\/latest/);
-  assert.match(features, /chưa có trong bản tải công khai mới nhất/);
+  assert.equal((features.match(/data-release-version="0\.1\.11"/g) || []).length, 2);
+  assert.equal((features.match(/data-release-version="0\.1\.12"/g) || []).length, 2);
+  assert.equal((features.match(/data-release-version="[^"]+" hidden/g) || []).length, 4);
+  assert.match(features, /fetch\('\/version\.json'/);
+  assert.doesNotMatch(features, /Pip không có kho mật khẩu riêng/);
+  assert.match(features, /kho mật khẩu riêng được bảo vệ bằng Windows DPAPI/);
+});
+
+test("feature page only reveals features included in the public version", async () => {
+  const source = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
+  const script = source.match(/<script>\s*([\s\S]*?)<\/script>/i)?.[1];
+  assert.ok(script, "feature release gate script is missing");
+
+  async function evaluate(version) {
+    const status = { hidden: false, textContent: "" };
+    const sections = ["0.1.11", "0.1.12"].map((releaseVersion) => ({
+      dataset: { releaseVersion }, hidden: true,
+    }));
+    const document = {
+      getElementById: () => status,
+      querySelectorAll: () => sections,
+    };
+    const fetch = async () => ({ ok: true, json: async () => ({ version }) });
+    runInNewContext(script, { document, fetch, Set, Error });
+    await new Promise((resolve) => setImmediate(resolve));
+    return { status, sections };
+  }
+
+  const oldRelease = await evaluate("0.1.9");
+  assert.deepEqual(oldRelease.sections.map(({ hidden }) => hidden), [true, true]);
+  assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.12/);
+  const currentRelease = await evaluate("0.1.12");
+  assert.deepEqual(currentRelease.sections.map(({ hidden }) => hidden), [false, false]);
+  assert.equal(currentRelease.status.hidden, true);
 });

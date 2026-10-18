@@ -7,36 +7,43 @@
   <title>Tính năng Pip Browser cho Windows | Pip</title><link rel="icon" href="/assets/favicon.png"><link rel="stylesheet" href="/styles.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Pip Browser","applicationCategory":"BrowserApplication","operatingSystem":"Windows 10, Windows 11","inLanguage":"vi-VN","url":"https://pip.psharehub.com/","downloadUrl":"https://download.pip.psharehub.com/","description":"Trình duyệt Windows dùng WebView2, có tìm kiếm Google, bộ lọc quảng cáo, hồ sơ riêng và cửa sổ ẩn danh."}</script>
 </head><body><header class="topbar"><a class="brand" href="/" aria-label="Pip trang chủ">Pip<span>●</span></a><nav aria-label="Điều hướng chính"><a href="/">Trang chủ</a><a href="/cau-hoi/">Câu hỏi</a><a href="https://github.com/giangocquoc-art/pip-browser/tree/main/browser-source">Mã nguồn</a></nav><a class="top-cta" href="https://download.pip.psharehub.com/">Tải Pip <span>↓</span></a></header>
-<main class="info-page"><p class="eyebrow">PIP CHO WINDOWS</p><h1>Tính năng Pip Browser</h1><p class="info-lead">Pip tập trung vào các thao tác duyệt web quen thuộc trong một giao diện Windows gọn gàng. Đây là những tính năng hiện có trong ứng dụng.</p><a class="hero-download" href="https://download.pip.psharehub.com/">Tải Pip cho Windows <span>↓</span></a><p class="info-lead" id="feature-release-status" role="status">Các mục có nhãn 0.1.11 cần Pip 0.1.11 trở lên. Hãy kiểm tra phiên bản ở trang tải trước khi dùng các tính năng này.</p>
+<main class="info-page"><p class="eyebrow">PIP CHO WINDOWS</p><h1>Tính năng Pip Browser</h1><p class="info-lead">Pip tập trung vào các thao tác duyệt web quen thuộc trong một giao diện Windows gọn gàng. Các tính năng mới chỉ hiện khi đã có trong bản tải công khai.</p><a class="hero-download" href="https://download.pip.psharehub.com/">Tải Pip cho Windows <span>↓</span></a><p class="info-lead" id="feature-release-status" role="status">Đang kiểm tra phiên bản Pip công khai…</p>
 <section><h2>Tìm kiếm Google</h2><p>Gõ từ khóa hoặc địa chỉ website trên thanh địa chỉ hoặc trang tab mới. Google là công cụ tìm kiếm mặc định của Pip.</p></section>
 <section><h2>Bộ lọc quảng cáo chạy nền</h2><p>Pip tích hợp Brave Adblock Rust, EasyList, uBlock Origin và danh sách popup HaGeZi. Khi bộ lọc đang bật, Pip chặn popup tự mở, đối chiếu đích popup với các danh sách quảng cáo và popup, đồng thời kiểm tra domain cá cược theo snapshot HaGeZi Gambling Mini. Tên miền phụ của domain trong danh sách cũng được nhận diện. Lớp cá cược chỉ kiểm tra popup, không chặn điều hướng bình thường hay địa chỉ bạn tự nhập; snapshot được đóng gói cùng bản Pip nên cần cập nhật ứng dụng để nhận danh sách mới. Domain chưa có trong snapshot vẫn có thể lọt và Pip không cam kết chặn mọi quảng cáo YouTube.</p></section>
 <section><h2>Hồ sơ duyệt web tách riêng</h2><p>Mỗi hồ sơ Pip giữ dữ liệu duyệt web riêng để người dùng có thể tách các phiên làm việc hoặc tài khoản trong cùng ứng dụng.</p></section>
-<section data-release-version="0.1.11"><h2>Nhóm tab và khôi phục phiên <small>0.1.11</small></h2><p>Đặt tên nhóm để sắp xếp các tab trong cửa sổ. Pip có thể khôi phục các tab của phiên trước; tab nền chỉ tải nội dung khi bạn chọn để hạn chế dùng bộ nhớ lúc khởi động.</p></section>
-<section data-release-version="0.1.11"><h2>Dịch trang trên thiết bị <small>0.1.11</small></h2><p>Pip có thể dịch nội dung trang sang tiếng Việt bằng Translator API có sẵn trong một số phiên bản WebView2. Khi API chưa được hỗ trợ hoặc mô hình dịch chưa sẵn sàng, tính năng sẽ báo rõ; Pip không gửi nội dung trang tới dịch vụ dịch bên ngoài.</p></section>
-<section data-release-version="0.1.11"><h2>Đồng bộ dấu trang tùy chọn <small>0.1.11</small></h2><p>Bật Pip Sync trong cài đặt để đồng bộ thủ công dấu trang giữa các thiết bị bằng mã khôi phục. Mã hóa diễn ra trên thiết bị trước khi dữ liệu tải lên Cloudflare. Sync không bao gồm lịch sử, mật khẩu, cookie, dữ liệu website hoặc phiên tab; hãy giữ mã khôi phục riêng vì người có mã có thể đọc dấu trang đã đồng bộ. Bạn có thể tắt sync và xóa kho từ cài đặt.</p></section>
-<section><h2>Mật khẩu và tự điền</h2><p>Pip dùng chức năng lưu mật khẩu và tự điền có trong WebView2, có thể tắt hoặc xóa dữ liệu mật khẩu trong cài đặt. Pip không có kho mật khẩu riêng và không đồng bộ mật khẩu.</p></section>
+<section data-release-version="0.1.11" hidden><h2>Nhóm tab và khôi phục phiên <small>0.1.11</small></h2><p>Đặt tên nhóm để sắp xếp các tab trong cửa sổ. Pip có thể khôi phục các tab của phiên trước; tab nền chỉ tải nội dung khi bạn chọn để hạn chế dùng bộ nhớ lúc khởi động.</p></section>
+<section data-release-version="0.1.11" hidden><h2>Dịch trang trên thiết bị <small>0.1.11</small></h2><p>Pip có thể dịch nội dung trang sang tiếng Việt bằng Translator API có sẵn trong một số phiên bản WebView2. Khi API chưa được hỗ trợ hoặc mô hình dịch chưa sẵn sàng, tính năng sẽ báo rõ; Pip không gửi nội dung trang tới dịch vụ dịch bên ngoài.</p></section>
+<section data-release-version="0.1.12" hidden><h2>Đồng bộ Pip tùy chọn <small>0.1.12</small></h2><p>Bật riêng những mục muốn đồng bộ giữa các thiết bị: dấu trang, lịch sử, tab thường và một số cài đặt. Dữ liệu được mã hóa trên thiết bị trước khi tải lên Cloudflare. Kho mật khẩu Pip có tùy chọn đồng bộ riêng và cần xác nhận; cookie, dữ liệu website và mật khẩu do WebView2 lưu không được đồng bộ. Hãy giữ mã khôi phục riêng vì người có mã có thể đọc dữ liệu đã đồng bộ.</p></section>
+<section data-release-version="0.1.12" hidden><h2>Kho mật khẩu Pip và tự điền <small>0.1.12</small></h2><p>Pip có kho mật khẩu riêng được bảo vệ bằng Windows DPAPI, kèm lời nhắc lưu/cập nhật và tự điền theo hồ sơ. Có thể quản lý hoặc tắt trong Cài đặt. Đồng bộ kho này là tùy chọn riêng, cần xác nhận và được mã hóa đầu-cuối.</p></section>
 <section><h2>Cửa sổ ẩn danh và Google DNS tùy chọn</h2><p>Pip không ghi lịch sử duyệt của cửa sổ ẩn danh vào lịch sử thông thường. Cửa sổ này hiển thị gợi ý bật Google DNS; DNS chỉ phân giải tên miền, không mã hóa toàn bộ lưu lượng, che địa chỉ IP hoặc thay thế VPN.</p></section>
-<section><h2>WebView2 có sẵn trên Windows</h2><p>Pip dùng Microsoft Edge WebView2 Runtime để hiển thị website thay vì đóng gói thêm một trình duyệt Chromium. Nếu máy tính thiếu runtime, trình cài đặt sẽ hỏi trước khi mở bộ cài chính thức của Microsoft.</p></section>
+<section><h2>Dùng Microsoft Edge WebView2</h2><p>Pip dùng Microsoft Edge WebView2 Runtime để hiển thị website thay vì đóng gói thêm một trình duyệt Chromium. Nếu máy tính thiếu runtime, trình cài đặt sẽ hỏi trước khi mở bộ cài chính thức của Microsoft.</p></section>
 <section><h2>Yêu cầu hệ thống và tải xuống</h2><p>Pip hiện phát hành cho Windows 10/11 64-bit và cài riêng cho tài khoản Windows hiện tại. Bộ cài chưa ký số nên Windows SmartScreen có thể hiển thị cảnh báo. Mã nguồn có trong mục Mã nguồn trên menu; bạn có thể <a href="https://download.pip.psharehub.com/checksums">tải mã SHA-256 tại đây</a>.</p><p><a class="text-link" href="https://download.pip.psharehub.com/checksums">Tải mã SHA-256 ↗</a></p></section>
 <p><a class="text-link" href="/cau-hoi/">Xem câu hỏi thường gặp về Pip →</a></p><p><a class="text-link" href="/huong-dan/">Đọc các hướng dẫn chi tiết →</a></p></main><footer><a class="brand" href="/">Pip<span>●</span></a><a href="/">Trang chủ</a><a href="/cau-hoi/">Câu hỏi thường gặp</a><a href="/huong-dan/">Hướng dẫn</a><a href="/quyen-rieng-tu/">Quyền riêng tư</a><a href="https://github.com/giangocquoc-art/pip-browser/releases/latest">Bản phát hành</a><a href="https://download.pip.psharehub.com/checksums">Mã SHA-256 ↗</a><a href="https://github.com/giangocquoc-art/pip-browser/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">Bảo mật / báo cáo lỗ hổng ↗</a><span>© 2026 Pip</span></footer><script>
 (() => {
   const status = document.getElementById('feature-release-status');
-  const required = [0, 1, 11];
+  const sections = [...document.querySelectorAll('[data-release-version]')];
   const compare = (left, right) => {
-    const a = left.split('.').map(Number), b = right;
+    const a = left.split('.').map(Number), b = right.split('.').map(Number);
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
       const delta = (a[i] || 0) - (b[i] || 0);
       if (delta) return delta;
     }
     return 0;
   };
-  fetch('https://api.github.com/repos/giangocquoc-art/pip-browser/releases/latest', { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+  fetch('/version.json', { cache: 'no-store' })
     .then(response => response.ok ? response.json() : Promise.reject())
     .then(release => {
-      const version = release.tag_name?.replace(/^v/, '');
-      if (version && compare(version, required) >= 0) status.hidden = true;
-      else if (version) status.textContent = `Các mục có nhãn 0.1.11 chưa có trong bản tải công khai mới nhất (${version}). Hãy quay lại sau khi bản 0.1.11 được phát hành.`;
+      if (!/^\d+(\.\d+)*$/.test(release.version || '')) throw new Error('Invalid public version');
+      const unavailable = new Set();
+      sections.forEach(section => {
+        const required = section.dataset.releaseVersion;
+        const available = /^\d+(\.\d+)*$/.test(required) && compare(release.version, required) >= 0;
+        section.hidden = !available;
+        if (!available) unavailable.add(required);
+      });
+      status.hidden = unavailable.size === 0;
+      if (!status.hidden) status.textContent = `Một số tính năng cần phiên bản ${[...unavailable].sort(compare).join(' hoặc ')} trở lên. Bản tải công khai hiện tại là ${release.version}.`;
     })
-    .catch(() => {});
+    .catch(() => { status.textContent = 'Chưa xác minh được phiên bản công khai; các tính năng yêu cầu phiên bản mới hơn đang được ẩn.'; });
 })();
 </script></body></html>
