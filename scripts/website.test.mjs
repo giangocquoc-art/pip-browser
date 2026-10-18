@@ -120,6 +120,25 @@ test("homepage preview tabs support keyboard navigation", async () => {
   assert.match(script, /item\.tabIndex = active \? 0 : -1/);
 });
 
+test("mobile layout keeps navigation and hero copy within the viewport", async () => {
+  const homepage = await readFile(path.join(root, "index.html"), "utf8");
+  const styles = await readFile(path.join(root, "styles.css"), "utf8");
+  assert.match(homepage, /<nav aria-label="Điều hướng chính">/);
+  assert.match(styles, /@media\(max-width:600px\)\{[\s\S]*?\.topbar nav\{grid-column:1\/-1;grid-row:2;display:flex;flex-wrap:wrap/);
+  assert.match(styles, /\.showcase h1\{display:block;width:100%;max-width:100%;font-size:clamp\(28px,8vw,33px\);[^}]*overflow-wrap:anywhere/);
+  assert.match(styles, /\.showcase-head>div:first-child\{align-self:stretch;width:100%;min-width:0\}/);
+  assert.match(styles, /\.brand span\{display:none\}/);
+});
+
+test("privacy and help pages describe only released sync and DNS behavior", async () => {
+  const privacy = await readFile(path.join(root, "quyen-rieng-tu/index.html"), "utf8");
+  const faq = await readFile(path.join(root, "cau-hoi/index.html"), "utf8");
+  assert.match(privacy, /Phiên bản Pip tải công khai hiện tại chưa có Pip Sync/);
+  assert.match(privacy, /Bản công khai hiện tại chưa có đồng bộ đám mây/);
+  assert.doesNotMatch(privacy, /Nếu bạn chủ động bật Pip Sync/);
+  assert.match(faq, /khởi động lại Pip để áp dụng/);
+});
+
 test("feature page documents the available UX features and their limits", async () => {
   const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
   assert.match(features, /Nhóm tab và khôi phục phiên/);
