@@ -9,21 +9,43 @@
     menu: ['assets/app-profiles.webp', 'Ảnh chụp menu hồ sơ Pip để chuyển đổi các hồ sơ duyệt web riêng.', 'Menu hồ sơ để chuyển giữa các hồ sơ Pip.'],
     settings: ['assets/app-settings-current.webp', 'Ảnh chụp cửa sổ Pip đang mở trang Cài đặt trên Windows, gồm thanh công cụ và các tùy chọn trình duyệt.', 'Cài đặt thực tế đang mở trong cửa sổ Pip.']
   };
-  $$('.show-tab').forEach((tab) => tab.addEventListener('click', () => {
+  const showTabs = $$('.show-tab');
+  const selectPreview = (tab) => {
     const view = tab.dataset.view;
     const preview = previews[view];
-    if (!preview) return;
+    if (!preview) return false;
     previewImage.src = preview[0];
     previewImage.alt = preview[1];
     $('#preview-dialog-image').src = previewImage.src;
     $('#preview-dialog-image').alt = preview[1];
     $('#demo-caption').textContent = preview[2];
-    $$('.show-tab').forEach((item) => {
+    showTabs.forEach((item) => {
       const active = item === tab;
       item.classList.toggle('active', active);
       item.setAttribute('aria-selected', String(active));
+      item.tabIndex = active ? 0 : -1;
     });
-  }));
+    $('#app-preview').setAttribute('aria-labelledby', tab.id);
+    return true;
+  };
+  showTabs.forEach((tab, index) => {
+    if (!tab.id) tab.id = `show-tab-${tab.dataset.view || index}`;
+    tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
+    tab.addEventListener('click', () => selectPreview(tab));
+    tab.addEventListener('keydown', (event) => {
+      let targetIndex;
+      if (event.key === 'ArrowRight') targetIndex = (index + 1) % showTabs.length;
+      else if (event.key === 'ArrowLeft') targetIndex = (index + showTabs.length - 1) % showTabs.length;
+      else if (event.key === 'Home') targetIndex = 0;
+      else if (event.key === 'End') targetIndex = showTabs.length - 1;
+      else return;
+      event.preventDefault();
+      const target = showTabs[targetIndex];
+      if (selectPreview(target)) target.focus();
+    });
+  });
+  const initialTab = showTabs.find((tab) => tab.classList.contains('active'));
+  if (initialTab) $('#app-preview').setAttribute('aria-labelledby', initialTab.id);
 
   $('#preview-zoom').addEventListener('click', () => {
     $('#preview-dialog-image').src = previewImage.src;
