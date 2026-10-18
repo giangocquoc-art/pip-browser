@@ -6,12 +6,14 @@ Pip là trình duyệt Windows 10/11 x64 dựa trên Microsoft Edge WebView2, v�
 
 - Tab, thanh địa chỉ, trang tab mới và menu theo giao diện Pip.
 - Nhấp phải vào tab để tạo nhóm, chuyển tab giữa các nhóm hoặc bỏ nhóm. Tên nhóm và màu được lưu cùng phiên tab của cửa sổ.
+- Dịch văn bản trang sang tiếng Việt bằng Translator API trên thiết bị của WebView2 khi runtime hỗ trợ; có thể khôi phục văn bản gốc.
 - Hồ sơ riêng lưu dữ liệu website độc lập; cửa sổ ẩn danh không lưu lịch sử duyệt web.
+- Tùy chọn đồng bộ dấu trang mã hóa đầu-cuối theo hồ sơ; máy chủ không nhận khóa giải mã. Mã khôi phục dùng để ghép thiết bị.
 - Brave Adblock Rust xử lý bộ lọc EasyList, uBlock Origin và danh sách popup HaGeZi được đóng gói sẵn. Khi bộ lọc bật cho website, Pip chặn popup tự mở và đối chiếu đích popup với danh sách quảng cáo, popup và cá cược HaGeZi; tên miền phụ của miền cá cược trong danh sách cũng bị nhận diện. Quy tắc cá cược chỉ áp dụng cho popup, không chặn điều hướng bình thường. YouTube và website khác có thể thay đổi cách phân phối quảng cáo nên không thể cam kết chặn mọi quảng cáo.
 - Google DNS bảo mật là tùy chọn. DNS không ẩn địa chỉ IP và không thay thế VPN.
 - Dùng WebView2 Runtime do Microsoft cập nhật; Pip không mang theo một bản Chromium riêng.
 
-Xem [hướng dẫn sử dụng](PIP_README.md), [ghi chú Pip 0.1.10](RELEASE_NOTES.md), [nguồn và giấy phép bên thứ ba](THIRD_PARTY.md), cùng thư mục `licenses/`.
+Xem [hướng dẫn sử dụng](PIP_README.md), [ghi chú phát hành](RELEASE_NOTES.md), [nguồn và giấy phép bên thứ ba](THIRD_PARTY.md), cùng thư mục `licenses/`.
 
 ## Build trên Windows
 

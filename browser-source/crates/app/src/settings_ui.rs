@@ -643,6 +643,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Hồ sơ và riêng tư</div>
     <div class="card">
+      <div class="row"><div class="row-info"><span class="row-label">Đồng bộ dấu trang có mã hóa</span><span class="row-desc"><span id="syncState">Mã hóa trên thiết bị trước khi gửi.</span> Chỉ đồng bộ dấu trang và mục đã xóa; không đồng bộ mật khẩu, lịch sử, cookie hoặc phiên tab. Hãy giữ mã khôi phục ở nơi riêng.</span></div><button class="btn btn-secondary" id="syncCreateButton" onclick="profileAction('EnableBookmarkSync')">Tạo mã đồng bộ</button><button class="btn btn-secondary" id="syncImportButton" onclick="const code=prompt('Nhập mã khôi phục Pip Sync trên thiết bị khác');if(code)profileAction('ImportBookmarkSync',{recovery_code:code})">Nhập mã</button><button class="btn btn-secondary" id="syncCodeButton" onclick="profileAction('ShowBookmarkSyncCode')">Hiện mã khôi phục</button><button class="btn" id="syncNowButton" onclick="profileAction('SyncBookmarks')">Đồng bộ ngay</button><button class="btn btn-secondary" id="syncDisableButton" onclick="if(confirm('Xóa dấu trang đồng bộ khỏi máy chủ và tắt Pip Sync trong hồ sơ này?'))profileAction('DisableBookmarkSync')">Tắt và xóa</button></div>
       <div class="row"><div class="row-info"><span class="row-label">Hồ sơ đang dùng</span><span class="row-desc">Cookie, đăng nhập và dữ liệu website được tách theo hồ sơ. Không đồng bộ tài khoản Chrome.</span></div><strong id="currentProfileName"></strong></div>
       <div class="row"><select id="profileSelect" title="Chọn hồ sơ để mở cửa sổ riêng hoặc đổi tên" aria-label="Hồ sơ"></select><button class="btn btn-secondary" onclick="profileAction('OpenProfile',{id:profileSelect.value})">Mở hồ sơ</button></div>
       <div class="row"><input id="profileName" class="text-input" maxlength="40" placeholder="Tên hồ sơ" aria-label="Tên hồ sơ"><button class="btn btn-secondary" onclick="profileAction('CreateProfile',{name:profileName.value})">Tạo hồ sơ</button><button class="btn btn-secondary" onclick="profileAction('RenameProfile',{id:profileSelect.value,name:profileName.value})">Đổi tên hồ sơ đã chọn</button></div>
@@ -701,6 +702,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       document.getElementById('autofillToggle').disabled=isPrivateProfile;
       document.getElementById('clearPasswordsButton').disabled=isPrivateProfile;
       document.getElementById('clearCacheButton').disabled=isPrivateProfile;
+      document.getElementById('syncCreateButton').disabled=isPrivateProfile || !!current?.syncEnabled;
+      document.getElementById('syncImportButton').disabled=isPrivateProfile || !!current?.syncEnabled;
+      document.getElementById('syncNowButton').disabled=isPrivateProfile || !current?.syncEnabled;
+      document.getElementById('syncCodeButton').disabled=isPrivateProfile || !current?.syncEnabled;
+      document.getElementById('syncDisableButton').disabled=isPrivateProfile || !current?.syncEnabled;
+      document.getElementById('syncState').textContent=isPrivateProfile?'Đồng bộ bị tắt trong cửa sổ ẩn danh.':current?.syncEnabled?'Đã thiết lập mã hóa. Bấm Đồng bộ ngay để chuyển dấu trang.':'Mã hóa trên thiết bị trước khi gửi.';
     };
     window.__renderProfiles({{PROFILES_JSON}});
     window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null) => {
@@ -828,12 +835,24 @@ pub fn get_settings_html(
     google_dns_route_ok: Option<bool>,
 ) -> String {
     let download_dir_str = settings.downloads.default_folder.to_string_lossy();
+    let public_profiles = settings
+        .profiles
+        .iter()
+        .map(|profile| {
+            serde_json::json!({
+                "id": profile.id,
+                "name": profile.name,
+                "autofill": profile.autofill,
+                "syncEnabled": profile.sync_credentials_protected.is_some(),
+            })
+        })
+        .collect::<Vec<_>>();
     let mut html = SETTINGS_TEMPLATE
         .replace("{{LOGO_BASE64}}", LOGO_BASE64.trim())
         .replace("{{MASCOT_BASE64}}", MASCOT_BASE64.trim())
         .replace(
             "{{PROFILES_JSON}}",
-            &serde_json::to_string(&settings.profiles)
+            &serde_json::to_string(&public_profiles)
                 .unwrap()
                 .replace('<', "\\u003c"),
         )
@@ -946,4 +965,21 @@ pub fn get_settings_html(
     }
 
     html
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_settings_are_available_without_exposing_protected_profile_credentials() {
+        let mut settings = Settings::default();
+        settings.profiles[0].sync_credentials_protected = Some("local-dpapi-secret-marker".into());
+        let html = get_settings_html("155.0", &settings, false, false, None);
+        assert!(html.contains("EnableBookmarkSync"));
+        assert!(html.contains("ImportBookmarkSync"));
+        assert!(html.contains("SyncBookmarks"));
+        assert!(html.contains("\"syncEnabled\":true"));
+        assert!(!html.contains("local-dpapi-secret-marker"));
+    }
 }

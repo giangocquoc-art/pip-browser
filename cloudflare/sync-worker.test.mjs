@@ -32,13 +32,13 @@ function auth(headers = {}) {
 
 test("stores an opaque encrypted envelope and returns a revision", async () => {
   const env = testEnv();
-  const created = await worker.fetch(new Request(`https://sync.pip.psharehub.com/v1/vault/${id}`, {
+  const created = await worker.fetch(new Request(`https://sync.psharehub.com/v1/vault/${id}`, {
     method: "PUT", headers: auth({ "If-None-Match": "*", "Content-Type": "application/json" }), body: envelope,
   }), env);
   assert.equal(created.status, 204);
   const etag = created.headers.get("ETag");
   assert.match(etag, /^"[a-f0-9]{64}"$/);
-  const fetched = await worker.fetch(new Request(`https://sync.pip.psharehub.com/v1/vault/${id}`, { headers: auth() }), env);
+  const fetched = await worker.fetch(new Request(`https://sync.psharehub.com/v1/vault/${id}`, { headers: auth() }), env);
   assert.equal(fetched.status, 200);
   assert.equal(fetched.headers.get("ETag"), etag);
   assert.equal(await fetched.text(), envelope);
@@ -47,7 +47,7 @@ test("stores an opaque encrypted envelope and returns a revision", async () => {
 
 test("rejects stale writes instead of silently overwriting a newer device", async () => {
   const env = testEnv();
-  const url = `https://sync.pip.psharehub.com/v1/vault/${id}`;
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
   await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope }), env);
   const stale = await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-Match": '"stale"' }), body: envelope }), env);
   assert.equal(stale.status, 412);
@@ -55,14 +55,14 @@ test("rejects stale writes instead of silently overwriting a newer device", asyn
 
 test("rejects weak vault IDs, malformed envelopes, and unsupported methods", async () => {
   const env = testEnv();
-  assert.equal((await worker.fetch(new Request("https://sync.pip.psharehub.com/v1/vault/abc"), env)).status, 404);
-  assert.equal((await worker.fetch(new Request(`https://sync.pip.psharehub.com/v1/vault/${id}`, { method: "PUT", headers: auth(), body: "{}" }), env)).status, 400);
-  assert.equal((await worker.fetch(new Request(`https://sync.pip.psharehub.com/v1/vault/${id}`, { method: "POST" }), env)).status, 405);
+  assert.equal((await worker.fetch(new Request("https://sync.psharehub.com/v1/vault/abc"), env)).status, 404);
+  assert.equal((await worker.fetch(new Request(`https://sync.psharehub.com/v1/vault/${id}`, { method: "PUT", headers: auth(), body: "{}" }), env)).status, 400);
+  assert.equal((await worker.fetch(new Request(`https://sync.psharehub.com/v1/vault/${id}`, { method: "POST" }), env)).status, 405);
 });
 
 test("requires the private sync token and stores only its hash", async () => {
   const env = testEnv();
-  const url = `https://sync.pip.psharehub.com/v1/vault/${id}`;
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
   const created = await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope }), env);
   assert.equal(created.status, 204);
   const wrongToken = "f".repeat(64);
@@ -76,18 +76,20 @@ test("requires the private sync token and stores only its hash", async () => {
 test("limits request bodies before storing large values", async () => {
   const env = testEnv();
   const oversized = JSON.stringify({ version: 1, salt: "b".repeat(32), iv: "c".repeat(24), ciphertext: "d".repeat(1024 * 1024 * 2) });
-  const response = await worker.fetch(new Request(`https://sync.pip.psharehub.com/v1/vault/${id}`, {
+  const response = await worker.fetch(new Request(`https://sync.psharehub.com/v1/vault/${id}`, {
     method: "PUT", headers: auth({ "If-None-Match": "*" }), body: oversized,
   }), env);
   assert.equal(response.status, 413);
 });
 
-test("deletes a vault only with the matching revision", async () => {
+test("permanently deletes a vault, revokes old devices, and requires a new recovery code", async () => {
   const env = testEnv();
-  const url = `https://sync.pip.psharehub.com/v1/vault/${id}`;
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
   const created = await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope }), env);
   const etag = created.headers.get("ETag");
   assert.equal((await worker.fetch(new Request(url, { method: "DELETE", headers: auth({ "If-Match": '"stale"' }) }), env)).status, 412);
   assert.equal((await worker.fetch(new Request(url, { method: "DELETE", headers: auth({ "If-Match": etag }) }), env)).status, 204);
-  assert.equal((await worker.fetch(new Request(url, { headers: auth() }), env)).status, 404);
+  assert.equal((await worker.fetch(new Request(url, { headers: auth() }), env)).status, 410);
+  assert.equal((await worker.fetch(new Request(url, { method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope }), env)).status, 410);
+  assert.equal((await worker.fetch(new Request(url, { method: "DELETE", headers: auth() }), env)).status, 204);
 });

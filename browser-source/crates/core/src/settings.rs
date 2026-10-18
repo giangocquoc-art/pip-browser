@@ -38,6 +38,9 @@ pub struct BrowserProfile {
     pub name: String,
     #[serde(default = "enabled_by_default")]
     pub autofill: bool,
+    /// DPAPI-protected Pip Sync credentials local to this Windows account.
+    #[serde(default)]
+    pub sync_credentials_protected: Option<String>,
 }
 
 fn enabled_by_default() -> bool {
@@ -57,6 +60,7 @@ pub fn default_profiles() -> Vec<BrowserProfile> {
         id: "Default".into(),
         name: "Cá nhân".into(),
         autofill: true,
+        sync_credentials_protected: None,
     }]
 }
 

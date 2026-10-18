@@ -178,6 +178,7 @@ fn test_ipc_serde_ui_to_host_all_variants() {
             tab_id: TabId(42),
             name: "Research".to_string(),
         },
+        UiToHostMessage::TranslatePage,
         UiToHostMessage::DetachTabToNewWindow {
             tab_id: TabId(1),
             screen_x: Some(100.0),

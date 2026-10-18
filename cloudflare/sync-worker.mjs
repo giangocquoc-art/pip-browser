@@ -89,8 +89,10 @@ export class PipSyncVault {
     const tokenHash = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
     const savedTokenHash = await this.storage.get("tokenHash");
     if (savedTokenHash && !constantTimeEqual(tokenHash, savedTokenHash)) return response("Unauthorized", 401);
+    const revoked = await this.storage.get("revoked");
 
     if (request.method === "GET") {
+      if (revoked) return response("Vault deleted", 410);
       if (!stored) return response("Not found", 404);
       return response(stored.body, 200, {
         "Content-Type": "application/json; charset=utf-8",
@@ -99,13 +101,19 @@ export class PipSyncVault {
     }
 
     if (request.method === "DELETE") {
-      if (!stored) return response(null, 204);
-      const condition = request.headers.get("If-Match");
-      if (condition !== stored.etag && condition !== "*") return response("Conflict", 412);
+      if (revoked) return response(null, 204);
+      if (stored) {
+        const condition = request.headers.get("If-Match");
+        if (condition !== stored.etag && condition !== "*") return response("Conflict", 412);
+      }
       await this.storage.delete("envelope");
-      await this.storage.delete("tokenHash");
+      if (!savedTokenHash) await this.storage.put("tokenHash", tokenHash);
+      // Retain only a one-bit tombstone and the access-token hash. This prevents another
+      // device with the old recovery code from silently recreating the deleted vault.
+      await this.storage.put("revoked", true);
       return response(null, 204);
     }
+    if (revoked) return response("Vault deleted", 410);
 
     let body;
     try {

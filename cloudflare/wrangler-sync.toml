@@ -12,5 +12,5 @@ tag = "v1"
 new_sqlite_classes = ["PipSyncVault"]
 
 [[routes]]
-pattern = "sync.pip.psharehub.com"
+pattern = "sync.psharehub.com"
 custom_domain = true
