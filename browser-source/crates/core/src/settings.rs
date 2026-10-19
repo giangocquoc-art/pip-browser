@@ -9,6 +9,9 @@ pub struct Settings {
     pub profiles: Vec<BrowserProfile>,
     #[serde(default)]
     pub google_dns: bool,
+    /// Ad blocking posture. Balanced preserves current filtering behavior by default.
+    #[serde(default)]
+    pub adblock_mode: AdblockMode,
     /// Engine settings
     pub engine: EngineSettings,
     /// Privacy and ephemerality settings
@@ -33,14 +36,155 @@ pub struct Settings {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "BrowserProfileData")]
 pub struct BrowserProfile {
     pub id: String,
     pub name: String,
     #[serde(default = "enabled_by_default")]
     pub autofill: bool,
+    /// Enables WebView2's built-in Save/Update Password prompt and password suggestions.
+    pub password_autosave: bool,
     /// DPAPI-protected Pip Sync credentials local to this Windows account.
     #[serde(default)]
     pub sync_credentials_protected: Option<String>,
+    /// Optional browser history sync; disabled for profiles upgraded from V1.
+    #[serde(default)]
+    pub sync_history: bool,
+    /// Optional cross-device open-tab list; private windows are never included.
+    #[serde(default)]
+    pub sync_open_tabs: bool,
+    /// Optional allowlisted UI preferences sync.
+    #[serde(default)]
+    pub sync_settings: bool,
+    /// Explicit opt-in for syncing Pip's separately DPAPI-protected password vault.
+    #[serde(default)]
+    pub sync_passwords: bool,
+    /// Random local identifier for this installation, never derived from a URL/profile name.
+    #[serde(default)]
+    pub sync_device_id: Option<String>,
+    /// Local conflict metadata for the allowlisted Sync settings category.
+    #[serde(default)]
+    pub sync_settings_updated_at_ms: u64,
+    #[serde(default)]
+    pub sync_settings_fingerprint: Option<String>,
+    /// Profile-local values for the nine allowlisted Sync preferences. `None` keeps
+    /// legacy profiles on the existing global values until they are changed/synced.
+    #[serde(default)]
+    pub sync_settings_values: Option<ProfileSyncSettings>,
+}
+
+/// The exact set of preferences that Sync V4 is allowed to move between devices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileSyncSettings {
+    pub search_engine: String,
+    pub theme: String,
+    pub density: String,
+    pub default_zoom_level: f64,
+    pub show_status_preview: bool,
+    pub show_zoom_badge: bool,
+    pub enable_tab_reordering: bool,
+    pub enable_tab_tearoff: bool,
+    pub warn_on_close_tabs: bool,
+}
+
+impl Default for ProfileSyncSettings {
+    fn default() -> Self {
+        Self {
+            search_engine: "google".into(),
+            theme: "system".into(),
+            density: "comfortable".into(),
+            default_zoom_level: 1.0,
+            show_status_preview: true,
+            show_zoom_badge: true,
+            enable_tab_reordering: true,
+            enable_tab_tearoff: true,
+            warn_on_close_tabs: true,
+        }
+    }
+}
+
+impl ProfileSyncSettings {
+    pub fn from_global(settings: &Settings) -> Self {
+        Self {
+            search_engine: settings.search_engine.clone(),
+            theme: settings.appearance.theme.clone(),
+            density: settings.appearance.density.clone(),
+            default_zoom_level: settings.appearance.default_zoom_level,
+            show_status_preview: settings.appearance.show_status_preview,
+            show_zoom_badge: settings.appearance.show_zoom_badge,
+            enable_tab_reordering: settings.tabs.enable_tab_reordering,
+            enable_tab_tearoff: settings.tabs.enable_tab_tearoff,
+            warn_on_close_tabs: settings.tabs.warn_on_close_tabs,
+        }
+    }
+
+    pub fn apply_to(&self, settings: &mut Settings) {
+        settings.search_engine = self.search_engine.clone();
+        settings.appearance.theme = self.theme.clone();
+        settings.appearance.density = self.density.clone();
+        settings.appearance.default_zoom_level = self.default_zoom_level;
+        settings.appearance.show_status_preview = self.show_status_preview;
+        settings.appearance.show_zoom_badge = self.show_zoom_badge;
+        settings.tabs.enable_tab_reordering = self.enable_tab_reordering;
+        settings.tabs.enable_tab_tearoff = self.enable_tab_tearoff;
+        settings.tabs.warn_on_close_tabs = self.warn_on_close_tabs;
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserProfileData {
+    id: String,
+    name: String,
+    #[serde(default = "enabled_by_default")]
+    autofill: bool,
+    /// Old settings used one toggle for both features; preserve its choice on upgrade.
+    password_autosave: Option<bool>,
+    #[serde(default)]
+    sync_credentials_protected: Option<String>,
+    #[serde(default)]
+    sync_history: bool,
+    #[serde(default)]
+    sync_open_tabs: bool,
+    #[serde(default)]
+    sync_settings: bool,
+    #[serde(default)]
+    sync_passwords: bool,
+    #[serde(default)]
+    sync_device_id: Option<String>,
+    #[serde(default)]
+    sync_settings_updated_at_ms: u64,
+    /// Legacy local conflict time, stored in seconds by pre-V3 Pip builds.
+    #[serde(default)]
+    sync_settings_updated_at_secs: u64,
+    #[serde(default)]
+    sync_settings_fingerprint: Option<String>,
+    #[serde(default)]
+    sync_settings_values: Option<ProfileSyncSettings>,
+}
+
+impl From<BrowserProfileData> for BrowserProfile {
+    fn from(data: BrowserProfileData) -> Self {
+        Self {
+            id: data.id,
+            name: data.name,
+            autofill: data.autofill,
+            password_autosave: data.password_autosave.unwrap_or(data.autofill),
+            sync_credentials_protected: data.sync_credentials_protected,
+            sync_history: data.sync_history,
+            sync_open_tabs: data.sync_open_tabs,
+            sync_settings: data.sync_settings,
+            sync_passwords: data.sync_passwords,
+            sync_device_id: data.sync_device_id,
+            sync_settings_updated_at_ms: if data.sync_settings_updated_at_ms > 0 {
+                data.sync_settings_updated_at_ms
+            } else {
+                data.sync_settings_updated_at_secs.saturating_mul(1_000)
+            },
+            sync_settings_fingerprint: data.sync_settings_fingerprint,
+            sync_settings_values: data.sync_settings_values,
+        }
+    }
 }
 
 fn enabled_by_default() -> bool {
@@ -60,7 +204,16 @@ pub fn default_profiles() -> Vec<BrowserProfile> {
         id: "Default".into(),
         name: "Cá nhân".into(),
         autofill: true,
+        password_autosave: true,
         sync_credentials_protected: None,
+        sync_history: false,
+        sync_open_tabs: false,
+        sync_settings: false,
+        sync_passwords: false,
+        sync_device_id: None,
+        sync_settings_updated_at_ms: 0,
+        sync_settings_fingerprint: None,
+        sync_settings_values: None,
     }]
 }
 
@@ -140,6 +293,15 @@ pub struct PermissionSettings {
     pub notifications: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdblockMode {
+    #[default]
+    Balanced,
+    Strong,
+    VideoFirst,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateSettings {
     /// Check for app updates on startup
@@ -183,6 +345,7 @@ impl Default for Settings {
         Self {
             profiles: default_profiles(),
             google_dns: false,
+            adblock_mode: AdblockMode::Balanced,
             engine: EngineSettings {
                 update_command: "powershell -NoProfile -Command \"$u='https://go.microsoft.com/fwlink/p/?LinkId=2124703'; $o=\\\"$env:TEMP\\MicrosoftEdgeWebview2Setup.exe\\\"; Invoke-WebRequest -Uri $u -OutFile $o; Start-Process -FilePath $o -ArgumentList '/silent','/install' -Wait\"".to_string(),
                 auto_check: true,
@@ -230,6 +393,34 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Return this profile's effective settings, falling back to the legacy global
+    /// values until the profile has its own Sync-preference snapshot.
+    pub fn for_profile(&self, profile_id: &str) -> Self {
+        let mut effective = self.clone();
+        if let Some(values) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.sync_settings_values.as_ref())
+        {
+            values.apply_to(&mut effective);
+        }
+        effective
+    }
+
+    pub fn profile_sync_settings(&self, profile_id: &str) -> Option<ProfileSyncSettings> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)?;
+        Some(
+            profile
+                .sync_settings_values
+                .clone()
+                .unwrap_or_else(|| ProfileSyncSettings::from_global(self)),
+        )
+    }
+
     pub fn search_url_template(&self) -> &'static str {
         match self.search_engine.to_lowercase().as_str() {
             "google" => "https://www.google.com/search?q=%s",
@@ -292,8 +483,11 @@ impl Settings {
                     "tabs" => self.update_from_json(&serde_json::json!({
                         "tabReordering": v.get("enable_tab_reordering"),
                         "tabTearoff": v.get("enable_tab_tearoff"),
+                        "warnOnCloseTabs": v.get("warn_on_close_tabs"),
                     })),
                     "appearance" => self.update_from_json(&serde_json::json!({
+                        "theme": v.get("theme"),
+                        "density": v.get("density"),
                         "default_zoom_level": v.get("default_zoom_level"),
                         "showZoomBadge": v.get("show_zoom_badge"),
                         "enableLinkPreview": v.get("enable_link_preview"),
@@ -320,6 +514,11 @@ impl Settings {
                             self.search_engine = s.to_string();
                         }
                     }
+                    "adblock_mode" => {
+                        if let Ok(mode) = serde_json::from_value::<AdblockMode>(v.clone()) {
+                            self.adblock_mode = mode;
+                        }
+                    }
                     "askWhereToSave" => {
                         if let Some(b) = v.as_bool() {
                             self.downloads.ask_where_to_save = b;
@@ -338,6 +537,27 @@ impl Settings {
                     "tabTearoff" => {
                         if let Some(b) = v.as_bool() {
                             self.tabs.enable_tab_tearoff = b;
+                        }
+                    }
+                    "warnOnCloseTabs" => {
+                        if let Some(b) = v.as_bool() {
+                            self.tabs.warn_on_close_tabs = b;
+                        }
+                    }
+                    "theme" => {
+                        if let Some(theme) = v
+                            .as_str()
+                            .filter(|v| matches!(*v, "system" | "light" | "dark"))
+                        {
+                            self.appearance.theme = theme.to_string();
+                        }
+                    }
+                    "density" => {
+                        if let Some(density) = v
+                            .as_str()
+                            .filter(|v| matches!(*v, "comfortable" | "compact"))
+                        {
+                            self.appearance.density = density.to_string();
                         }
                     }
                     "default_zoom_level" => {

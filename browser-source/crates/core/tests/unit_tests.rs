@@ -1,7 +1,138 @@
 use evergreen_core::env::is_process_elevated;
 use evergreen_core::ipc::{HostToUiMessage, UiToHostMessage};
-use evergreen_core::settings::Settings;
+use evergreen_core::settings::{BrowserProfile, ProfileSyncSettings, Settings};
 use evergreen_core::tabs::{TabId, TabManager, TabState, TabStatus};
+
+#[test]
+fn profile_sync_settings_timestamp_migrates_legacy_seconds_and_serializes_milliseconds() {
+    let legacy: BrowserProfile = serde_json::from_value(serde_json::json!({
+        "id": "Default",
+        "name": "Personal",
+        "sync_settings_updated_at_secs": 1_700_000_000
+    }))
+    .unwrap();
+    assert_eq!(legacy.sync_settings_updated_at_ms, 1_700_000_000_000);
+    let serialized = serde_json::to_value(&legacy).unwrap();
+    assert_eq!(
+        serialized["sync_settings_updated_at_ms"],
+        1_700_000_000_000u64
+    );
+    assert!(serialized.get("sync_settings_updated_at_secs").is_none());
+    assert!(!legacy.sync_passwords);
+}
+
+#[test]
+fn profiles_without_sync_overrides_migrate_by_inheriting_existing_global_values() {
+    let mut old_config = serde_json::to_value(Settings::default()).unwrap();
+    old_config["search_engine"] = serde_json::json!("bing");
+    old_config["appearance"]["theme"] = serde_json::json!("dark");
+    old_config["appearance"]["density"] = serde_json::json!("compact");
+    old_config["appearance"]["default_zoom_level"] = serde_json::json!(1.25);
+    old_config["profiles"] = serde_json::json!([
+        {"id": "Default", "name": "Personal"},
+        {"id": "Work", "name": "Work"}
+    ]);
+    let settings: Settings = serde_json::from_value(old_config).unwrap();
+    assert!(settings
+        .profiles
+        .iter()
+        .all(|profile| profile.sync_settings_values.is_none()));
+    assert_eq!(settings.for_profile("Default").search_engine, "bing");
+    assert_eq!(settings.for_profile("Work").appearance.theme, "dark");
+    assert_eq!(
+        settings.for_profile("Work").appearance.default_zoom_level,
+        1.25
+    );
+
+    let saved = serde_json::to_value(&settings).unwrap();
+    let restored: Settings = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored.for_profile("Default").search_engine, "bing");
+    assert_eq!(restored.for_profile("Work").appearance.density, "compact");
+}
+
+#[test]
+fn profile_sync_overrides_are_independent_and_leave_global_fallback_untouched() {
+    let mut settings = Settings::default();
+    let mut work = ProfileSyncSettings::from_global(&settings);
+    work.search_engine = "brave".into();
+    work.theme = "dark".into();
+    work.density = "compact".into();
+    work.default_zoom_level = 1.25;
+    work.show_status_preview = false;
+    work.show_zoom_badge = false;
+    work.enable_tab_reordering = false;
+    work.enable_tab_tearoff = false;
+    work.warn_on_close_tabs = false;
+    settings.profiles.push(BrowserProfile {
+        id: "Work".into(),
+        name: "Work".into(),
+        sync_settings_values: Some(work),
+        ..settings.profiles[0].clone()
+    });
+
+    let personal = settings.for_profile("Default");
+    let work = settings.for_profile("Work");
+    assert_eq!(personal.search_engine, settings.search_engine);
+    assert_eq!(personal.appearance.theme, settings.appearance.theme);
+    assert_eq!(personal.appearance.density, settings.appearance.density);
+    assert_eq!(
+        personal.appearance.default_zoom_level,
+        settings.appearance.default_zoom_level
+    );
+    assert_eq!(
+        personal.appearance.show_status_preview,
+        settings.appearance.show_status_preview
+    );
+    assert_eq!(
+        personal.appearance.show_zoom_badge,
+        settings.appearance.show_zoom_badge
+    );
+    assert_eq!(
+        personal.tabs.enable_tab_reordering,
+        settings.tabs.enable_tab_reordering
+    );
+    assert_eq!(
+        personal.tabs.enable_tab_tearoff,
+        settings.tabs.enable_tab_tearoff
+    );
+    assert_eq!(
+        personal.tabs.warn_on_close_tabs,
+        settings.tabs.warn_on_close_tabs
+    );
+    assert_eq!(work.search_engine, "brave");
+    assert_eq!(work.appearance.theme, "dark");
+    assert_eq!(work.appearance.density, "compact");
+    assert_eq!(work.appearance.default_zoom_level, 1.25);
+    assert!(!work.appearance.show_status_preview);
+    assert!(!work.appearance.show_zoom_badge);
+    assert!(!work.tabs.enable_tab_reordering);
+    assert!(!work.tabs.enable_tab_tearoff);
+    assert!(!work.tabs.warn_on_close_tabs);
+    assert_eq!(settings.search_engine, "google");
+
+    let persisted: Settings =
+        serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+    assert_eq!(persisted.for_profile("Work").search_engine, "brave");
+    assert_eq!(persisted.for_profile("Default").search_engine, "google");
+}
+
+#[test]
+fn password_sync_choice_is_explicit_off_by_default_and_carried_over_ipc() {
+    let profile = BrowserProfile {
+        id: "Default".into(),
+        name: "Personal".into(),
+        ..Settings::default().profiles.remove(0)
+    };
+    assert!(!profile.sync_passwords);
+    let encoded = serde_json::to_value(UiToHostMessage::SetSyncCategories {
+        history: true,
+        open_tabs: true,
+        settings: true,
+        passwords: true,
+    })
+    .unwrap();
+    assert_eq!(encoded["payload"]["passwords"], true);
+}
 
 #[test]
 fn settings_accept_the_nested_patches_sent_by_the_ui() {
@@ -111,6 +242,30 @@ fn test_tab_manager_switch_tab() {
 }
 
 #[test]
+fn adjacent_tab_navigation_wraps_in_both_directions() {
+    let mut manager = TabManager::new();
+    let first = manager.create_tab("https://first.example", 1);
+    let second = manager.create_tab("https://second.example", 2);
+    let third = manager.create_tab("https://third.example", 3);
+
+    assert_eq!(manager.adjacent_tab_id(true), Some(first));
+    assert_eq!(manager.adjacent_tab_id(false), Some(second));
+    assert!(manager.switch_tab(first, 4));
+    assert_eq!(manager.adjacent_tab_id(false), Some(third));
+    assert_eq!(manager.adjacent_tab_id(true), Some(second));
+
+    assert!(manager.close_tab(second).is_some());
+    assert_eq!(manager.adjacent_tab_id(true), Some(third));
+    assert!(manager.switch_tab(third, 5));
+    assert_eq!(manager.adjacent_tab_id(true), Some(first));
+
+    let mut single = TabManager::new();
+    single.create_tab("https://only.example", 1);
+    assert_eq!(single.adjacent_tab_id(true), None);
+    assert_eq!(single.adjacent_tab_id(false), None);
+}
+
+#[test]
 fn test_tab_manager_close_last_tab_returns_none() {
     let mut manager = TabManager::new();
     let id1 = manager.create_tab("https://example.com", 100);
@@ -144,6 +299,60 @@ fn test_tab_manager_pop_last_closed_lifo_and_skips_blank() {
         Some("https://first.com".to_string())
     );
     assert_eq!(manager.pop_last_closed(), None);
+}
+
+#[test]
+fn closed_tab_history_restores_only_safe_recent_urls_and_keeps_lifo_order() {
+    let mut manager = TabManager::new();
+    let mut saved = vec![
+        "javascript:alert(1)".to_string(),
+        "https://older.example/".to_string(),
+    ];
+    saved.extend((0..55).map(|index| format!("https://tab{index}.example/")));
+    saved.push("file:///private.txt".to_string());
+    saved.push(format!("https://long.example/{}", "x".repeat(8192)));
+    manager.restore_closed_history(saved);
+
+    let snapshot = manager.closed_history_snapshot();
+    assert_eq!(snapshot.len(), 50);
+    assert_eq!(snapshot.first().unwrap(), "https://tab5.example/");
+    assert_eq!(
+        manager.pop_last_closed(),
+        Some("https://tab54.example/".to_string())
+    );
+    assert_eq!(
+        manager.pop_last_closed(),
+        Some("https://tab53.example/".to_string())
+    );
+}
+
+#[test]
+fn closed_tab_picker_lists_newest_first_and_reopens_selected_item() {
+    let mut manager = TabManager::new();
+    manager.restore_closed_history(vec![
+        "https://first.example/a".into(),
+        "https://second.example/b".into(),
+        "javascript:alert(1)".into(),
+        "https://third.example/c".into(),
+    ]);
+
+    assert_eq!(
+        manager.recently_closed_newest_first(),
+        vec![
+            "https://third.example/c",
+            "https://second.example/b",
+            "https://first.example/a",
+        ]
+    );
+    assert_eq!(
+        manager.take_closed_at_newest_index(1).as_deref(),
+        Some("https://second.example/b")
+    );
+    assert_eq!(
+        manager.recently_closed_newest_first(),
+        vec!["https://third.example/c", "https://first.example/a"]
+    );
+    assert_eq!(manager.take_closed_at_newest_index(50), None);
 }
 
 #[test]
@@ -230,6 +439,7 @@ fn test_ipc_serde_ui_to_host_all_variants() {
         UiToHostMessage::SetSearchEngine {
             engine: "google".to_string(),
         },
+        UiToHostMessage::SetPasswordAutosave { enabled: false },
         UiToHostMessage::SaveSettings {
             settings_json: "{}".to_string(),
         },
@@ -337,6 +547,7 @@ fn test_settings_default_and_roundtrip() {
     assert!(settings.privacy.ephemeral_default);
     assert_eq!(settings.performance.sleep_after_secs, 300);
     assert_eq!(settings.search_engine, "google");
+    assert!(settings.profiles[0].password_autosave);
     assert_eq!(
         settings.search_url_template(),
         "https://www.google.com/search?q=%s"
@@ -345,6 +556,23 @@ fn test_settings_default_and_roundtrip() {
     let serialized = serde_json::to_string_pretty(&settings).expect("Serialization failed");
     let deserialized: Settings = serde_json::from_str(&serialized).expect("Deserialization failed");
     assert_eq!(settings, deserialized);
+}
+
+#[test]
+fn legacy_profile_autofill_choice_migrates_to_password_autosave() {
+    let disabled: Settings = serde_json::from_value(serde_json::json!({
+        "profiles": [{"id":"Default","name":"Cá nhân","autofill":false}]
+    }))
+    .unwrap();
+    assert!(!disabled.profiles[0].autofill);
+    assert!(!disabled.profiles[0].password_autosave);
+
+    let enabled: Settings = serde_json::from_value(serde_json::json!({
+        "profiles": [{"id":"Default","name":"Cá nhân","autofill":true}]
+    }))
+    .unwrap();
+    assert!(enabled.profiles[0].autofill);
+    assert!(enabled.profiles[0].password_autosave);
 }
 
 #[test]
@@ -392,6 +620,40 @@ fn test_tab_manager_suspension_and_audio() {
     tm.set_tab_suspended(tab_id, false);
     assert_eq!(
         tm.tabs()[0].status,
+        evergreen_core::tabs::TabStatus::Inactive
+    );
+}
+
+#[test]
+fn discarded_tab_reloads_on_activation_and_runtime_guard_is_not_persisted() {
+    let mut tabs = TabManager::new();
+    let discarded = tabs.create_tab("https://example.com", 100);
+    let active = tabs.create_tab("https://pip.example", 200);
+    tabs.set_tab_suspended(discarded, true);
+    tabs.set_tab_discarded(discarded);
+    tabs.set_memory_discard_protected(discarded, true);
+
+    assert_eq!(
+        tabs.get_tab_by_id(discarded).unwrap().status,
+        evergreen_core::tabs::TabStatus::Discarded
+    );
+    assert!(
+        tabs.get_tab_by_id(discarded)
+            .unwrap()
+            .memory_discard_protected
+    );
+
+    let snapshot = serde_json::to_string(tabs.get_tab_by_id(discarded).unwrap()).unwrap();
+    let restored: evergreen_core::tabs::TabState = serde_json::from_str(&snapshot).unwrap();
+    assert!(!restored.memory_discard_protected);
+
+    assert!(tabs.switch_tab(discarded, 300));
+    let restored_tab = tabs.get_tab_by_id(discarded).unwrap();
+    assert_eq!(restored_tab.status, evergreen_core::tabs::TabStatus::Active);
+    assert!(!restored_tab.memory_discard_protected);
+    assert_eq!(tabs.active_tab_id(), Some(discarded));
+    assert_eq!(
+        tabs.get_tab_by_id(active).unwrap().status,
         evergreen_core::tabs::TabStatus::Inactive
     );
 }
@@ -463,6 +725,27 @@ fn test_settings_update_from_partial_json() {
     }));
     assert!(!s.performance.background_throttling);
     assert_eq!(s.performance.sleep_after_secs, 900);
+}
+
+#[test]
+fn adblock_mode_defaults_to_balanced_and_rejects_unknown_values() {
+    let mut settings = Settings::default();
+    assert_eq!(
+        settings.adblock_mode,
+        evergreen_core::settings::AdblockMode::Balanced
+    );
+
+    settings.update_from_json(&serde_json::json!({"adblock_mode":"video_first"}));
+    assert_eq!(
+        settings.adblock_mode,
+        evergreen_core::settings::AdblockMode::VideoFirst
+    );
+
+    settings.update_from_json(&serde_json::json!({"adblock_mode":"unknown"}));
+    assert_eq!(
+        settings.adblock_mode,
+        evergreen_core::settings::AdblockMode::VideoFirst
+    );
 }
 
 #[test]

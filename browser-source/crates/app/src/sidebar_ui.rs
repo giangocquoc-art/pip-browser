@@ -498,6 +498,12 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <button type="button" class="action-item" id="keepAwakeTabButton" aria-pressed="false" title="Giữ tab hiện tại hoạt động thay vì tự ngủ. Dùng cho cuộc gọi hoặc tác vụ nền." onclick="sendAction('ToggleKeepAwakeTab')"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.4 2.9 8.1 7 10 4.1-1.9 7-5.6 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg><span class="action-label" id="keepAwakeTabLabel">Giữ tab này thức</span></button>
         <button type="button" class="action-item" title="Bật hoặc tắt âm thanh của tab đang chọn." onclick="sendAction('ToggleMuteTab')"><svg viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6l-5 4zM17 9l4 6m0-6-4 6"/></svg><span class="action-label">Tắt / bật tiếng tab</span></button>
         <button type="button" class="action-item" title="Mở lại địa chỉ của tab vừa đóng; nội dung chưa lưu không được khôi phục." onclick="sendAction('ReopenClosedTab')"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5m4-1v5l3 2"/></svg><span class="action-label">Mở lại tab đã đóng</span><span class="action-shortcut">Ctrl+Shift+T</span></button>
+        <section aria-labelledby="recentlyClosedHeading" style="margin:0 0 8px 34px;padding:8px 9px;border-left:2px solid var(--border-subtle)">
+          <div id="recentlyClosedHeading" style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:5px">Tab đã đóng gần đây</div>
+          <div id="recentlyClosedList" role="list" aria-live="polite" style="display:flex;flex-direction:column;gap:3px;max-height:168px;overflow:auto">
+            <span class="status-desc" role="listitem">Đang tải danh sách…</span>
+          </div>
+        </section>
         <button type="button" class="action-item" title="Mở lại địa chỉ các tab đã lưu của hồ sơ. Tab chỉ tải khi bạn chọn." onclick="sendAction('RestoreSession')"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M8 21h8m-4-4v4m-4-9 3-3 3 3m-3-3v7"/></svg><span class="action-label">Mở lại phiên đã lưu</span></button>
         <button type="button" class="action-item" onclick="sendAction('Reload')">
           <svg viewBox="0 0 24 24">
@@ -551,7 +557,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <button type="button" class="action-item" title="Mở công cụ dành cho người phát triển website (F12)." onclick="sendAction('OpenDevTools')">
           <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           <span class="action-label">Công cụ nhà phát triển</span>
-          <span class="action-shortcut">F12 · Ctrl+Shift+J</span>
+          <span class="action-shortcut">F12 · Ctrl+Shift+I/J</span>
         </button>
         <button type="button" class="action-item" title="Mở cài đặt và hướng dẫn về hồ sơ, DNS, quyền riêng tư và tài nguyên." onclick="sendAction('OpenSettings')">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -651,6 +657,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
     <div class="view-section" id="viewShortcuts">
       <div class="card"><span class="card-title">Tab và cửa sổ</span>
         <div class="prop-row"><span class="prop-label">Tab mới</span><kbd>Ctrl+T</kbd></div>
+        <div class="prop-row"><span class="prop-label">Tìm và chuyển đến tab đang mở</span><kbd>Ctrl+Shift+K</kbd></div>
         <div class="prop-row"><span class="prop-label">Cửa sổ mới</span><kbd>Ctrl+N</kbd></div>
         <div class="prop-row"><span class="prop-label">Cửa sổ ẩn danh</span><kbd>Ctrl+Shift+N</kbd></div>
         <div class="prop-row"><span class="prop-label">Đóng tab</span><kbd>Ctrl+W</kbd></div>
@@ -662,6 +669,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
       <div class="card"><span class="card-title">Trang và điều hướng</span>
         <div class="prop-row"><span class="prop-label">Thanh địa chỉ / tìm kiếm</span><kbd>Ctrl+L</kbd> <kbd>Ctrl+K</kbd></div>
         <div class="prop-row"><span class="prop-label">Tìm trong trang</span><kbd>Ctrl+F</kbd></div>
+        <div class="prop-row"><span class="prop-label">Kết quả tiếp / trước</span><kbd>Ctrl+G</kbd> <kbd>Ctrl+Shift+G</kbd> <kbd>F3</kbd> <kbd>Shift+F3</kbd></div>
         <div class="prop-row"><span class="prop-label">Lịch sử</span><kbd>Ctrl+H</kbd></div>
         <div class="prop-row"><span class="prop-label">Xóa dữ liệu duyệt web</span><kbd>Ctrl+Shift+Delete</kbd></div>
         <div class="prop-row"><span class="prop-label">Quản lý dấu trang</span><kbd>Ctrl+Shift+O</kbd></div>
@@ -679,7 +687,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <div class="prop-row"><span class="prop-label">Mở menu hồ sơ và chuyển tài khoản</span><kbd>Ctrl+Shift+M</kbd></div>
         <div class="prop-row"><span class="prop-label">Bật / tắt chặn quảng cáo cho trang</span><kbd>Ctrl+Shift+A</kbd></div>
         <div class="prop-row"><span class="prop-label">Điền mật khẩu đã lưu khi chỉ có một tài khoản khớp</span><kbd>Alt+Shift+P</kbd></div>
-        <div class="prop-row"><span class="prop-label">Công cụ nhà phát triển</span><kbd>F12</kbd> <kbd>Ctrl+Shift+J</kbd></div>
+        <div class="prop-row"><span class="prop-label">Công cụ nhà phát triển</span><kbd>F12</kbd> <kbd>Ctrl+Shift+I</kbd> <kbd>Ctrl+Shift+J</kbd></div>
         <p class="status-desc">Phím tắt áp dụng khi cửa sổ Pip đang hoạt động. Khi đang nhập trong ô văn bản, Pip giữ nguyên các tổ hợp chỉnh sửa thông dụng của trang.</p>
       </div>
     </div>
@@ -827,6 +835,49 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         : 'Giữ tab hiện tại hoạt động thay vì tự ngủ. Dùng cho cuộc gọi hoặc tác vụ nền.';
     };
 
+    window.__setRecentlyClosed = function(urls) {
+      const list = document.getElementById('recentlyClosedList');
+      if (!list) return;
+      list.replaceChildren();
+      if (!Array.isArray(urls) || urls.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'status-desc';
+        empty.setAttribute('role', 'listitem');
+        empty.textContent = 'Chưa có tab nào đã đóng gần đây.';
+        list.appendChild(empty);
+        return;
+      }
+      urls.slice(0, 50).forEach((rawUrl, index) => {
+        if (typeof rawUrl !== 'string') return;
+        let label;
+        try {
+          if (rawUrl === 'evergreen://newtab') label = 'Tab mới — Pip';
+          else {
+            const parsed = new URL(rawUrl);
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
+            label = parsed.hostname + (parsed.pathname === '/' ? '' : parsed.pathname);
+          }
+        } catch (_) { return; }
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('role', 'listitem');
+        button.className = 'action-item';
+        // Keep long URLs from expanding the menu or pushing other actions away.
+        // Hover still exposes the exact destination so similar pages can be told apart.
+        button.style.cssText = 'display:block;min-height:30px;padding:5px 7px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        button.title = rawUrl;
+        button.textContent = label;
+        button.addEventListener('click', () => postIpc('OpenClosedTab', { index }));
+        list.appendChild(button);
+      });
+      if (!list.childElementCount) {
+        const empty = document.createElement('span');
+        empty.className = 'status-desc';
+        empty.textContent = 'Không có địa chỉ web an toàn để mở lại.';
+        list.appendChild(empty);
+      }
+    };
+
     // Called by host to update sidebar data
     window.__sidebarSync = function(msg) {
       if (!msg) return;
@@ -912,5 +963,15 @@ mod tests {
         assert!(SIDEBAR_HTML.contains("keepAwakeTabButton"));
         assert!(SIDEBAR_HTML.contains("aria-pressed"));
         assert!(SIDEBAR_HTML.contains("window.__setKeepAwake"));
+    }
+
+    #[test]
+    fn recently_closed_picker_uses_native_selection_and_safe_dom_text() {
+        assert!(SIDEBAR_HTML.contains("window.__setRecentlyClosed"));
+        assert!(SIDEBAR_HTML.contains("postIpc('OpenClosedTab', { index })"));
+        assert!(SIDEBAR_HTML.contains("button.textContent = label"));
+        assert!(SIDEBAR_HTML.contains("text-overflow:ellipsis"));
+        assert!(SIDEBAR_HTML.contains("button.title = rawUrl"));
+        assert!(!SIDEBAR_HTML.contains("innerHTML = label"));
     }
 }

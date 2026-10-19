@@ -1,4 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static WEBVIEW2_RUNTIME_VERSION: OnceLock<Option<String>> = OnceLock::new();
 
 /// Check whether the browser should run in zero-residue portable mode.
 /// Portable mode is active if:
@@ -37,7 +40,7 @@ pub fn resolve_data_directory(exe_dir: &Path, args: &[String]) -> PathBuf {
 
 /// Helper to parse a dotted version string (e.g. "153.0.4234.48") into numerical components for semver sorting.
 pub fn parse_version_tuple(v: &str) -> Option<Vec<u64>> {
-    let parts: Vec<u64> = v.split('.').filter_map(|p| p.parse::<u64>().ok()).collect();
+    let parts: Vec<u64> = version_components(v).collect();
     if parts.len() >= 2 {
         Some(parts)
     } else {
@@ -45,9 +48,41 @@ pub fn parse_version_tuple(v: &str) -> Option<Vec<u64>> {
     }
 }
 
+fn version_components(v: &str) -> impl Iterator<Item = u64> + '_ {
+    v.split('.').filter_map(|part| part.parse::<u64>().ok())
+}
+
+fn compare_runtime_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a_components = version_components(a);
+    let a_prefix = (a_components.next(), a_components.next());
+    let mut b_components = version_components(b);
+    let b_prefix = (b_components.next(), b_components.next());
+
+    match (a_prefix, b_prefix) {
+        ((Some(a_major), Some(a_minor)), (Some(b_major), Some(b_minor))) => (a_major, a_minor)
+            .cmp(&(b_major, b_minor))
+            .then_with(|| a_components.cmp(b_components)),
+        ((Some(_), Some(_)), _) => std::cmp::Ordering::Greater,
+        (_, (Some(_), Some(_))) => std::cmp::Ordering::Less,
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+fn cached_runtime_version(
+    cache: &OnceLock<Option<String>>,
+    detect: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    cache.get_or_init(detect).clone()
+}
+
 /// Inspect the host Windows system for WebView2 Runtime installation without requiring COM initialization.
 /// Evaluates system and per-user paths, sorting multiple installed directories to reliably return the latest active version.
+/// The result is cached for this process; install or update WebView2, then restart Pip to refresh detection.
 pub fn detect_webview2_runtime() -> Option<String> {
+    cached_runtime_version(&WEBVIEW2_RUNTIME_VERSION, detect_webview2_runtime_uncached)
+}
+
+fn detect_webview2_runtime_uncached() -> Option<String> {
     let mut candidates: Vec<String> = Vec::new();
 
     let mut search_paths: Vec<PathBuf> = Vec::new();
@@ -102,11 +137,7 @@ pub fn detect_webview2_runtime() -> Option<String> {
         }
     }
 
-    candidates.sort_by(|a, b| {
-        let pa = parse_version_tuple(a).unwrap_or_default();
-        let pb = parse_version_tuple(b).unwrap_or_default();
-        pa.cmp(&pb)
-    });
+    candidates.sort_by(|a, b| compare_runtime_versions(a, b));
 
     candidates.pop()
 }
@@ -169,13 +200,54 @@ mod tests {
         assert!(parse_version_tuple(v1).is_some());
 
         let mut list = vec![v1.to_string(), v3.to_string(), v2.to_string()];
-        list.sort_by(|a, b| {
-            let pa = parse_version_tuple(a).unwrap_or_default();
-            let pb = parse_version_tuple(b).unwrap_or_default();
-            pa.cmp(&pb)
-        });
+        list.sort_by(|a, b| compare_runtime_versions(a, b));
 
         assert_eq!(list, vec![v1.to_string(), v2.to_string(), v3.to_string()]);
         assert_eq!(list.pop(), Some("154.0.100.1".to_string()));
+    }
+
+    #[test]
+    fn runtime_version_comparison_preserves_numeric_and_invalid_ordering() {
+        assert_eq!(
+            compare_runtime_versions("153.0.9.99", "153.0.10.1"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_runtime_versions("153.0.10.1", "153.0.10"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_runtime_versions("SetupMetrics", "NotAVersion"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare_runtime_versions("153.0.10.1", "SetupMetrics"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn runtime_detection_cache_only_runs_detector_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cache = OnceLock::new();
+        let detect_calls = AtomicUsize::new(0);
+        let detect = || {
+            detect_calls.fetch_add(1, Ordering::Relaxed);
+            Some("153.0.4234.48".to_string())
+        };
+
+        assert_eq!(
+            cached_runtime_version(&cache, detect),
+            Some("153.0.4234.48".to_string())
+        );
+        assert_eq!(
+            cached_runtime_version(&cache, || {
+                detect_calls.fetch_add(1, Ordering::Relaxed);
+                Some("154.0.100.1".to_string())
+            }),
+            Some("153.0.4234.48".to_string())
+        );
+        assert_eq!(detect_calls.load(Ordering::Relaxed), 1);
     }
 }

@@ -16,12 +16,15 @@ pub const PAGE_TRANSLATION_SCRIPT: &str = r#"(() => {
   };
   const hide = () => document.getElementById(overlayId)?.remove();
   const restore = state => {
-    for (const item of state.originals) {
-      if (item.node.isConnected && item.node.textContent === item.translated) item.node.textContent = item.original;
+    try {
+      for (const item of state.originals) {
+        if (item.node.isConnected && item.node.textContent === item.translated) item.node.textContent = item.original;
+      }
+    } finally {
+      try { state.session?.destroy?.(); } catch (_) {}
+      if (window.__pipTranslation === state) delete window.__pipTranslation;
+      hide();
     }
-    state.session?.destroy?.();
-    delete window.__pipTranslation;
-    hide();
   };
 
   const current = window.__pipTranslation;
@@ -73,8 +76,12 @@ pub const PAGE_TRANSLATION_SCRIPT: &str = r#"(() => {
     try {
       const sample = nodes.slice(0, 80).map(item => item.original).join(' ').slice(0, 4000);
       const detectorSession = await detector.create();
-      const detected = await detectorSession.detect(sample);
-      detectorSession.destroy?.();
+      let detected;
+      try {
+        detected = await detectorSession.detect(sample);
+      } finally {
+        detectorSession.destroy?.();
+      }
       const source = detected?.[0]?.detectedLanguage?.split('-')[0];
       if (!source) throw new Error('Không nhận diện được ngôn ngữ nguồn.');
       if (source === 'vi') {
@@ -101,22 +108,30 @@ pub const PAGE_TRANSLATION_SCRIPT: &str = r#"(() => {
       state.session = session;
       let cursor = 0;
       let translatedCount = 0;
+      let failure = null;
       const worker = async () => {
-        while (cursor < nodes.length) {
-          const item = nodes[cursor++];
-          const match = item.original.match(/^(\s*)([\s\S]*?)(\s*)$/);
-          const translated = match[1] + await session.translate(match[2]) + match[3];
-          if (!item.node.isConnected || item.node.nodeValue !== item.original) continue;
-          item.node.nodeValue = translated;
-          item.translated = translated;
-          state.originals.push(item);
-          translatedCount++;
-          if (translatedCount % 8 === 0 || translatedCount === nodes.length) {
-            show(`Đang dịch trang sang tiếng Việt… ${translatedCount}/${nodes.length}`);
+        try {
+          while (!failure && cursor < nodes.length) {
+            const item = nodes[cursor++];
+            const match = item.original.match(/^(\s*)([\s\S]*?)(\s*)$/);
+            const translatedText = await session.translate(match[2]);
+            if (failure) return;
+            const translated = match[1] + translatedText + match[3];
+            if (!item.node.isConnected || item.node.nodeValue !== item.original) continue;
+            item.node.nodeValue = translated;
+            item.translated = translated;
+            state.originals.push(item);
+            translatedCount++;
+            if (translatedCount % 8 === 0 || translatedCount === nodes.length) {
+              show(`Đang dịch trang sang tiếng Việt… ${translatedCount}/${nodes.length}`);
+            }
           }
+        } catch (error) {
+          failure ??= error;
         }
       };
       await Promise.all(Array.from({length:Math.min(4,nodes.length)}, worker));
+      if (failure) throw failure;
       state.status = 'done';
       show(`Đã dịch ${translatedCount} đoạn trên thiết bị. Chọn “Dịch trang” lần nữa để khôi phục.`);
     } catch (error) {
@@ -137,5 +152,7 @@ mod tests {
         assert!(PAGE_TRANSLATION_SCRIPT.contains("targetLanguage:'vi'"));
         assert!(PAGE_TRANSLATION_SCRIPT.contains("item.node.textContent === item.translated"));
         assert!(PAGE_TRANSLATION_SCRIPT.contains("không gửi nội dung sang dịch vụ dịch bên ngoài"));
+        assert!(PAGE_TRANSLATION_SCRIPT.contains("if (failure) return"));
+        assert!(PAGE_TRANSLATION_SCRIPT.contains("detectorSession.destroy?.()"));
     }
 }

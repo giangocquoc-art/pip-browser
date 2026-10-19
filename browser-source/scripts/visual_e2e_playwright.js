@@ -66,6 +66,12 @@ async function main() {
   async function loadSurface(name) {
     await page.goto('about:blank'); // Each native surface owns a separate JavaScript realm.
     await page.setContent(html(name));
+    // setContent stays in about:blank, where context init scripts do not run. Install
+    // the native IPC stub explicitly in each rendered test realm.
+    await page.evaluate(() => {
+      window.__pipQaMessages = [];
+      window.ipc = { postMessage(raw) { window.__pipQaMessages.push(JSON.parse(raw)); } };
+    });
     check(await page.evaluate(() => [...document.querySelectorAll('*')].every(el => { const style=getComputedStyle(el); return style.animationName==='none' && style.transitionDuration==='0s' && style.backdropFilter==='none'; })), `Motion or blur remains in ${name}`);
   }
   async function auditAccessibility(name) {
@@ -88,6 +94,17 @@ async function main() {
   }
 
   await loadSurface('home');
+  await page.evaluate(() => window.__renderLibrary({
+    bookmarks: [],
+    history: [],
+    private: false,
+    shortcuts: [
+      { title: 'Google', url: 'https://www.google.com/' },
+      { title: 'YouTube', url: 'https://www.youtube.com/' },
+      { title: 'GitHub', url: 'https://github.com/' },
+      { title: 'Psharehub', url: 'https://psharehub.com/' },
+    ],
+  }));
   check(await page.locator('#homeNote').count() === 0, 'Redundant new-tab footnote should not be rendered');
   const homeText = await page.locator('body').innerText();
   check(!homeText.includes('Trình duyệt của bạn, theo cách của bạn'), 'Redundant new-tab slogan should not be rendered');
@@ -150,6 +167,29 @@ async function main() {
   await page.screenshot({path:path.join(outputDir,'private-home.png'),fullPage:true});
   await auditAccessibility('private-home');
 
+  await page.setViewportSize({ width: 1280, height: 440 });
+  await loadSurface('chrome-profile-menu');
+  await page.evaluate(() => {
+    window.__shellUpdate({ tabs: [
+      { id: 1, title: 'Broken favicon fixture', url: 'https://example.com/', favicon_uri: 'data:image/png;base64,broken' },
+      { id: 2, title: 'Pip tab search fixture', url: 'https://youtube.com/watch?v=test', favicon_uri: '' },
+    ], active_tab_id: 1 });
+  });
+  await page.waitForFunction(() => document.querySelector('.tab-favicon')?.src.startsWith('data:image/svg+xml,'));
+  check(await page.locator('.tab-favicon').first().evaluate(el => el.complete && el.naturalWidth > 0), 'Broken favicon has no valid replacement');
+  await page.evaluate(() => window.openTabSearch());
+  check(await page.locator('#tabSearchDialog').evaluate(dialog => dialog.open), 'Tab search did not open as a modal dialog');
+  await page.locator('#tabSearchInput').fill('youtube');
+  check(await page.locator('#tabSearchResults [role="option"]').count() === 1, 'Tab search did not filter by URL');
+  check((await page.locator('#tabSearchResults').innerText()).includes('Pip tab search fixture'), 'Tab search result title is missing');
+  await page.keyboard.press('Enter');
+  check(!(await page.locator('#tabSearchDialog').evaluate(dialog => dialog.open)), 'Selecting a tab did not close tab search');
+  check((await ipc(page)).some(item => item.action === 'SwitchTab' && item.payload.id === 2), 'Tab search did not switch to the selected tab');
+  await auditAccessibility('chrome-profile');
+  await page.locator('.tab.active').focus();
+  await page.keyboard.press('Delete');
+  check((await ipc(page)).some(item => item.action === 'CloseTab' && item.payload.id === 1), 'Focused tab cannot be closed with the keyboard');
+
   await page.setViewportSize({ width: 1280, height: 800 });
   await loadSurface('settings');
   await page.locator('#searchEngineSelect').selectOption('bing');
@@ -183,24 +223,12 @@ async function main() {
   await auditAccessibility('settings-dark');
   await page.emulateMedia({ colorScheme: 'light' });
 
-  await page.setViewportSize({ width: 1280, height: 440 });
-  await loadSurface('chrome-profile-menu');
-  await page.evaluate(() => {
-    window.__shellUpdate({ tabs: [{ id: 1, title: 'Broken favicon fixture', url: 'https://example.com/', favicon_uri: 'data:image/png;base64,broken' }], active_tab_id: 1 });
-  });
-  await page.waitForFunction(() => document.querySelector('.tab-favicon')?.src.startsWith('data:image/svg+xml,'));
-  check(await page.locator('.tab-favicon').evaluate(el => el.complete && el.naturalWidth > 0), 'Broken favicon has no valid replacement');
-
-  await auditAccessibility('chrome-profile');
-  await page.locator('.tab.active').focus();
-  await page.keyboard.press('Delete');
-  check((await ipc(page)).some(item => item.action === 'CloseTab' && item.payload.id === 1), 'Focused tab cannot be closed with the keyboard');
-
   await page.setViewportSize({ width: 320, height: 760 });
   await loadSurface('sidebar');
   await page.locator('#tabShortcuts').click();
   check(await page.locator('#viewShortcuts.active').count() === 1, 'Shortcut reference tab did not open');
   check(await page.locator('#viewShortcuts').getByText('Ctrl+H').count() === 1, 'History shortcut is missing from the menu help');
+  check(await page.locator('#viewShortcuts').getByText('Ctrl+Shift+K').count() === 1, 'Tab search shortcut is missing from the menu help');
   check(await page.locator('.action-item').filter({ hasText: 'Lịch sử' }).getByText('Ctrl+H').count() === 1, 'History shortcut is missing from the browser menu');
   check(await page.locator('.action-item').filter({ hasText: 'Dấu trang' }).getByText('Ctrl+Shift+O').count() === 1, 'Bookmarks shortcut is missing from the browser menu');
   await page.locator('#tabSecurity').click();

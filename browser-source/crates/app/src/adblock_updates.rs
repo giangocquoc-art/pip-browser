@@ -126,8 +126,13 @@ fn download(client: &reqwest::blocking::Client, url: &str, name: &str) -> Result
     String::from_utf8(bytes).map_err(|_| format!("Danh sách {name} không phải UTF-8."))
 }
 
-pub fn fetch_and_store(directory: PathBuf) -> Result<UpdateSummary, String> {
-    let client = reqwest::blocking::Client::builder()
+pub fn fetch_and_store(
+    directory: PathBuf,
+    proxy_port: Option<u16>,
+) -> Result<UpdateSummary, String> {
+    let builder =
+        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    let client = builder
         .timeout(std::time::Duration::from_secs(25))
         .user_agent(concat!("Pip-Browser/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -212,7 +217,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("pip-filter-update-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
-        let result = fetch_and_store(directory.clone());
+        let result = fetch_and_store(directory.clone(), None);
         assert!(result.is_ok(), "{result:?}");
         let cached = load_cached(&directory).expect("validated cache");
         assert_eq!(cached.validate().unwrap().list_count, 4);

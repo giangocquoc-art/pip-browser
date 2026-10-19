@@ -6,6 +6,7 @@ use adblock::{
     Engine,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use evergreen_core::settings::AdblockMode;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -23,16 +24,52 @@ pub struct Blocker {
     engine: Engine,
     popup_engine: Engine,
     gambling_domains: GamblingDomains,
+    mode: AdblockMode,
     disabled: HashSet<String>,
     exceptions_path: PathBuf,
     pub blocked: u64,
     pub redirected: u64,
     bootstraps: HashMap<String, Weak<RefCell<Bootstrap>>>,
+    explicit_navigation_tickets: HashMap<(u64, String, String), std::time::Instant>,
 }
+
+const EXPLICIT_NAVIGATION_TICKET_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) enum FilterAction {
     Block,
     Redirect(String),
+}
+
+/// Ephemeral provenance retained only for popup-created `about:blank` tabs.
+/// It is consumed after the first successful HTTP(S) document commit.
+#[derive(Default)]
+pub(crate) struct PopupNavigationContext {
+    opener_url: Option<String>,
+}
+
+impl PopupNavigationContext {
+    pub(crate) fn from_opener(opener_url: Option<String>) -> Self {
+        Self { opener_url }
+    }
+
+    pub(crate) fn opener_for_source(&self, source: &str) -> Option<String> {
+        (source == "about:blank")
+            .then(|| self.opener_url.clone())
+            .flatten()
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        self.opener_url.is_some()
+    }
+
+    pub(crate) fn navigation_committed(&mut self, source: &str) {
+        let is_http_page = source.parse::<wry::http::Uri>().ok().is_some_and(|uri| {
+            matches!(uri.scheme_str(), Some("http" | "https")) && uri.host().is_some()
+        });
+        if is_http_page {
+            self.opener_url = None;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -40,33 +77,26 @@ struct Bootstrap {
     id: Option<String>,
 }
 
-const GAMBLING_DOMAIN_SOURCE: &str = include_str!("../filters/gambling-hagezi-mini-domains.txt");
+#[cfg(test)]
+const GAMBLING_DOMAIN_INPUT: &str = include_str!("../filters/gambling-hagezi-mini-domains.txt");
+const GAMBLING_DOMAIN_SOURCE: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/gambling-domains.txt"));
+include!(concat!(env!("OUT_DIR"), "/gambling-domain-offsets.rs"));
 
 struct GamblingDomains {
-    offsets: Vec<u32>,
+    offsets: &'static [u32],
 }
 
 impl GamblingDomains {
     fn bundled() -> Self {
-        let mut offsets = Vec::new();
-        let mut offset = 0usize;
-        for line in GAMBLING_DOMAIN_SOURCE.split_inclusive('\n') {
-            let domain = line.trim();
-            if !domain.is_empty() && !domain.starts_with('#') {
-                offsets.push(u32::try_from(offset).expect("bundled filter list is under 4 GiB"));
-            }
-            offset += line.len();
+        Self {
+            offsets: &GAMBLING_DOMAIN_OFFSETS,
         }
-        offsets.sort_unstable_by(|left, right| domain_at(*left).cmp(domain_at(*right)));
-        offsets.dedup_by(|left, right| domain_at(*left) == domain_at(*right));
-        Self { offsets }
     }
 
     #[cfg(test)]
     fn empty() -> Self {
-        Self {
-            offsets: Vec::new(),
-        }
+        Self { offsets: &[] }
     }
 }
 
@@ -84,6 +114,122 @@ fn site(url: &str) -> Option<String> {
         return None;
     }
     Some(uri.host()?.to_ascii_lowercase())
+}
+
+/// WebResourceRequested fires once for every page resource, while WebView2
+/// reports the same top-level URL for the whole document. Keep its parsed host
+/// across those callbacks to avoid reparsing and allocating it for every image,
+/// script, and style request.
+#[derive(Default)]
+struct CachedTopSite {
+    url: String,
+    host: Option<String>,
+    registrable_domain: Option<String>,
+    registrable_domain_checked: bool,
+    #[cfg(test)]
+    parses: usize,
+}
+
+impl CachedTopSite {
+    fn update_url(&mut self, url: &str) {
+        if self.url != url {
+            self.url.clear();
+            self.url.push_str(url);
+            self.host = site(url);
+            self.registrable_domain = None;
+            self.registrable_domain_checked = false;
+            #[cfg(test)]
+            {
+                self.parses += 1;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn get(&mut self, url: &str) -> Option<&str> {
+        self.update_url(url);
+        self.host.as_deref()
+    }
+
+    fn get_with_registrable_domain(
+        &mut self,
+        url: &str,
+        include_domain: bool,
+    ) -> (Option<&str>, Option<&str>) {
+        self.update_url(url);
+        if include_domain && !self.registrable_domain_checked {
+            self.registrable_domain = registrable_domain(&self.url);
+            self.registrable_domain_checked = true;
+        }
+        (
+            self.host.as_deref(),
+            include_domain
+                .then(|| self.registrable_domain.as_deref())
+                .flatten(),
+        )
+    }
+
+    #[cfg(test)]
+    fn registrable_domain(&mut self) -> Option<&str> {
+        if !self.registrable_domain_checked {
+            self.registrable_domain = registrable_domain(&self.url);
+            self.registrable_domain_checked = true;
+        }
+        self.registrable_domain.as_deref()
+    }
+}
+
+fn is_http_site(url: &str) -> bool {
+    url.parse::<wry::http::Uri>().ok().is_some_and(|uri| {
+        matches!(uri.scheme_str(), Some("http" | "https")) && uri.host().is_some()
+    })
+}
+
+fn registrable_domain(url: &str) -> Option<String> {
+    adblock::url_parser::parse_url(url)
+        .map(|parsed| parsed.domain().trim_end_matches('.').to_ascii_lowercase())
+}
+
+#[cfg(test)]
+fn hosts_share_domain(first: &str, second: &str) -> bool {
+    fn registrable_domain_for_host(host: &str) -> Option<String> {
+        let host = host.trim_end_matches('.');
+        if host.is_empty() {
+            return None;
+        }
+        registrable_domain(&format!("https://{host}/"))
+    }
+
+    match (
+        registrable_domain_for_host(first),
+        registrable_domain_for_host(second),
+    ) {
+        (Some(first), Some(second)) => first == second,
+        _ => first
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case(second.trim_end_matches('.')),
+    }
+}
+
+fn is_video_stream_request(url: &str, kind: &str) -> bool {
+    if kind == "media" {
+        return true;
+    }
+    if kind != "xmlhttprequest" {
+        return false;
+    }
+    let Ok(uri) = url.parse::<wry::http::Uri>() else {
+        return false;
+    };
+    let path = uri.path().as_bytes();
+    const SEGMENT_EXTENSIONS: [&[u8]; 11] = [
+        b".m3u8", b".m4s", b".ts", b".mpd", b".mp4", b".m4v", b".webm", b".m4a", b".aac", b".cmfv",
+        b".cmfa",
+    ];
+    SEGMENT_EXTENSIONS.iter().any(|extension| {
+        path.len() >= extension.len()
+            && path[path.len() - extension.len()..].eq_ignore_ascii_case(extension)
+    })
 }
 
 fn looks_like_gambling_host(host: &str) -> bool {
@@ -150,6 +296,12 @@ fn looks_like_gambling_host(host: &str) -> bool {
 }
 
 fn matches_gambling_domain(host: &str, domains: &GamblingDomains) -> bool {
+    // A fully qualified DNS name may include its terminal root dot. It is the
+    // same host for navigation purposes, so normalize it before suffix lookup.
+    let host = host.trim_end_matches('.');
+    if host.is_empty() {
+        return false;
+    }
     let mut start = 0;
     loop {
         if domains
@@ -179,41 +331,62 @@ fn engine(rules: &str) -> Engine {
 }
 
 fn popup_rules(list: &str) -> String {
-    list.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
-                return None;
-            }
-            let (pattern, options) = line.split_once('$')?;
-            let options = options.split(',').map(str::trim).collect::<Vec<_>>();
-            if !options
-                .iter()
-                .any(|option| matches!(*option, "popup" | "popunder"))
-            {
-                return None;
-            }
-            let remaining = options
-                .into_iter()
-                // Every request reaching this engine is a popup document, so
-                // `$doc` is implicit and must not be checked against `other`.
-                .filter(|option| !matches!(*option, "popup" | "popunder" | "doc" | "document"))
-                .collect::<Vec<_>>();
-            if remaining.is_empty() {
-                Some(pattern.to_string())
-            } else {
-                Some(format!("{pattern}${}", remaining.join(",")))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut output = String::new();
+    for line in list.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('!') || line.starts_with('[') {
+            continue;
+        }
+        let Some((pattern, options)) = line.split_once('$') else {
+            continue;
+        };
+        let options = options.split(',').map(str::trim).collect::<Vec<_>>();
+        if !options
+            .iter()
+            .any(|option| matches!(*option, "popup" | "popunder"))
+        {
+            continue;
+        }
+        let remaining = options
+            .into_iter()
+            // Every request reaching this engine is a popup document, so
+            // `$doc` is implicit and must not be checked against `other`.
+            .filter(|option| !matches!(*option, "popup" | "popunder" | "doc" | "document"))
+            .collect::<Vec<_>>();
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(pattern);
+        if !remaining.is_empty() {
+            output.push('$');
+            output.push_str(&remaining.join(","));
+        }
+    }
+    output
+}
+
+fn popup_engine_from_sources<'a>(sources: impl IntoIterator<Item = &'a str>) -> Engine {
+    let mut filters = FilterSet::new(false);
+    for source in sources {
+        let rules = popup_rules(source);
+        if !rules.is_empty() {
+            filters.add_filter_list(
+                rules,
+                ParseOptions {
+                    rule_types: adblock::lists::RuleTypes::All,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    Engine::new_with_filter_set(filters)
 }
 
 impl Blocker {
     pub fn enabled(&self, url: &str) -> Option<bool> {
         Some(!self.disabled.contains(&site(url)?))
     }
-    pub fn load(directory: PathBuf) -> Self {
+    pub fn load(directory: PathBuf, mode: AdblockMode) -> Self {
         let exceptions_path = directory.join("adblock-exceptions.json");
         let disabled = std::fs::read(&exceptions_path)
             .ok()
@@ -268,37 +441,29 @@ impl Blocker {
         // Translate those options into a dedicated engine queried only for
         // WebView2 popup destinations. Use bundled popup rules, the dedicated
         // HaGeZi popup ads domain list, and reviewed Pip overrides.
-        let popup_rules = [
-            popup_rules(easylist),
-            popup_rules(
-                updated_lists
-                    .as_ref()
-                    .map(|lists| lists.ublock_filters.as_str())
-                    .unwrap_or(include_str!(
-                        "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
-                    )),
-            ),
-            popup_rules(
-                updated_lists
-                    .as_ref()
-                    .map(|lists| lists.ublock_quick_fixes.as_str())
-                    .unwrap_or(include_str!(
-                        "../filters/upstream/uBlockOrigin/uAssets/filters/quick-fixes.txt"
-                    )),
-            ),
-            popup_rules(
-                updated_lists
-                    .as_ref()
-                    .map(|lists| lists.ublock_unbreak.as_str())
-                    .unwrap_or(include_str!(
-                        "../filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
-                    )),
-            ),
-            include_str!("../filters/popupads-hagezi.txt").to_owned(),
-            include_str!("../filters/popup-overrides.txt").to_owned(),
-        ]
-        .join("\n");
-        let popup_engine = engine(&popup_rules);
+        let popup_engine = popup_engine_from_sources([
+            easylist,
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_filters.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/filters.txt"
+                )),
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_quick_fixes.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/quick-fixes.txt"
+                )),
+            updated_lists
+                .as_ref()
+                .map(|lists| lists.ublock_unbreak.as_str())
+                .unwrap_or(include_str!(
+                    "../filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
+                )),
+            include_str!("../filters/popupads-hagezi.txt"),
+            include_str!("../filters/popup-overrides.txt"),
+        ]);
         // Only pinned, reviewed upstream lists can invoke trusted scriptlets.
         filters.add_filter_list(
             include_str!("../filters/youtube.txt").to_owned(),
@@ -351,12 +516,18 @@ impl Blocker {
             engine,
             popup_engine,
             gambling_domains: GamblingDomains::bundled(),
+            mode,
             disabled,
             exceptions_path,
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         }
+    }
+
+    pub fn set_mode(&mut self, mode: AdblockMode) {
+        self.mode = mode;
     }
 
     pub fn toggle(&mut self, url: &str) -> Result<Option<bool>, Box<dyn std::error::Error>> {
@@ -391,7 +562,8 @@ impl Blocker {
         Ok(Some(was_enabled))
     }
 
-    pub(crate) fn filter_action(
+    #[cfg(test)]
+    fn filter_action(
         &self,
         url: &str,
         top: &str,
@@ -400,12 +572,51 @@ impl Blocker {
         method: &str,
     ) -> Option<FilterAction> {
         let host = site(top)?;
-        if self.disabled.contains(&host) || site(source).is_none() {
+        if self.disabled.contains(&host) {
+            return None;
+        }
+        self.filter_action_with_site_context(
+            url,
+            source,
+            kind,
+            method,
+            &host,
+            registrable_domain(top).as_deref(),
+            is_http_site(source),
+        )
+    }
+
+    fn filter_action_with_site_context(
+        &self,
+        url: &str,
+        source: &str,
+        kind: &str,
+        method: &str,
+        top_host: &str,
+        top_registrable_domain: Option<&str>,
+        source_is_http_site: bool,
+    ) -> Option<FilterAction> {
+        if self.disabled.contains(top_host) || !source_is_http_site {
             return None;
         }
         // Never blank the top-level page. Media is classified by WebView2, not its extension.
         if kind == "document" {
             return None;
+        }
+        if self.mode == AdblockMode::VideoFirst && is_video_stream_request(url, kind) {
+            return None;
+        }
+        if self.mode == AdblockMode::Strong {
+            let request_host = site(url)?;
+            let request_host = request_host.trim_end_matches('.');
+            let top_host = top_host.trim_end_matches('.');
+            let third_party = match (registrable_domain(url), top_registrable_domain) {
+                (Some(request_domain), Some(top_domain)) => request_domain != top_domain,
+                _ => !request_host.eq_ignore_ascii_case(top_host),
+            };
+            if third_party && matches_gambling_domain(request_host, &self.gambling_domains) {
+                return Some(FilterAction::Block);
+            }
         }
         let request = Request::new(url, source, kind, method).ok()?;
         let result = self.engine.check_network_request(&request);
@@ -416,6 +627,33 @@ impl Blocker {
             Some(resource) => FilterAction::Redirect(resource),
             None => FilterAction::Block,
         })
+    }
+
+    /// Exempt the exact one-shot top-level navigation the user submitted through Pip's
+    /// address bar or a browser-owned link command. WebView2 marks API-triggered navigations
+    /// as user initiated, so this explicit provenance is narrower and reliable.
+    pub(crate) fn issue_explicit_navigation_ticket(
+        &mut self,
+        tab_id: u64,
+        target: &str,
+        source: &str,
+    ) {
+        let now = std::time::Instant::now();
+        self.explicit_navigation_tickets
+            .retain(|_, issued| now.duration_since(*issued) < EXPLICIT_NAVIGATION_TICKET_TTL);
+        self.explicit_navigation_tickets
+            .insert((tab_id, target.to_owned(), source.to_owned()), now);
+    }
+
+    pub(crate) fn consume_explicit_navigation_ticket(
+        &mut self,
+        tab_id: u64,
+        target: &str,
+        source: &str,
+    ) -> bool {
+        self.explicit_navigation_tickets
+            .remove(&(tab_id, target.to_owned(), source.to_owned()))
+            .is_some_and(|issued| issued.elapsed() < EXPLICIT_NAVIGATION_TICKET_TTL)
     }
 
     #[cfg(test)]
@@ -451,6 +689,93 @@ impl Blocker {
         // Use `other` so generic network rules apply; adblock-rust separates
         // document navigations from ordinary filterable resources.
         Request::new(url, source, "other", "GET")
+            .ok()
+            .is_some_and(|request| {
+                self.popup_engine
+                    .check_network_request(&request)
+                    .should_block()
+            })
+    }
+
+    /// Catch known ad/popup destinations that redirect the current tab instead of opening
+    /// a WebView2 NewWindowRequested target. Keep this narrower than popup handling: only
+    /// HTTP(S) cross-site navigations from an HTTP(S) page are eligible.
+    pub(crate) fn should_block_navigation(&self, url: &str, source: &str) -> bool {
+        self.should_block_navigation_with_popup_context(url, source, None)
+    }
+
+    /// `window.open('about:blank')` can navigate after NewWindowRequested has
+    /// already created a tab. In that one case, retain the opener as the
+    /// first-party context until the blank tab commits its first HTTP(S) page.
+    pub(crate) fn should_block_navigation_with_popup_context(
+        &self,
+        url: &str,
+        source: &str,
+        popup_opener: Option<&str>,
+    ) -> bool {
+        let source_url = if source == "about:blank" {
+            popup_opener.unwrap_or(source)
+        } else {
+            source
+        };
+        let (Some(destination), Some(source_host)) = (site(url), site(source_url)) else {
+            return false;
+        };
+        if destination == source_host || self.disabled.contains(&source_host) {
+            return false;
+        }
+        if looks_like_gambling_host(&destination)
+            || matches_gambling_domain(&destination, &self.gambling_domains)
+            || looks_like_gambling_popup_url(url)
+        {
+            return true;
+        }
+        let popup_rule_matches = Request::new(url, source_url, "other", "GET")
+            .ok()
+            .is_some_and(|request| {
+                self.popup_engine
+                    .check_network_request(&request)
+                    .should_block()
+            });
+        let document_rule_matches = Request::new(url, source_url, "document", "GET")
+            .ok()
+            .is_some_and(|request| self.engine.check_network_request(&request).should_block());
+        popup_rule_matches || document_rule_matches
+    }
+
+    /// Apply the same suspicious cross-site destination filter to iframe
+    /// navigations, using the containing page as the first-party context.
+    pub(crate) fn should_block_frame_navigation(&self, url: &str, top_level: &str) -> bool {
+        self.should_block_frame_navigation_with_popup_context(url, top_level, None)
+    }
+
+    /// A popup-created blank document inherits the opener's site context. Apply
+    /// it to its frames only while that popup remains at about:blank and the
+    /// ephemeral opener context has not yet been consumed by an HTTP(S) commit.
+    pub(crate) fn should_block_frame_navigation_with_popup_context(
+        &self,
+        url: &str,
+        top_level: &str,
+        popup_opener: Option<&str>,
+    ) -> bool {
+        let source_url = if top_level == "about:blank" {
+            popup_opener.unwrap_or(top_level)
+        } else {
+            top_level
+        };
+        let (Some(destination), Some(source_host)) = (site(url), site(source_url)) else {
+            return false;
+        };
+        if destination == source_host || self.disabled.contains(&source_host) {
+            return false;
+        }
+        if looks_like_gambling_host(&destination)
+            || matches_gambling_domain(&destination, &self.gambling_domains)
+            || looks_like_gambling_popup_url(url)
+        {
+            return true;
+        }
+        Request::new(url, source_url, "other", "GET")
             .ok()
             .is_some_and(|request| {
                 self.popup_engine
@@ -542,7 +867,7 @@ if(css.length){{const sheet=new CSSStyleSheet();for(const selector of css){{try{
 const test=(value,pattern)=>{{value=String(value??'').slice(0,2048);pattern=String(pattern??'').trim();if(!pattern)return false;if(pattern[0]==='/'){{const end=pattern.lastIndexOf('/');if(end>0){{try{{return new RegExp(pattern.slice(1,end),pattern.slice(end+1).replace(/[^dgimsuvy]/g,'')).test(value)}}catch(_){{return false}}}}}}return value.toLowerCase().includes(pattern.toLowerCase())}};
 const matchArg=(value,arg)=>{{arg=String(arg??'');const equal=arg.indexOf('=');const name=(equal<0?arg:arg.slice(0,equal)).trim();if(!name)return false;const actual=value.getAttribute(name);if(actual===null)return false;return equal<0||test(actual,arg.slice(equal+1).trim())}};
 const apply=()=>{{let visited=0;for(const rule of rules){{if(++visited>128)break;let current=[];for(const op of rule.selector||[]){{const type=op.type,arg=op.arg;if(type==='css-selector'){{try{{current=Array.from(document.querySelectorAll(arg)).slice(0,300)}}catch(_){{current=[]}}continue}}if(type==='xpath'){{try{{const next=[];for(const node of current){{const result=document.evaluate(arg,node,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);for(let i=0;i<Math.min(result.snapshotLength,100);i++){{const item=result.snapshotItem(i);if(item instanceof Element)next.push(item)}}}}current=next.slice(0,300)}}catch(_){{current=[]}}continue}}current=current.filter(node=>{{try{{switch(type){{case'has-text':return test(node.textContent,arg);case'matches-attr':return matchArg(node,arg);case'matches-css':{{const [property,...rest]=String(arg).split(':');return test(getComputedStyle(node).getPropertyValue(property.trim()),rest.join(':'))}}case'matches-css-before':case'matches-css-after':{{const [property,...rest]=String(arg).split(':');return test(getComputedStyle(node,type.endsWith('before')?'::before':'::after').getPropertyValue(property.trim()),rest.join(':'))}}case'matches-path':return test(location.pathname,arg);case'min-text-length':return (node.textContent||'').trim().length>=Math.min(10000,Math.max(0,Number(arg)||0));case'upward':{{if(/^\d+$/.test(String(arg))){{let parent=node;for(let i=0;i<Math.min(20,Number(arg));i++)parent=parent?.parentElement;return !!parent}}return !!node.closest(arg)}}default:return false}}}}catch(_){{return false}}}})}}if(!current.length)continue;const action=rule.action;if(!action){{for(const node of current)node.style.setProperty('display','none','important');continue}}for(const node of current){{try{{switch(action.type){{case'remove':node.remove();break;case'style':node.style.cssText+=';'+action.arg;break;case'remove-attr':node.removeAttribute(action.arg);break;case'remove-class':node.classList.remove(action.arg);break}}}}catch(_){{}}}}}}}};
-apply();let runs=0,timer=0;const observer=new MutationObserver(records=>{{if(runs>=16||!records.some(record=>record.addedNodes.length))return;clearTimeout(timer);timer=setTimeout(()=>{{runs++;apply()}},300)}});if(document.documentElement)observer.observe(document.documentElement,{{childList:true,subtree:true}});return rules.length;
+apply();let runs=0,timer=0;const observer=new MutationObserver(records=>{{if(runs>=16){{observer.disconnect();clearTimeout(timer);return}}if(!records.some(record=>record.addedNodes.length))return;clearTimeout(timer);timer=setTimeout(()=>{{runs++;apply();if(runs>=16)observer.disconnect()}},300)}});if(document.documentElement)observer.observe(document.documentElement,{{childList:true,subtree:true}});return rules.length;
 }})();"#,
     )
 }
@@ -565,41 +890,105 @@ fn looks_like_gambling_popup_url(url: &str) -> bool {
         return false;
     };
     let path_and_query = uri.path_and_query().map_or("", |value| value.as_str());
-    let normalized_path = path_and_query.to_ascii_lowercase();
-    let tokens = normalized_path
+    // Redirectors often percent-encode a destination in one or more query
+    // parameters. Inspect at most two decoded layers, and only in this
+    // popup/navigation heuristic; regular page content and requests are not
+    // affected. The bound keeps deliberately huge URLs cheap to inspect.
+    let mut candidate = path_and_query.as_bytes()[..path_and_query.len().min(8192)].to_vec();
+    for _ in 0..=2 {
+        if gambling_keyword_in_url_bytes(&candidate) {
+            return true;
+        }
+        let decoded = decode_percent_encoded_ascii(&candidate);
+        if decoded == candidate {
+            break;
+        }
+        candidate = decoded;
+    }
+    false
+}
+
+fn decode_percent_encoded_ascii(input: &[u8]) -> Vec<u8> {
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'%' && index + 2 < input.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(input[index + 1]), hex_value(input[index + 2]))
+            {
+                let value = high * 16 + low;
+                // Gambling terms are ASCII. Preserve escaped UTF-8 bytes so
+                // decoding never creates invalid text for unrelated URLs.
+                if value.is_ascii() {
+                    decoded.push(value);
+                } else {
+                    decoded.extend_from_slice(&input[index..index + 3]);
+                }
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(input[index]);
+        index += 1;
+    }
+    decoded
+}
+
+fn gambling_keyword_in_url_bytes(path_and_query: &[u8]) -> bool {
+    let normalized_path = String::from_utf8_lossy(path_and_query).to_ascii_lowercase();
+    normalized_path
         .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty());
-    tokens.into_iter().any(|token| {
-        [
-            "casino",
-            "gambling",
-            "poker",
-            "slot",
-            "slots",
-            "togel",
-            "judi",
-            "taruhan",
-            "baccarat",
-            "jackpot",
-            "sportsbook",
-            "bookmaker",
-            "betting",
-            "taixiu",
-            "xocdia",
-            "xoso",
-            "blackjack",
-            "roulette",
-            "lottery",
-            "lotto",
-            "keno",
-            "nhacai",
-            "nohu",
-            "gamebai",
-            "cacuoc",
-        ]
-        .iter()
-        .any(|term| token == *term || token.starts_with(term) || token.ends_with(term))
-    })
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            let keyword_match = [
+                "casino",
+                "gambling",
+                "poker",
+                "slot",
+                "slots",
+                "togel",
+                "judi",
+                "taruhan",
+                "baccarat",
+                "jackpot",
+                "sportsbook",
+                "bookmaker",
+                "betting",
+                "taixiu",
+                "xocdia",
+                "xoso",
+                "blackjack",
+                "roulette",
+                "lottery",
+                "lotto",
+                "keno",
+                "nhacai",
+                "nohu",
+                "gamebai",
+                "cacuoc",
+            ]
+            .iter()
+            .any(|term| token == *term || token.starts_with(term) || token.ends_with(term));
+            // Redirect services often wrap a rotating betting destination in a
+            // generic query parameter (for example `?target=789bet`). Match the
+            // same numeric brand form used for hostnames, without treating plain
+            // English `bet` in an ordinary URL path as gambling.
+            let numbered_bet = token.strip_prefix("bet").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+            }) || token.strip_suffix("bet").is_some_and(|prefix| {
+                !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit())
+            });
+            keyword_match || numbered_bet
+        })
 }
 
 // Reuse WebView2's message-pumping completion helper, as Wry does for its
@@ -671,6 +1060,8 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
     let script = blocker.borrow().youtube_script();
     install_bootstrap(&core, bootstrap.clone(), script)?;
     let environment = view.environment();
+    let top_site_cache = Rc::new(RefCell::new(CachedTopSite::default()));
+    let request_top_site_cache = top_site_cache.clone();
     let cosmetic_blocker = blocker.clone();
     let cosmetic_handler = DOMContentLoadedEventHandler::create(Box::new(move |sender, _| {
         let _registration_lifetime = &bootstrap;
@@ -713,15 +1104,11 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
         let method = webview2_com::take_pwstr(raw);
         // Referrer is the best available frame context in this WebView2 event.
         // ponytail: missing referrer falls back to top-level URL; no fabricated frame graph.
-        let source = unsafe { request.Headers() }
-            .ok()
-            .and_then(|headers| {
-                let mut raw = PWSTR::null();
-                unsafe { headers.GetHeader(w!("Referer"), &mut raw) }.ok()?;
-                Some(webview2_com::take_pwstr(raw))
-            })
-            .filter(|s| site(s).is_some())
-            .unwrap_or_else(|| top.clone());
+        let referrer = unsafe { request.Headers() }.ok().and_then(|headers| {
+            let mut raw = PWSTR::null();
+            unsafe { headers.GetHeader(w!("Referer"), &mut raw) }.ok()?;
+            Some(webview2_com::take_pwstr(raw))
+        });
         let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
         unsafe {
             args.ResourceContext(&mut context)?;
@@ -738,9 +1125,29 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER => "other",
             _ => return Ok(()),
         };
-        let action = blocker
-            .borrow()
-            .filter_action(&url, &top, &source, kind, &method);
+        let action = {
+            // Drop this RefCell borrow before making any WebView2 COM calls
+            // below; event callbacks may reenter the browser host.
+            let mut top_site_cache = request_top_site_cache.borrow_mut();
+            let needs_registrable_domain = blocker.borrow().mode == AdblockMode::Strong;
+            let (top_host, top_registrable_domain) =
+                top_site_cache.get_with_registrable_domain(&top, needs_registrable_domain);
+            let (source, source_is_http_site) = match referrer {
+                Some(referrer) if is_http_site(&referrer) => (referrer, true),
+                _ => (top.clone(), top_host.is_some()),
+            };
+            top_host.and_then(|top_host| {
+                blocker.borrow().filter_action_with_site_context(
+                    &url,
+                    &source,
+                    kind,
+                    &method,
+                    top_host,
+                    top_registrable_domain,
+                    source_is_http_site,
+                )
+            })
+        };
         if let Some(action) = action {
             let redirected = matches!(action, FilterAction::Redirect(_));
             let response = match action {
@@ -866,6 +1273,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cached_top_site_reuses_parsed_host_until_document_url_changes() {
+        let mut cached = CachedTopSite::default();
+        let first = "https://Example.com/article";
+
+        assert_eq!(cached.get(first), Some("example.com"));
+        assert_eq!(cached.get(first), Some("example.com"));
+        assert_eq!(cached.parses, 1);
+        assert_eq!(cached.registrable_domain(), Some("example.com"));
+        assert_eq!(cached.registrable_domain(), Some("example.com"));
+
+        assert_eq!(cached.get("https://other.example/"), Some("other.example"));
+        assert_eq!(cached.parses, 2);
+        assert_eq!(cached.registrable_domain(), Some("other.example"));
+        assert_eq!(cached.get("about:blank"), None);
+        assert_eq!(cached.get("about:blank"), None);
+        assert_eq!(cached.parses, 3);
+    }
+
+    #[test]
     fn cached_network_filter_updates_are_loaded_without_enabling_remote_scriptlets() {
         let directory = std::env::temp_dir().join(format!(
             "pip-adblock-updates-{}-{}",
@@ -897,7 +1323,7 @@ mod tests {
         )
         .unwrap();
 
-        let blocker = Blocker::load(directory.clone());
+        let blocker = Blocker::load(directory.clone(), AdblockMode::Balanced);
         let top = "https://news.example/";
         assert!(blocker.should_block(
             "https://dynamic-ad.example/banner.js",
@@ -914,7 +1340,10 @@ mod tests {
 
     #[test]
     fn youtube_resources_resolve_and_exceptions_remove_document_start_code() {
-        let mut blocker = Blocker::load(std::env::temp_dir().join("pip-unused-test-path"));
+        let mut blocker = Blocker::load(
+            std::env::temp_dir().join("pip-unused-test-path"),
+            AdblockMode::Balanced,
+        );
         let script = blocker.youtube_script();
         assert!(script.contains("function jsonPruneFetchResponse"));
         assert!(script.contains("function setConstant"));
@@ -929,17 +1358,59 @@ mod tests {
             .youtube_script()
             .contains("case \"www.youtube.com\""));
     }
+
+    #[test]
+    fn incremental_popup_filter_construction_matches_combined_rules() {
+        let sources = [
+            "||ads.example^$popup\n@@||ads.example/allowed$popup,third-party\n||cdn.example^$popunder,third-party",
+            "||script-only.example^$script\n||tracking.example^$popup,third-party\n@@||tracking.example/allow$popup",
+        ];
+        let combined_rules = sources
+            .iter()
+            .map(|source| popup_rules(source))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let combined_engine = engine(&combined_rules);
+        let incremental_engine = popup_engine_from_sources(sources);
+        let top = "https://news.example/article";
+        let cases = [
+            ("https://ads.example/redirect", true),
+            ("https://ads.example/allowed", false),
+            ("https://cdn.example/landing", true),
+            ("https://tracking.example/pixel", true),
+            ("https://tracking.example/allow", false),
+            ("https://script-only.example/run.js", false),
+        ];
+
+        for (url, expected_block) in cases {
+            let request = Request::new(url, top, "other", "GET").unwrap();
+            let combined_block = combined_engine
+                .check_network_request(&request)
+                .should_block();
+            let incremental_block = incremental_engine
+                .check_network_request(&request)
+                .should_block();
+            assert_eq!(combined_block, expected_block, "combined rules: {url}");
+            assert_eq!(
+                incremental_block, expected_block,
+                "incremental rules: {url}"
+            );
+        }
+    }
+
     #[test]
     fn blocking_exceptions_and_video() {
         let mut b = Blocker {
             engine: engine("||ads.example^\n@@||ads.example/allowed.js$script"),
             popup_engine: engine(""),
             gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         let top = "https://news.example/";
         assert!(b.should_block("https://ads.example/banner.js", top, top, "script", "GET"));
@@ -1018,6 +1489,173 @@ mod tests {
     }
 
     #[test]
+    fn validated_request_site_context_preserves_filtering_without_reparsing_hosts() {
+        let blocker = Blocker {
+            engine: engine("||ads.example^"),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let top = "https://news.example/article";
+        let source = "https://news.example/frame";
+        let url = "https://ads.example/banner.js";
+        let top_host = site(top).unwrap();
+        let top_domain = registrable_domain(top);
+
+        let legacy_action = blocker.filter_action(url, top, source, "script", "GET");
+        let contextual_action = blocker.filter_action_with_site_context(
+            url,
+            source,
+            "script",
+            "GET",
+            &top_host,
+            top_domain.as_deref(),
+            is_http_site(source),
+        );
+        assert!(matches!(legacy_action, Some(FilterAction::Block)));
+        assert!(matches!(contextual_action, Some(FilterAction::Block)));
+        assert!(is_http_site(top));
+        assert!(!is_http_site("evergreen://newtab"));
+
+        assert!(blocker
+            .filter_action_with_site_context(
+                url,
+                "evergreen://newtab",
+                "script",
+                "GET",
+                &top_host,
+                top_domain.as_deref(),
+                false
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn video_first_keeps_media_and_common_segments_while_filtering_other_requests() {
+        let blocker = Blocker {
+            engine: engine("||ads.example^"),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::VideoFirst,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let top = "https://news.example/article";
+
+        assert!(blocker
+            .filter_action("https://ads.example/video", top, top, "media", "GET")
+            .is_none());
+        assert!(blocker
+            .filter_action(
+                "https://ads.example/video/segment.M4S?token=1",
+                top,
+                top,
+                "xmlhttprequest",
+                "GET"
+            )
+            .is_none());
+        assert!(matches!(
+            blocker.filter_action("https://ads.example/advert.js", top, top, "script", "GET"),
+            Some(FilterAction::Block)
+        ));
+        assert!(matches!(
+            blocker.filter_action(
+                "https://ads.example/collect",
+                top,
+                top,
+                "xmlhttprequest",
+                "GET"
+            ),
+            Some(FilterAction::Block)
+        ));
+    }
+
+    #[test]
+    fn strong_mode_blocks_known_third_party_gambling_domains_only() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::bundled(),
+            mode: AdblockMode::Strong,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let top = "https://news.example/article";
+        assert!(matches!(
+            blocker.filter_action(
+                "https://cdn.bet365.com.au/widget.js",
+                top,
+                top,
+                "script",
+                "GET"
+            ),
+            Some(FilterAction::Block)
+        ));
+        assert!(blocker
+            .filter_action(
+                "https://bet365.com.au/widget.js",
+                "https://shop.bet365.com.au/page",
+                "https://shop.bet365.com.au/page",
+                "script",
+                "GET"
+            )
+            .is_none());
+        // Sibling subdomains are same-site when their public-suffix-derived
+        // registrable domain is equal, even though neither host suffix-matches
+        // the other.
+        assert!(blocker
+            .filter_action(
+                "https://cdn.bet365.com.au/widget.js",
+                "https://shop.bet365.com.au/page",
+                "https://shop.bet365.com.au/page",
+                "script",
+                "GET"
+            )
+            .is_none());
+        assert!(blocker
+            .filter_action(
+                "https://unknown-casino.example/widget.js",
+                top,
+                top,
+                "script",
+                "GET"
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn same_site_uses_psl_registrable_domains_and_preserves_host_boundaries() {
+        assert!(hosts_share_domain(
+            "cdn.bet365.com.au",
+            "shop.bet365.com.au"
+        ));
+        assert!(hosts_share_domain(
+            "video.cdn.example.co.uk",
+            "shop.example.co.uk"
+        ));
+        assert!(hosts_share_domain("example.com.", "cdn.example.com"));
+        assert!(hosts_share_domain("localhost", "localhost"));
+
+        assert!(!hosts_share_domain("example.com", "example.net"));
+        assert!(!hosts_share_domain("bet365.com.au", "bet365.co.nz"));
+        assert!(!hosts_share_domain("example.com", "example.com.evil"));
+    }
+
+    #[test]
     fn playback_repair_disables_once_and_persists_site_exception() {
         let run_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1027,7 +1665,7 @@ mod tests {
             "pip-playback-repair-{}-{run_id}",
             std::process::id()
         ));
-        let mut blocker = Blocker::load(directory.clone());
+        let mut blocker = Blocker::load(directory.clone(), AdblockMode::Balanced);
 
         assert_eq!(
             blocker
@@ -1044,7 +1682,7 @@ mod tests {
             "using repair a second time must not re-enable the blocker"
         );
 
-        let reloaded = Blocker::load(directory.clone());
+        let reloaded = Blocker::load(directory.clone(), AdblockMode::Balanced);
         assert_eq!(reloaded.enabled("https://www.youtube.com/"), Some(false));
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1078,7 +1716,10 @@ mod tests {
 
     #[test]
     fn bundled_ublock_network_rules_redirect_known_ad_scripts_to_local_noop() {
-        let blocker = Blocker::load(std::env::temp_dir().join("pip-unused-test-path"));
+        let blocker = Blocker::load(
+            std::env::temp_dir().join("pip-unused-test-path"),
+            AdblockMode::Balanced,
+        );
         let action = blocker
             .filter_action(
                 "https://go.oclasrv.com/apu.php",
@@ -1119,11 +1760,13 @@ mod tests {
                 "||casino.example^$popup\n||tracker.example^$popup,third-party\n@@||trusted.example^$popup,domain=news.example",
             )),
             gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         assert!(blocker.should_block_popup("https://random.example/", source, false));
         assert!(blocker.should_block_popup("https://casino.example/", source, true));
@@ -1138,11 +1781,13 @@ mod tests {
             engine: engine(""),
             popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
             gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         assert!(blocker.should_block_popup(
             "https://ad88vip6.com/home/register?id=940814853",
@@ -1152,16 +1797,213 @@ mod tests {
     }
 
     #[test]
-    fn gambling_category_popup_fallback_catches_new_domains_without_blocking_normal_links() {
+    fn current_tab_redirect_filter_catches_gambling_ads_without_blocking_normal_navigation() {
         let blocker = Blocker {
             engine: engine(""),
-            popup_engine: engine(""),
+            popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
             gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let source = "https://news.example/article";
+        assert!(blocker
+            .should_block_navigation("https://ad88vip6.com/home/register?id=940814853", source,));
+        assert!(!blocker.should_block_navigation("https://accounts.google.com/", source));
+        assert!(!blocker.should_block_navigation(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "evergreen://newtab",
+        ));
+        assert!(blocker.should_block_navigation_with_popup_context(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "about:blank",
+            Some(source),
+        ));
+        assert!(!blocker.should_block_navigation_with_popup_context(
+            "https://accounts.google.com/",
+            "about:blank",
+            Some(source),
+        ));
+        assert!(!blocker.should_block_navigation_with_popup_context(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "evergreen://newtab",
+            None,
+        ));
+    }
+
+    #[test]
+    fn top_level_navigation_applies_document_rules_but_preserves_normal_sites() {
+        let blocker = Blocker {
+            engine: engine("||blocked.example^$document"),
+            popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+
+        assert!(blocker.should_block_navigation(
+            "https://blocked.example/landing",
+            "https://publisher.example/article",
+        ));
+        assert!(!blocker.should_block_navigation(
+            "https://accounts.google.com/",
+            "https://publisher.example/article",
+        ));
+        assert!(!blocker
+            .should_block_navigation("https://blocked.example/landing", "evergreen://newtab",));
+    }
+
+    #[test]
+    fn explicit_navigation_tickets_are_exact_and_one_shot() {
+        let mut blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        blocker.issue_explicit_navigation_ticket(
+            42,
+            "https://blocked.example/landing",
+            "https://publisher.example/article",
+        );
+
+        assert!(!blocker.consume_explicit_navigation_ticket(
+            43,
+            "https://blocked.example/landing",
+            "https://publisher.example/article",
+        ));
+        assert!(!blocker.consume_explicit_navigation_ticket(
+            42,
+            "https://other.example/landing",
+            "https://publisher.example/article",
+        ));
+        assert!(blocker.consume_explicit_navigation_ticket(
+            42,
+            "https://blocked.example/landing",
+            "https://publisher.example/article",
+        ));
+        assert!(!blocker.consume_explicit_navigation_ticket(
+            42,
+            "https://blocked.example/landing",
+            "https://publisher.example/article",
+        ));
+    }
+
+    #[test]
+    fn popup_opener_context_survives_blank_commit_and_clears_after_http_commit() {
+        let mut context =
+            PopupNavigationContext::from_opener(Some("https://news.example/article".into()));
+        assert_eq!(
+            context.opener_for_source("about:blank").as_deref(),
+            Some("https://news.example/article")
+        );
+        context.navigation_committed("about:blank");
+        assert!(context.opener_for_source("about:blank").is_some());
+        context.navigation_committed("https://accounts.google.com/");
+        assert!(context.opener_for_source("about:blank").is_none());
+    }
+
+    #[test]
+    fn iframe_navigation_filter_blocks_suspicious_cross_site_destinations_and_honors_exceptions() {
+        let mut blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(include_str!("../filters/popup-overrides.txt")),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let top_level = "https://news.example/article";
+        assert!(blocker.should_block_frame_navigation(
+            "https://ad88vip6.com/home/register?id=940814853",
+            top_level,
+        ));
+        assert!(
+            !blocker.should_block_frame_navigation("https://video.example/embed/123", top_level,)
+        );
+        assert!(!blocker
+            .should_block_frame_navigation("https://news.example/embedded-content", top_level,));
+        blocker.disabled.insert("news.example".into());
+        assert!(!blocker.should_block_frame_navigation(
+            "https://ad88vip6.com/home/register?id=940814853",
+            top_level,
+        ));
+    }
+
+    #[test]
+    fn popup_blank_frame_filter_uses_pending_opener_context_only_for_popup_tabs() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(&popup_rules("||tracker.example^$popup,third-party")),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let opener = "https://news.example/article";
+
+        assert!(blocker.should_block_frame_navigation_with_popup_context(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "about:blank",
+            Some(opener),
+        ));
+        assert!(blocker.should_block_frame_navigation_with_popup_context(
+            "https://tracker.example/ad-frame",
+            "about:blank",
+            Some(opener),
+        ));
+        assert!(!blocker.should_block_frame_navigation_with_popup_context(
+            "https://video.example/embed/123",
+            "about:blank",
+            Some(opener),
+        ));
+
+        // Ordinary blank tabs have no opener context and preserve the existing
+        // behavior, even for a destination that is filtered in popup context.
+        assert!(!blocker.should_block_frame_navigation(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "about:blank",
+        ));
+        assert!(!blocker
+            .should_block_frame_navigation("https://tracker.example/ad-frame", "about:blank",));
+    }
+
+    #[test]
+    fn gambling_category_popup_fallback_catches_new_domains_without_blocking_normal_links() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         let source = "https://news.example/article";
         assert!(blocker.should_block_popup(
@@ -1178,7 +2020,20 @@ mod tests {
             source,
             true
         ));
+        assert!(blocker.should_block_popup(
+            "https://redirect.example/out?target=789bet",
+            source,
+            true
+        ));
+        assert!(
+            blocker.should_block_navigation("https://redirect.example/out?target=789bet", source,)
+        );
         assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
+        assert!(!blocker.should_block_popup(
+            "https://offers.example/bet?campaign=spring",
+            source,
+            true
+        ));
         assert!(!looks_like_gambling_host("sports"));
         assert!(!blocker.should_block(
             "https://789bet.example/",
@@ -1197,19 +2052,60 @@ mod tests {
     }
 
     #[test]
-    fn bundled_gambling_domains_block_popup_hosts_and_subdomains_only() {
+    fn popup_fallback_decodes_redirect_keywords_without_changing_regular_navigation() {
         let blocker = Blocker {
             engine: engine(""),
             popup_engine: engine(""),
-            gambling_domains: GamblingDomains::bundled(),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let source = "https://news.example/article";
+
+        // The destination keyword is percent-encoded twice by a redirector.
+        assert!(blocker.should_block_popup(
+            "https://redirect.example/out?target=%2563%2561%2573%2569%256E%256F",
+            source,
+            true,
+        ));
+        assert!(blocker.should_block_popup(
+            "https://redirect.example/out?target=%63asino",
+            source,
+            true,
+        ));
+        assert!(!blocker.should_block_popup(
+            "https://redirect.example/out?target=account-settings",
+            source,
+            true,
+        ));
+        assert!(!blocker.should_block_navigation(
+            "https://redirect.example/out?target=%2563%2561%2573%2569%256E%256F",
+            "evergreen://newtab",
+        ));
+    }
+
+    #[test]
+    fn bundled_gambling_domains_block_popup_hosts_and_subdomains_only() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(""),
+            gambling_domains: GamblingDomains::bundled(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         let source = "https://news.example/article";
         assert!(blocker.should_block_popup("https://bet365.com.au/", source, true));
+        assert!(blocker.should_block_popup("https://bet365.com.au./", source, true));
         assert!(blocker.should_block_popup("https://www.bet365.com.au/", source, true));
         assert!(blocker.should_block_popup("https://promo.12betsports.best/", source, true));
         assert!(!blocker.should_block_popup("https://accounts.google.com/", source, true));
@@ -1224,6 +2120,49 @@ mod tests {
     }
 
     #[test]
+    fn generated_gambling_domains_are_a_stable_sorted_unique_canonical_source() {
+        let mut domains: Vec<&str> = GAMBLING_DOMAIN_INPUT
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        domains.sort_unstable();
+        domains.dedup();
+
+        let expected_source = format!("{}\n", domains.join("\n"));
+        assert_eq!(
+            GAMBLING_DOMAIN_SOURCE.as_bytes(),
+            expected_source.as_bytes()
+        );
+        assert_eq!(GAMBLING_DOMAIN_OFFSETS.len(), domains.len());
+
+        let mut expected_offsets = Vec::with_capacity(domains.len());
+        let mut byte_offset = 0usize;
+        for domain in &domains {
+            expected_offsets.push(u32::try_from(byte_offset).unwrap());
+            byte_offset += domain.len() + 1;
+        }
+        assert_eq!(GAMBLING_DOMAIN_OFFSETS.as_slice(), expected_offsets);
+        for (index, domain) in domains.iter().enumerate() {
+            assert_eq!(domain_at(GAMBLING_DOMAIN_OFFSETS[index]), *domain);
+        }
+    }
+
+    #[test]
+    fn generated_gambling_domain_lookup_matches_exact_domains_and_subdomains() {
+        let domains = GamblingDomains::bundled();
+
+        assert!(matches_gambling_domain("bet365.com.au", &domains));
+        assert!(matches_gambling_domain("bet365.com.au.", &domains));
+        assert!(matches_gambling_domain("www.bet365.com.au", &domains));
+        assert!(matches_gambling_domain("promo.12betsports.best.", &domains));
+        assert!(matches_gambling_domain("promo.12betsports.best", &domains));
+        assert!(!matches_gambling_domain("notbet365.com.au", &domains));
+        assert!(!matches_gambling_domain("bet365.com.au.evil", &domains));
+        assert!(!matches_gambling_domain("accounts.google.com", &domains));
+    }
+
+    #[test]
     fn cosmetic_rules_respect_site_exceptions() {
         let mut b = Blocker {
             engine: engine(
@@ -1231,11 +2170,13 @@ mod tests {
             ),
             popup_engine: engine(""),
             gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
             disabled: HashSet::new(),
             exceptions_path: PathBuf::new(),
             blocked: 0,
             redirected: 0,
             bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
         };
         let script = b.cosmetic_script("https://news.example/").unwrap();
         assert!(script.contains(".sponsored"));
@@ -1260,5 +2201,9 @@ mod tests {
         );
         assert!(script.contains("MutationObserver"));
         assert!(script.contains("runs>=16"));
+        assert!(
+            script.contains("if(runs>=16)observer.disconnect()"),
+            "cosmetic observer should release its DOM subscription after the final bounded pass"
+        );
     }
 }

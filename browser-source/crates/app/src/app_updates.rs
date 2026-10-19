@@ -57,8 +57,10 @@ fn parse_release(
     })
 }
 
-pub fn check() -> Result<AppUpdateInfo, String> {
-    let client = reqwest::blocking::Client::builder()
+pub fn check(proxy_port: Option<u16>) -> Result<AppUpdateInfo, String> {
+    let builder =
+        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    let client = builder
         .timeout(std::time::Duration::from_secs(12))
         .user_agent(concat!("Pip-Browser/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -150,7 +152,7 @@ mod tests {
     #[test]
     #[ignore = "requires outbound HTTPS access to GitHub Releases"]
     fn live_release_api_returns_a_trusted_pip_release() {
-        let info = check().unwrap();
+        let info = check(None).unwrap();
         assert!(!info.latest_version.is_empty());
         assert!(info
             .release_url

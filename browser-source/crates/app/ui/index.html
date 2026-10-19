@@ -1281,6 +1281,20 @@
       postIpc('FindInPage', { query, forward });
     }
 
+    window.__findNext = function(forward) {
+      const bar = document.getElementById('findBar');
+      const input = document.getElementById('findInput');
+      if (!input.value) {
+        toggleFindBar();
+        return;
+      }
+      if (bar.style.display !== 'flex') {
+        bar.style.display = 'flex';
+        postIpc('OpenFindInPage');
+      }
+      executeFind(forward);
+    };
+
     function handleFindKey(e) {
       if (e.key === 'Enter') {
         executeFind(!e.shiftKey);

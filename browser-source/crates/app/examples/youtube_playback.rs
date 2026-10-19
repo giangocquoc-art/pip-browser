@@ -5,6 +5,9 @@ mod adblock;
 #[allow(dead_code)]
 #[path = "../src/adblock_updates.rs"]
 mod adblock_updates;
+#[allow(dead_code)]
+#[path = "../src/doh_proxy.rs"]
+mod doh_proxy;
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -98,7 +101,10 @@ fn main() {
     let mut check = Check {
         window: None,
         view: None,
-        blocker: Rc::new(RefCell::new(adblock::Blocker::load(directory))),
+        blocker: Rc::new(RefCell::new(adblock::Blocker::load(
+            directory,
+            evergreen_core::settings::AdblockMode::Balanced,
+        ))),
         started: Instant::now(),
         next: Instant::now(),
         samples: vec![],

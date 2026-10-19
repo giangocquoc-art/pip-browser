@@ -19,11 +19,13 @@ mod loading_ui;
 mod passwords;
 mod settings_ui;
 mod sidebar_ui;
+mod site_zoom;
 mod sync;
+mod sync_v2;
 mod translate;
 mod window;
 
-use chrome::{create_bounds, get_chrome_html, normalize_url, CHROME_HEIGHT};
+use chrome::{create_bounds, normalize_url, CHROME_HEIGHT};
 use evergreen_core::env::{detect_webview2_runtime, is_process_elevated};
 use evergreen_core::ipc::{HostToUiMessage, UiToHostMessage};
 use evergreen_core::tabs::{TabId, TabManager, TabState};
@@ -36,8 +38,17 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows};
+
+#[derive(serde::Serialize)]
+#[serde(tag = "event", content = "data")]
+enum BorrowedHostToUiMessage<'a> {
+    TabStateSync {
+        tabs: &'a [TabState],
+        active_tab_id: Option<TabId>,
+    },
+}
 
 const NAV_WATCHER_SCRIPT: &str = r#"
 (() => {
@@ -76,6 +87,102 @@ const NAV_WATCHER_SCRIPT: &str = r#"
 "#;
 
 const SESSION_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(15);
+const AUTO_DISCARD_IDLE_SECS: u64 = 30 * 60;
+const LOW_MEMORY_AVAILABLE_BYTES: u64 = 512 * 1024 * 1024;
+
+const DISCARD_SAFETY_SCRIPT: &str = r#"
+(() => {
+  const protectedFrames = window === window.top ? new Map() : null;
+  let hasBeforeUnload = false;
+  const activeTracks = new Set();
+  const pruneStoppedTracks = () => {
+    for (const track of activeTracks) {
+      if (track.readyState !== 'live') activeTracks.delete(track);
+    }
+  };
+  const hasDirtyPageState = () => {
+    const dirtyInput = [...document.querySelectorAll('input, textarea')]
+      .some(el => !el.disabled && el.value !== el.defaultValue);
+    const dirtyChoice = [...document.querySelectorAll('input[type="checkbox"], input[type="radio"]')]
+      .some(el => !el.disabled && el.checked !== el.defaultChecked);
+    const selectedFiles = [...document.querySelectorAll('input[type="file"]')]
+      .some(el => !el.disabled && el.files?.length > 0);
+    const dirtySelect = [...document.querySelectorAll('select')]
+      .some(el => [...el.options].some(option => option.selected !== option.defaultSelected));
+    const editableContent = [...document.querySelectorAll('[contenteditable="true"], [contenteditable=""]')]
+      .some(el => el.textContent.trim().length > 0);
+    const playingMedia = [...document.querySelectorAll('video, audio')]
+      .some(media => !media.paused && !media.ended);
+    return dirtyInput || dirtyChoice || selectedFiles || dirtySelect || editableContent || playingMedia;
+  };
+  const hasProtectedState = () => {
+    pruneStoppedTracks();
+    return hasBeforeUnload
+      || typeof window.onbeforeunload === 'function'
+      || hasDirtyPageState()
+      || activeTracks.size > 0;
+  };
+  const reportFrameProtection = () => {
+    if (window !== window.top) window.top.postMessage({ pipDiscardProtection: hasProtectedState() }, '*');
+  };
+  if (window === window.top) {
+    addEventListener('message', event => {
+      if (event.source && event.source !== window && typeof event.data?.pipDiscardProtection === 'boolean') {
+        if (event.data.pipDiscardProtection) protectedFrames.set(event.source, true);
+        else protectedFrames.delete(event.source);
+      }
+    });
+  } else {
+    addEventListener('DOMContentLoaded', reportFrameProtection, { once: true });
+    for (const event of ['input', 'change', 'reset', 'submit', 'playing', 'pause', 'ended']) {
+      document.addEventListener(event, reportFrameProtection, true);
+    }
+  }
+  const add = window.addEventListener;
+  window.addEventListener = function(type, ...args) {
+    if (type === 'beforeunload') {
+      hasBeforeUnload = true;
+      reportFrameProtection();
+    }
+    return add.call(this, type, ...args);
+  };
+  const mediaDevices = navigator.mediaDevices;
+  if (mediaDevices?.getUserMedia) {
+    const getUserMedia = mediaDevices.getUserMedia.bind(mediaDevices);
+    mediaDevices.getUserMedia = async (...args) => {
+      const stream = await getUserMedia(...args);
+      for (const track of stream.getTracks()) {
+        if (track.readyState !== 'live') continue;
+        activeTracks.add(track);
+        const releaseTrack = () => {
+          activeTracks.delete(track);
+          reportFrameProtection();
+        };
+        track.addEventListener('ended', releaseTrack);
+        // MediaStreamTrack.stop() changes readyState but does not dispatch `ended`.
+        // Wrap it so iframe protection is cleared immediately when a page releases capture.
+        try {
+          const stop = track.stop.bind(track);
+          Object.defineProperty(track, 'stop', {
+            configurable: true,
+            value: (...stopArgs) => {
+              const result = stop(...stopArgs);
+              releaseTrack();
+              return result;
+            },
+          });
+        } catch (_) {}
+      }
+      reportFrameProtection();
+      return stream;
+    };
+  }
+  window.__pipCanDiscard = () => {
+    const childSafe = window !== window.top || [...protectedFrames.values()].every(value => !value);
+    return !hasProtectedState() && childSafe;
+  };
+})();
+"#;
 
 fn persist_session_snapshot(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<bool> {
     if std::fs::read(path).is_ok_and(|current| current == bytes) {
@@ -88,6 +195,114 @@ fn persist_session_snapshot(path: &std::path::Path, bytes: &[u8]) -> std::io::Re
     std::fs::write(&staging, bytes)?;
     std::fs::rename(staging, path)?;
     Ok(true)
+}
+
+fn update_session_slot<T>(slots: &mut Vec<Vec<T>>, slot: usize, value: Vec<T>) {
+    if slots.len() <= slot {
+        slots.resize_with(slot + 1, Vec::new);
+    }
+    slots[slot] = value;
+}
+
+#[cfg(target_os = "windows")]
+fn available_physical_memory_bytes() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    unsafe { GlobalMemoryStatusEx(&mut status).ok()? };
+    Some(status.ullAvailPhys)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn available_physical_memory_bytes() -> Option<u64> {
+    None
+}
+
+fn eligible_for_memory_discard(tab: &TabState, now_secs: u64) -> bool {
+    tab.status == evergreen_core::tabs::TabStatus::Suspended
+        && !tab.keep_awake
+        && !tab.pinned
+        && !tab.is_loading
+        && !tab.is_audio_playing
+        && !tab.memory_discard_protected
+        && (tab.url.starts_with("https://") || tab.url.starts_with("http://"))
+        && now_secs.saturating_sub(tab.last_active_timestamp_secs) >= AUTO_DISCARD_IDLE_SECS
+}
+
+fn eligible_for_memory_suspend(tab: &TabState, now_secs: u64, idle_after: u64) -> bool {
+    tab.status != evergreen_core::tabs::TabStatus::Suspended
+        && !tab.keep_awake
+        && !tab.pinned
+        && !tab.is_loading
+        && !tab.is_audio_playing
+        && !tab.memory_discard_protected
+        && (tab.url.starts_with("https://") || tab.url.starts_with("http://"))
+        && now_secs.saturating_sub(tab.last_active_timestamp_secs) >= idle_after
+}
+
+fn close_tab_for_window(
+    tab_manager: &mut TabManager,
+    target_id: TabId,
+    private: bool,
+) -> Option<TabId> {
+    let next_active = tab_manager.close_tab(target_id);
+    if private {
+        tab_manager.clear_closed_history();
+    }
+    next_active
+}
+
+fn should_confirm_close_window(warn_on_close_tabs: bool, tab_count: usize) -> bool {
+    warn_on_close_tabs && tab_count > 1
+}
+
+fn confirm_close_window_tabs(warn_on_close_tabs: bool, tab_count: usize) -> bool {
+    if !should_confirm_close_window(warn_on_close_tabs, tab_count) {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
+        };
+        unsafe {
+            MessageBoxW(
+                None,
+                w!("Cửa sổ này đang có nhiều tab. Bạn có muốn đóng cửa sổ không?"),
+                w!("Đóng nhiều tab — Pip"),
+                MB_YESNO | MB_ICONWARNING,
+            ) == IDYES
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+fn pop_closed_tab_for_window(tab_manager: &mut TabManager, private: bool) -> Option<String> {
+    if private {
+        None
+    } else {
+        tab_manager.pop_last_closed()
+    }
+}
+
+fn parse_memory_safety_result(result: &str) -> Option<(bool, String)> {
+    let parsed = serde_json::from_str::<serde_json::Value>(result).ok()?;
+    let value = if parsed.is_object() {
+        parsed
+    } else {
+        serde_json::from_str::<serde_json::Value>(parsed.as_str()?).ok()?
+    };
+    Some((
+        value["safe"].as_bool()?,
+        value["href"].as_str()?.to_string(),
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -130,6 +345,11 @@ fn webview_is_top(webview: &WebView) -> bool {
 #[derive(Debug)]
 pub(crate) enum BrowserEvent {
     Ipc(WindowId, UiToHostMessage),
+    PopupTabRequested {
+        window_id: WindowId,
+        url: String,
+        opener_url: String,
+    },
     TabTitleChanged(WindowId, TabId, String),
     TabNavigated(WindowId, TabId, String),
     TabAudioChanged(WindowId, TabId, bool),
@@ -141,6 +361,8 @@ pub(crate) enum BrowserEvent {
     AppUpdateCheckDone(WindowId, Result<app_updates::AppUpdateInfo, String>),
     AdblockFilterUpdateDone(WindowId, Result<adblock_updates::UpdateSummary, String>),
     TabSuspendResult(WindowId, TabId, bool),
+    TabSuspendSafetyResult(WindowId, TabId, bool, String),
+    TabDiscardSafetyResult(WindowId, TabId, bool, String),
     SyncBookmarksDone(WindowId, String, bool, Result<sync::SyncOutcome, String>),
     SyncDisabled(WindowId, String, String, Result<(), String>),
     Shortcut(WindowId, String),
@@ -247,6 +469,7 @@ struct WindowContext {
     downloads: HashMap<u64, serde_json::Value>,
     proxy: EventLoopProxy<BrowserEvent>,
     profile_id: String,
+    session_slot: usize,
     dns_proxy_port: Option<u16>,
     private: bool,
     id: WindowId,
@@ -258,12 +481,45 @@ struct WindowContext {
     sidebar_mode: String,
     tabs: HashMap<TabId, WebView>,
     tab_persisted: HashMap<TabId, bool>,
+    site_zoom: site_zoom::SiteZoomStore,
     window_width: f64,
     window_height: f64,
+    is_fullscreen: bool,
     find_bar_open: bool,
     permission_bar_open: bool,
     profile_menu_open: bool,
 }
+
+#[derive(Debug, PartialEq)]
+struct WindowLayout {
+    chrome_height: f64,
+    content_width: f64,
+    content_height: f64,
+    sidebar_visible: bool,
+}
+
+fn calculate_window_layout(
+    width: f64,
+    height: f64,
+    chrome_height: f64,
+    sidebar_open: bool,
+    fullscreen: bool,
+) -> WindowLayout {
+    let chrome_height = if fullscreen { 0.0 } else { chrome_height };
+    let sidebar_visible = sidebar_open && !fullscreen;
+    let content_width = if sidebar_visible {
+        (width - 320.0).max(1.0)
+    } else {
+        width
+    };
+    WindowLayout {
+        chrome_height,
+        content_width,
+        content_height: (height - chrome_height).max(1.0),
+        sidebar_visible,
+    }
+}
+
 impl Drop for WindowContext {
     fn drop(&mut self) {
         accelerator::cancel_permissions(self.id, None, None);
@@ -272,6 +528,33 @@ impl Drop for WindowContext {
 }
 
 impl WindowContext {
+    pub fn toggle_fullscreen(&mut self) {
+        self.is_fullscreen = !self.is_fullscreen;
+        self.window.set_fullscreen(if self.is_fullscreen {
+            Some(Fullscreen::Borderless(None))
+        } else {
+            None
+        });
+        self.update_layout();
+    }
+
+    fn handle_escape(&mut self) {
+        if self.is_fullscreen {
+            self.toggle_fullscreen();
+        } else if self.is_sidebar_open {
+            self.close_sidebar();
+            if let Some(chrome) = &self.chrome_webview {
+                let _ = chrome.evaluate_script(
+                    "if (window.__syncSidebarState) window.__syncSidebarState(null);",
+                );
+            }
+        } else if let Some(active) = self.tab_manager.active_tab() {
+            if let Some(view) = self.tabs.get(&active.id) {
+                let _ = view.evaluate_script("window.stop()");
+            }
+        }
+    }
+
     pub fn current_chrome_height(&self) -> f64 {
         CHROME_HEIGHT
             + if self.find_bar_open { 38.0 } else { 0.0 }
@@ -279,32 +562,32 @@ impl WindowContext {
     }
 
     pub fn update_layout(&self) {
-        let chrome_h = self.current_chrome_height();
+        let layout = calculate_window_layout(
+            self.window_width,
+            self.window_height,
+            self.current_chrome_height(),
+            self.is_sidebar_open,
+            self.is_fullscreen,
+        );
+        let chrome_h = layout.chrome_height;
         if let Some(chrome) = &self.chrome_webview {
-            let chrome_height = if self.profile_menu_open {
+            let chrome_height = if self.profile_menu_open && !self.is_fullscreen {
                 chrome_h.max(440.0)
             } else {
                 chrome_h
             };
             let chrome_bounds = create_bounds(0.0, 0.0, self.window_width, chrome_height);
+            let _ = chrome.set_visible(!self.is_fullscreen);
             let _ = chrome.set_bounds(chrome_bounds);
-            if self.profile_menu_open {
+            if self.profile_menu_open && !self.is_fullscreen {
                 raise_webview(chrome);
             }
         }
 
-        let content_width = if self.is_sidebar_open {
-            (self.window_width - 320.0).max(1.0)
-        } else {
-            self.window_width
-        };
+        let sidebar_visible = layout.sidebar_visible;
+        let content_width = layout.content_width;
 
-        let content_bounds = create_bounds(
-            0.0,
-            chrome_h,
-            content_width,
-            (self.window_height - chrome_h).max(1.0),
-        );
+        let content_bounds = create_bounds(0.0, chrome_h, content_width, layout.content_height);
         // Hidden tabs do not paint. Resize only the active WebView; a hidden tab
         // receives the current bounds when `handle_switch_tab` makes it active
         // and calls `update_layout` below. This avoids one COM call per open tab
@@ -326,14 +609,13 @@ impl WindowContext {
             }
         }
 
-        if self.is_sidebar_open {
+        if let Some(sidebar) = &self.sidebar_webview {
+            let _ = sidebar.set_visible(sidebar_visible);
+        }
+        if sidebar_visible {
             if let Some(sidebar) = &self.sidebar_webview {
-                let sidebar_bounds = create_bounds(
-                    content_width,
-                    chrome_h,
-                    320.0,
-                    (self.window_height - chrome_h).max(1.0),
-                );
+                let sidebar_bounds =
+                    create_bounds(content_width, chrome_h, 320.0, layout.content_height);
                 let _ = sidebar.set_bounds(sidebar_bounds);
             }
         }
@@ -358,8 +640,8 @@ impl WindowContext {
 
     pub fn sync_ui_state(&self) {
         if let Some(chrome) = &self.chrome_webview {
-            let sync_msg = HostToUiMessage::TabStateSync {
-                tabs: self.tab_manager.tabs().to_vec(),
+            let sync_msg = BorrowedHostToUiMessage::TabStateSync {
+                tabs: self.tab_manager.tabs(),
                 active_tab_id: self.tab_manager.active_tab().map(|t| t.id),
             };
             if let Ok(json_str) = serde_json::to_string(&sync_msg) {
@@ -406,9 +688,16 @@ impl WindowContext {
         1.0
     }
 
-    pub fn set_active_zoom(&self, factor: f64) {
-        let clamped = (factor * 100.0).round() / 100.0;
-        let clamped = clamped.clamp(0.25, 3.0);
+    pub fn set_active_zoom(&mut self, factor: f64) {
+        let clamped = site_zoom::clamp_zoom(factor);
+        if let Some(active) = self.tab_manager.active_tab() {
+            if let Some(origin) = site_zoom::origin_for_url(&active.url) {
+                self.site_zoom.set(origin, clamped);
+                let _ = self
+                    .site_zoom
+                    .save(&site_zoom_path(&self.profile_id), self.private);
+            }
+        }
         #[cfg(target_os = "windows")]
         {
             if let Some(active) = self.tab_manager.active_tab() {
@@ -422,6 +711,40 @@ impl WindowContext {
             }
         }
         self.sync_zoom(clamped);
+    }
+
+    pub fn apply_tab_zoom(&self, tab_id: TabId, factor: f64) {
+        let clamped = site_zoom::clamp_zoom(factor);
+        #[cfg(target_os = "windows")]
+        if let Some(wv) = self.tabs.get(&tab_id) {
+            use wry::WebViewExtWindows;
+            unsafe {
+                let _ = wv.controller().SetZoomFactor(clamped);
+            }
+        }
+        if self.tab_manager.active_tab_id() == Some(tab_id) {
+            self.sync_zoom(clamped);
+        }
+    }
+
+    pub fn reset_active_zoom(&mut self, default_zoom: f64) {
+        if let Some(active) = self.tab_manager.active_tab() {
+            if let Some(origin) = site_zoom::origin_for_url(&active.url) {
+                self.site_zoom.remove(&origin);
+                let _ = self
+                    .site_zoom
+                    .save(&site_zoom_path(&self.profile_id), self.private);
+            }
+            self.apply_tab_zoom(active.id, default_zoom);
+        } else {
+            self.sync_zoom(default_zoom);
+        }
+    }
+
+    fn zoom_for_url(&self, url: &str, default_zoom: f64) -> f64 {
+        site_zoom::origin_for_url(url)
+            .and_then(|origin| self.site_zoom.get(&origin))
+            .unwrap_or(default_zoom)
     }
 
     pub fn handle_find_in_page(&self, query: &str, forward: bool) {
@@ -487,7 +810,7 @@ impl WindowContext {
             let proxy_ipc = proxy.clone();
             let win_id = self.id;
             let builder = WebViewBuilder::new()
-                .with_additional_browser_args(dns_proxy_browser_args(self.dns_proxy_port))
+                .with_additional_browser_args(webview_browser_args(self.dns_proxy_port))
                 .with_bounds(sidebar_bounds)
                 .with_browser_extensions_enabled(true);
             let wv = builder
@@ -519,6 +842,16 @@ impl WindowContext {
             let snapshot =
                 serde_json::to_string(&self.downloads.values().collect::<Vec<_>>()).unwrap();
             let private = self.private;
+            let recently_closed = if private {
+                Vec::<String>::new()
+            } else {
+                self.tab_manager.recently_closed_newest_first()
+            };
+            let recently_closed_json = serde_json::to_string(&recently_closed)
+                .unwrap_or_else(|_| "[]".to_string())
+                .replace('<', "\\u003c")
+                .replace('\u{2028}', "\\u2028")
+                .replace('\u{2029}', "\\u2029");
             let active = self.tab_manager.active_tab();
             let keep_awake = active.is_some_and(|tab| tab.keep_awake);
             let url = active.map(|t| t.url.clone()).unwrap_or_default();
@@ -532,7 +865,7 @@ impl WindowContext {
 
             if let Ok(json_str) = serde_json::to_string(&sync_msg) {
                 let script = format!(
-                    "if(window.__syncDownloads)window.__syncDownloads({snapshot});if(window.__renderPrivacy)window.__renderPrivacy({private});if(window.__setKeepAwake)window.__setKeepAwake({keep_awake});if(window.__sidebarSync)window.__sidebarSync({json_str});"
+                    "if(window.__syncDownloads)window.__syncDownloads({snapshot});if(window.__renderPrivacy)window.__renderPrivacy({private});if(window.__setKeepAwake)window.__setKeepAwake({keep_awake});if(window.__setRecentlyClosed)window.__setRecentlyClosed({recently_closed_json});if(window.__sidebarSync)window.__sidebarSync({json_str});"
                 );
                 let _ = sidebar.evaluate_script(&script);
             }
@@ -629,7 +962,8 @@ impl WindowContext {
             self.update_layout();
             self.sync_ui_state();
             self.update_sidebar_sync(cert_cache);
-            self.sync_zoom(self.get_active_zoom());
+            let active_zoom = self.get_active_zoom();
+            self.apply_tab_zoom(target_id, active_zoom);
         }
     }
 }
@@ -660,6 +994,17 @@ fn download_history_path(profile_id: &str) -> std::path::PathBuf {
         .join("profiles")
         .join(profile_id)
         .join("downloads.json")
+}
+
+fn site_zoom_path(profile_id: &str) -> std::path::PathBuf {
+    get_data_directory()
+        .join("profiles")
+        .join(profile_id)
+        .join("site-zoom.json")
+}
+
+fn load_site_zoom(profile_id: &str, private: bool) -> site_zoom::SiteZoomStore {
+    site_zoom::SiteZoomStore::load(&site_zoom_path(profile_id), private)
 }
 
 fn load_download_history(profile_id: &str) -> HashMap<u64, serde_json::Value> {
@@ -715,22 +1060,251 @@ fn get_settings_path() -> std::path::PathBuf {
 fn bookmark_sync_state_changed(
     before: &evergreen_core::library::Library,
     after: &evergreen_core::library::Library,
+    history_enabled: bool,
 ) -> bool {
-    before.bookmarks != after.bookmarks || before.removed_bookmarks != after.removed_bookmarks
+    before.bookmarks != after.bookmarks
+        || before.bookmark_updates != after.bookmark_updates
+        || before.removed_bookmarks != after.removed_bookmarks
+        || before.bookmark_tombstones != after.bookmark_tombstones
+        || before.bookmark_folders != after.bookmark_folders
+        || before.bookmark_folder_assignments != after.bookmark_folder_assignments
+        || before.bookmark_folder_tombstones != after.bookmark_folder_tombstones
+        || (history_enabled
+            && (before.history != after.history
+                || before.history_visits != after.history_visits
+                || before.removed_history != after.removed_history))
+}
+
+fn local_bookmark_updates(
+    category: &sync_v2::BookmarkCategory,
+) -> Vec<evergreen_core::library::BookmarkUpdate> {
+    category
+        .items
+        .iter()
+        .map(|item| evergreen_core::library::BookmarkUpdate {
+            url: item.page.url.clone(),
+            updated_at_ms: i64::try_from(item.updated_at_ms).unwrap_or(i64::MAX),
+        })
+        .collect()
+}
+
+fn local_bookmark_tombstones(
+    category: &sync_v2::BookmarkCategory,
+) -> Vec<evergreen_core::library::BookmarkTombstone> {
+    category
+        .tombstones
+        .iter()
+        .map(|item| evergreen_core::library::BookmarkTombstone {
+            url: item.url.clone(),
+            deleted_at_ms: i64::try_from(item.deleted_at_ms).unwrap_or(i64::MAX),
+        })
+        .collect()
+}
+
+fn apply_syncable_settings_to_profile(
+    settings: &mut evergreen_core::settings::Settings,
+    profile_id: &str,
+    synced: &sync_v2::SyncableSettings,
+) -> bool {
+    let before = settings.clone();
+    let mut effective = settings.for_profile(profile_id);
+    sync::apply_syncable_settings(&mut effective, synced);
+    if let Some(profile) = settings
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+    {
+        profile.sync_settings_values = Some(
+            evergreen_core::settings::ProfileSyncSettings::from_global(&effective),
+        );
+        profile.sync_settings_fingerprint = Some(sync::syncable_settings_fingerprint(synced));
+        profile.sync_settings_updated_at_ms = synced.updated_at_ms;
+    } else {
+        return false;
+    }
+    *settings != before
+}
+
+fn syncable_tab_url(url: &str) -> bool {
+    if url.len() > sync_v2::MAX_URL_BYTES || url.chars().any(char::is_control) {
+        return false;
+    }
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !authority.is_empty() && !authority.contains('@') && !authority.chars().any(char::is_whitespace)
 }
 
 fn dns_proxy_browser_args(port: Option<u16>) -> String {
-    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+    // Wry 0.57 replaces its default flags when custom args are supplied. Keep the two
+    // flags Wry uses to suppress Edge's selection mini-menu; recheck on Wry upgrades.
+    let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI");
     if let Some(port) = port {
+        // URL requests use Pip's loopback proxy, while Chromium DNS prefetch can
+        // resolve names outside the URL proxy. Fail those speculative lookups
+        // locally; the proxy uses numeric loopback and resolves destinations via DoH.
         args.push_str(&format!(
-            " --proxy-server=http://127.0.0.1:{port} --disable-quic"
+            " --proxy-server=http://127.0.0.1:{port} --disable-quic --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1\""
         ));
     }
     args
 }
 
-fn restart_profiles_path() -> std::path::PathBuf {
+fn webview_browser_args(port: Option<u16>) -> String {
+    let mut args = dns_proxy_browser_args(port);
+    if std::env::args().any(|arg| arg == "--verify-native-ui") {
+        // Wry creates a separate WebView2 environment per WebView. Keep environment options
+        // identical for all views that share WebView2's user data folder.
+        args.push_str(" --use-fake-device-for-media-stream");
+    }
+    args
+}
+
+fn startup_profiles_path() -> std::path::PathBuf {
+    // This also stores the normal-startup window manifest; retain the legacy filename
+    // so users with a pending explicit-restart list from an older build can recover it.
     get_data_directory().join("restart-profiles.json")
+}
+
+fn valid_startup_profiles(saved: &[String], known_profiles: &[String]) -> Vec<String> {
+    let mut profiles = saved
+        .iter()
+        .filter(|id| {
+            evergreen_core::settings::valid_profile_id(id)
+                && known_profiles.iter().any(|known| known == *id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if profiles.is_empty() {
+        profiles.push("Default".into());
+    }
+    profiles
+}
+
+fn startup_profiles_for_windows(
+    windows: impl IntoIterator<Item = (String, usize, bool)>,
+) -> Vec<String> {
+    let mut open_windows = windows
+        .into_iter()
+        .filter(|(_, _, private)| !private)
+        .map(|(profile_id, slot, _)| (profile_id, slot))
+        .collect::<Vec<_>>();
+    open_windows.sort();
+    open_windows
+        .into_iter()
+        .map(|(profile_id, _)| profile_id)
+        .collect()
+}
+
+fn persist_startup_profiles(path: &std::path::Path, profiles: &[String]) -> std::io::Result<bool> {
+    if profiles.is_empty() {
+        return Ok(false);
+    }
+    let bytes = serde_json::to_vec(profiles).map_err(std::io::Error::other)?;
+    persist_session_snapshot(path, &bytes)
+}
+
+fn load_session_windows(path: &std::path::Path) -> Vec<Vec<TabState>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<Vec<TabState>>>(&bytes).unwrap_or_else(|_| {
+        serde_json::from_slice::<Vec<TabState>>(&bytes)
+            .map(|tabs| vec![tabs])
+            .unwrap_or_default()
+    })
+}
+
+fn load_closed_histories(path: &std::path::Path) -> Vec<Vec<String>> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<Vec<String>>>(&bytes).unwrap_or_else(|_| {
+        serde_json::from_slice::<Vec<String>>(&bytes)
+            .map(|urls| vec![urls])
+            .unwrap_or_default()
+    })
+}
+
+fn is_restorable_session_url(url: &str) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://")
+        || matches!(
+            url,
+            "evergreen://newtab"
+                | "evergreen://newtab?history"
+                | "evergreen://newtab?bookmarks"
+                | "evergreen://settings"
+                | "evergreen://settings?clear-data"
+        )
+}
+
+fn sync_settings_patch_present(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("search_engine")
+        || object.contains_key("default_zoom_level")
+        || object
+            .get("appearance")
+            .and_then(|v| v.as_object())
+            .is_some_and(|a| {
+                [
+                    "theme",
+                    "density",
+                    "default_zoom_level",
+                    "show_zoom_badge",
+                    "show_status_preview",
+                ]
+                .iter()
+                .any(|key| a.contains_key(*key))
+            })
+        || object
+            .get("tabs")
+            .and_then(|v| v.as_object())
+            .is_some_and(|t| {
+                [
+                    "enable_tab_reordering",
+                    "enable_tab_tearoff",
+                    "warn_on_close_tabs",
+                ]
+                .iter()
+                .any(|key| t.contains_key(*key))
+            })
+}
+
+/// Strip the nine profile-local Sync preferences before updating global settings.
+fn without_sync_settings_patch(value: &serde_json::Value) -> serde_json::Value {
+    let mut clean = value.clone();
+    if let Some(object) = clean.as_object_mut() {
+        object.remove("search_engine");
+        object.remove("default_zoom_level");
+        if let Some(appearance) = object.get_mut("appearance").and_then(|v| v.as_object_mut()) {
+            for key in [
+                "theme",
+                "density",
+                "default_zoom_level",
+                "show_zoom_badge",
+                "show_status_preview",
+            ] {
+                appearance.remove(key);
+            }
+        }
+        if let Some(tabs) = object.get_mut("tabs").and_then(|v| v.as_object_mut()) {
+            for key in [
+                "enable_tab_reordering",
+                "enable_tab_tearoff",
+                "warn_on_close_tabs",
+            ] {
+                tabs.remove(key);
+            }
+        }
+    }
+    clean
 }
 
 fn choose_download_folder(window: &Window) -> windows::core::Result<std::path::PathBuf> {
@@ -839,9 +1413,10 @@ fn validate_browser_extension_folder(path: &std::path::Path) -> Result<std::path
         return Err("Hãy chọn thư mục tiện ích hợp lệ trên máy này.".into());
     }
     let manifest_path = path.join("manifest.json");
-    let metadata = std::fs::metadata(&manifest_path)
+    // Do not follow a manifest symlink outside the user-selected extension folder.
+    let metadata = std::fs::symlink_metadata(&manifest_path)
         .map_err(|_| "Thư mục không có manifest.json của tiện ích.".to_string())?;
-    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1024 * 1024 {
         return Err("manifest.json không hợp lệ hoặc vượt quá 1 MiB.".into());
     }
     let manifest: serde_json::Value = serde_json::from_slice(
@@ -849,9 +1424,16 @@ fn validate_browser_extension_folder(path: &std::path::Path) -> Result<std::path
             .map_err(|_| "Không đọc được manifest.json của tiện ích.".to_string())?,
     )
     .map_err(|_| "manifest.json không phải JSON hợp lệ.".to_string())?;
-    if !matches!(manifest["manifest_version"].as_u64(), Some(2 | 3))
-        || manifest["name"].as_str().is_none_or(str::is_empty)
-        || manifest["version"].as_str().is_none_or(str::is_empty)
+    let valid_text_field = |key: &str, max_chars: usize| {
+        manifest[key].as_str().is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value.chars().count() <= max_chars
+        })
+    };
+    if !manifest.is_object()
+        || !matches!(manifest["manifest_version"].as_u64(), Some(2 | 3))
+        || !valid_text_field("name", 256)
+        || !valid_text_field("version", 128)
     {
         return Err("Tiện ích cần manifest version 2 hoặc 3, tên và phiên bản hợp lệ.".into());
     }
@@ -874,25 +1456,34 @@ struct BrowserApp {
     google_dns_route_ok: Option<bool>,
     doh_proxy: Option<doh_proxy::DohProxy>,
     restart_requested: bool,
-    restart_profiles: Vec<String>,
+    startup_profiles: Vec<String>,
+    restoring_startup_windows: bool,
     next_tab_id: AtomicU64,
     allowed_cert_hosts: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     next_session_autosave: Instant,
     next_background_tab_check: Instant,
     suspending_tabs: HashSet<(WindowId, TabId)>,
+    suspending_urls: HashMap<(WindowId, TabId), String>,
+    sleep_checking_tabs: HashSet<(WindowId, TabId)>,
+    discard_checking_tabs: HashSet<(WindowId, TabId)>,
     syncing_profiles: HashSet<String>,
+    pending_sync_profiles: HashSet<String>,
+    #[cfg(debug_assertions)]
+    force_memory_pressure_for_tests: bool,
 }
 
 impl BrowserApp {
     fn sync_settings(&self) {
-        let json = serde_json::to_string(&self.settings).unwrap();
-        let preview = self.settings.features.enable_link_preview
-            && self.settings.appearance.enable_link_preview
-            && self.settings.appearance.show_status_preview;
         for win in self.windows.values() {
+            let effective = self.settings.for_profile(&win.profile_id);
+            let json = serde_json::to_string(&effective).unwrap();
+            let engine = serde_json::to_string(&effective.search_engine).unwrap();
+            let preview = effective.features.enable_link_preview
+                && effective.appearance.enable_link_preview
+                && effective.appearance.show_status_preview;
             if let Some(chrome) = &win.chrome_webview {
                 let _ = chrome.evaluate_script(&format!(
-                    "if(window.__applySettings)window.__applySettings({json});"
+                    "if(window.__applySettings)window.__applySettings({json});if(window.__syncSearchEngine)window.__syncSearchEngine({engine});"
                 ));
             }
             for view in win.tabs.values() {
@@ -920,6 +1511,7 @@ impl BrowserApp {
             win.window_height,
             win.is_sidebar_open,
             win.current_chrome_height(),
+            None,
         );
         if let Ok(view) = result {
             if let Some(win) = self.windows.get_mut(&win_id) {
@@ -935,12 +1527,14 @@ impl BrowserApp {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
         use windows::core::Interface;
         use wry::WebViewExtWindows;
-        let enabled = !private
-            && self
-                .settings
-                .profiles
-                .iter()
-                .any(|p| p.id == profile_id && p.autofill);
+        let profile = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id);
+        let autofill_enabled = !private && profile.is_some_and(|profile| profile.autofill);
+        let password_autosave_enabled =
+            !private && profile.is_some_and(|profile| profile.password_autosave);
         unsafe {
             if let Ok(profile) = view
                 .controller()
@@ -949,8 +1543,8 @@ impl BrowserApp {
                 .and_then(|c| c.Profile())
                 .and_then(|p| p.cast::<ICoreWebView2Profile6>())
             {
-                let _ = profile.SetIsPasswordAutosaveEnabled(enabled);
-                let _ = profile.SetIsGeneralAutofillEnabled(enabled);
+                let _ = profile.SetIsPasswordAutosaveEnabled(password_autosave_enabled);
+                let _ = profile.SetIsGeneralAutofillEnabled(autofill_enabled);
             }
         }
     }
@@ -1075,15 +1669,13 @@ impl BrowserApp {
         let proxy = self.proxy.clone();
         let callback = webview2_com::ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
             move |result, extension| {
-                let result = result.and_then(|()| {
-                    extension
-                        .ok_or_else(|| windows::core::Error::from(windows::core::HRESULT(-1)))
-                        .map(|_| ())
-                });
-                let _ = proxy.send_event(BrowserEvent::BrowserExtensionOperationDone(
-                    win_id,
-                    result.map_err(|_| "WebView2 không thể cài tiện ích này.".to_string()),
-                ));
+                let result = match result {
+                    Err(error) => Err(format!("WebView2 không thể cài tiện ích: {error}")),
+                    Ok(()) if extension.is_some() => Ok(()),
+                    Ok(()) => Err("WebView2 không trả về tiện ích sau khi cài đặt.".into()),
+                };
+                let _ =
+                    proxy.send_event(BrowserEvent::BrowserExtensionOperationDone(win_id, result));
                 Ok(())
             },
         ));
@@ -1142,14 +1734,16 @@ impl BrowserApp {
                 };
                 let proxy_done = proxy.clone();
                 let done = move |result: windows::core::Result<()>| {
-                    let message = if enabled.is_some() {
-                        "Không thể đổi trạng thái tiện ích."
+                    let action = if enabled.is_some() {
+                        "đổi trạng thái"
                     } else {
-                        "Không thể xóa tiện ích."
+                        "xóa"
                     };
                     let _ = proxy_done.send_event(BrowserEvent::BrowserExtensionOperationDone(
                         win_id,
-                        result.map_err(|_| message.to_string()),
+                        result.map_err(|error| {
+                            format!("Không thể {action} tiện ích qua WebView2: {error}")
+                        }),
                     ));
                     Ok(())
                 };
@@ -1345,39 +1939,89 @@ impl BrowserApp {
         if win.private {
             return;
         }
+        let session_directory = get_data_directory().join("sessions");
         let tabs = win.tab_manager.snapshot();
-        if let Ok(bytes) = serde_json::to_vec(&tabs) {
-            let path = get_data_directory()
-                .join("sessions")
-                .join(format!("{}.json", win.profile_id));
+        let path = session_directory.join(format!("{}.json", win.profile_id));
+        let mut windows = load_session_windows(&path);
+        update_session_slot(&mut windows, win.session_slot, tabs);
+        if let Ok(bytes) = serde_json::to_vec(&windows) {
             if let Err(error) = persist_session_snapshot(&path, &bytes) {
                 eprintln!("Save session: {error}");
             }
         }
+        let closed_path = session_directory.join(format!("{}.closed.json", win.profile_id));
+        let mut histories = load_closed_histories(&closed_path);
+        update_session_slot(
+            &mut histories,
+            win.session_slot,
+            win.tab_manager.closed_history_snapshot(),
+        );
+        if let Ok(bytes) = serde_json::to_vec(&histories) {
+            if let Err(error) = persist_session_snapshot(&closed_path, &bytes) {
+                eprintln!("Save recently closed tabs: {error}");
+            }
+        }
+    }
+
+    fn persist_open_window_profiles(&self) {
+        if self.restoring_startup_windows {
+            return;
+        }
+        #[cfg(debug_assertions)]
+        if std::env::args().any(|arg| arg == "--verify-native-ui") {
+            return;
+        }
+        let profiles = startup_profiles_for_windows(self.windows.values().map(|window| {
+            (
+                window.profile_id.clone(),
+                window.session_slot,
+                window.private,
+            )
+        }));
+        // Keep the last normal session manifest when the final window is closed.
+        // That close is also how users normally quit the browser.
+        if let Err(error) = persist_startup_profiles(&startup_profiles_path(), &profiles) {
+            eprintln!("Could not persist Pip startup windows: {error}");
+        }
+    }
+
+    fn compact_and_save_open_sessions(&mut self) {
+        self.compact_open_session_slots(None);
+        let window_ids = self.windows.keys().copied().collect::<Vec<_>>();
+        for window_id in window_ids {
+            self.save_session(window_id);
+        }
+        self.persist_open_window_profiles();
     }
 
     fn restore_session(&mut self, win_id: WindowId) {
-        let Some(win) = self.windows.get(&win_id) else {
+        let Some((profile_id, private, session_slot)) = self
+            .windows
+            .get(&win_id)
+            .map(|win| (win.profile_id.clone(), win.private, win.session_slot))
+        else {
             return;
         };
-        if win.private {
+        if private {
             return;
         }
-        let path = get_data_directory()
-            .join("sessions")
-            .join(format!("{}.json", win.profile_id));
-        let Ok(bytes) = std::fs::read(path) else {
-            return;
-        };
-        let Ok(tabs) = serde_json::from_slice::<Vec<TabState>>(&bytes) else {
+        let session_directory = get_data_directory().join("sessions");
+        let closed_path = session_directory.join(format!("{profile_id}.closed.json"));
+        let urls = load_closed_histories(&closed_path)
+            .get(session_slot)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(win) = self.windows.get_mut(&win_id) {
+            win.tab_manager.restore_closed_history(urls);
+        }
+        let path = session_directory.join(format!("{profile_id}.json"));
+        let saved_windows = load_session_windows(&path);
+        let Some(tabs) = saved_windows.get(session_slot).cloned() else {
             return;
         };
         let mut restored = Vec::new();
         for mut tab in tabs.into_iter().take(100) {
-            if !tab.url.starts_with("https://")
-                && !tab.url.starts_with("http://")
-                && tab.url != "evergreen://newtab"
-            {
+            if !is_restorable_session_url(&tab.url) {
                 continue;
             }
             tab.id = self.next_tab_id();
@@ -1479,6 +2123,40 @@ impl BrowserApp {
         }
     }
 
+    fn render_remote_sync_tabs(
+        &self,
+        win_id: WindowId,
+        profile_id: &str,
+        payload: &sync_v2::SyncPayloadV2,
+    ) {
+        let Some(devices) = payload.open_tabs.as_ref().map(|category| &category.devices) else {
+            return;
+        };
+        let local_device_id = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.sync_device_id.as_deref())
+            .unwrap_or_default();
+        let Some(view) = self.windows.get(&win_id).and_then(|window| {
+            window
+                .tab_manager
+                .tabs()
+                .iter()
+                .find(|tab| tab.url == "evergreen://settings")
+                .and_then(|tab| window.tabs.get(&tab.id))
+        }) else {
+            return;
+        };
+        let devices = serde_json::to_string(devices).unwrap_or_else(|_| "[]".into());
+        let local_device_id =
+            serde_json::to_string(local_device_id).unwrap_or_else(|_| "\"\"".into());
+        let _ = view.evaluate_script(&format!(
+            "if(window.__renderSyncedTabs)window.__renderSyncedTabs({devices},{local_device_id});"
+        ));
+    }
+
     fn notify_user(&self, win_id: WindowId, message: &str) {
         let Some(chrome) = self
             .windows
@@ -1503,8 +2181,15 @@ impl BrowserApp {
                     "id": profile.id,
                     "name": profile.name,
                     "autofill": profile.autofill,
+                    "passwordAutosave": profile.password_autosave,
                     "syncEnabled": profile.sync_credentials_protected.is_some(),
-                    "isOpen": self.windows.values().any(|window| window.profile_id == profile.id),
+                    "syncBusy": self.syncing_profiles.contains(&profile.id),
+                    "syncHistory": profile.sync_history,
+                    "syncOpenTabs": profile.sync_open_tabs,
+                    "syncSettings": profile.sync_settings,
+                    "syncPasswords": profile.sync_passwords,
+                    "isOpen": self.windows.values().any(|window| !window.private && window.profile_id == profile.id),
+                    "isPrivateOpen": self.windows.values().any(|window| window.private && window.profile_id == profile.id),
                 })
             })
             .collect::<Vec<_>>();
@@ -1582,7 +2267,7 @@ impl BrowserApp {
             None
         };
         let google_dns_start_failed = settings.google_dns && doh_proxy.is_none();
-        let restart_profiles = std::fs::read(restart_profiles_path())
+        let startup_profiles = std::fs::read(startup_profiles_path())
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
             .unwrap_or_default();
@@ -1593,6 +2278,7 @@ impl BrowserApp {
             }),
             adblock: std::rc::Rc::new(std::cell::RefCell::new(adblock::Blocker::load(
                 get_data_directory(),
+                settings.adblock_mode,
             ))),
             proxy,
             cert_cache: cert::CertificateCache::new(),
@@ -1606,14 +2292,21 @@ impl BrowserApp {
             google_dns_route_ok: None,
             doh_proxy,
             restart_requested: false,
-            restart_profiles,
+            startup_profiles,
+            restoring_startup_windows: false,
             settings,
             next_tab_id: AtomicU64::new(1),
             allowed_cert_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             next_session_autosave: Instant::now() + SESSION_AUTOSAVE_INTERVAL,
             next_background_tab_check: Instant::now() + Duration::from_secs(15),
             suspending_tabs: HashSet::new(),
+            suspending_urls: HashMap::new(),
+            sleep_checking_tabs: HashSet::new(),
+            discard_checking_tabs: HashSet::new(),
             syncing_profiles: HashSet::new(),
+            pending_sync_profiles: HashSet::new(),
+            #[cfg(debug_assertions)]
+            force_memory_pressure_for_tests: false,
         }
     }
 
@@ -1622,6 +2315,23 @@ impl BrowserApp {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64
+    }
+
+    fn memory_pressure_detected(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if self.force_memory_pressure_for_tests {
+            return true;
+        }
+        available_physical_memory_bytes()
+            .is_some_and(|available| available < LOW_MEMORY_AVAILABLE_BYTES)
     }
 
     fn next_tab_id(&self) -> TabId {
@@ -1635,7 +2345,9 @@ impl BrowserApp {
             return;
         }
         let idle_after = self.settings.performance.sleep_after_secs;
-        let mut candidates = Vec::new();
+        let low_memory = self.memory_pressure_detected();
+        let mut suspend_candidates = Vec::new();
+        let mut discard_candidates = Vec::new();
         for (window_id, win) in &self.windows {
             // Keep active downloads alive; WebView2 does not identify their source tab here.
             if win.permission_bar_open
@@ -1648,23 +2360,33 @@ impl BrowserApp {
             }
             let active = win.tab_manager.active_tab_id();
             for tab in win.tab_manager.tabs() {
+                if tab.status == evergreen_core::tabs::TabStatus::Suspended {
+                    if low_memory
+                        && eligible_for_memory_discard(tab, now_secs)
+                        && self.discard_checking_tabs.is_empty()
+                    {
+                        discard_candidates.push((
+                            tab.last_active_timestamp_secs,
+                            *window_id,
+                            tab.id,
+                        ));
+                    }
+                    continue;
+                }
                 if Some(tab.id) == active
                     || tab.status == evergreen_core::tabs::TabStatus::Crashed
-                    || tab.keep_awake
-                    || tab.is_loading
-                    || tab.is_audio_playing
-                    || tab.pinned
-                    || now_secs.saturating_sub(tab.last_active_timestamp_secs) < idle_after
-                    || !(tab.url.starts_with("http://") || tab.url.starts_with("https://"))
+                    || tab.status == evergreen_core::tabs::TabStatus::Discarded
+                    || !eligible_for_memory_suspend(tab, now_secs, idle_after)
                     || !win.tabs.contains_key(&tab.id)
                     || self.suspending_tabs.contains(&(*window_id, tab.id))
+                    || self.sleep_checking_tabs.contains(&(*window_id, tab.id))
                 {
                     continue;
                 }
-                candidates.push((*window_id, tab.id));
+                suspend_candidates.push((*window_id, tab.id));
             }
         }
-        for (window_id, tab_id) in candidates {
+        for (window_id, tab_id) in suspend_candidates {
             let Some(view) = self
                 .windows
                 .get(&window_id)
@@ -1672,9 +2394,49 @@ impl BrowserApp {
             else {
                 continue;
             };
-            self.suspending_tabs.insert((window_id, tab_id));
-            if accelerator::suspend_webview(view, window_id, tab_id, self.proxy.clone()).is_err() {
-                self.suspending_tabs.remove(&(window_id, tab_id));
+            let proxy = self.proxy.clone();
+            self.sleep_checking_tabs.insert((window_id, tab_id));
+            if view
+                .evaluate_script_with_callback(
+                    "JSON.stringify({safe:window.__pipCanDiscard?.() === true,href:location.href})",
+                    move |result| {
+                        let (safe, url) =
+                            parse_memory_safety_result(&result).unwrap_or((false, String::new()));
+                        let _ = proxy.send_event(BrowserEvent::TabSuspendSafetyResult(
+                            window_id, tab_id, safe, url,
+                        ));
+                    },
+                )
+                .is_err()
+            {
+                self.sleep_checking_tabs.remove(&(window_id, tab_id));
+            }
+        }
+        discard_candidates.sort_by_key(|(last_active, _, _)| *last_active);
+        if let Some((_, window_id, tab_id)) = discard_candidates.into_iter().next() {
+            let Some(view) = self
+                .windows
+                .get(&window_id)
+                .and_then(|win| win.tabs.get(&tab_id))
+            else {
+                return;
+            };
+            let proxy = self.proxy.clone();
+            self.discard_checking_tabs.insert((window_id, tab_id));
+            if view
+                .evaluate_script_with_callback(
+                    "JSON.stringify({safe:window.__pipCanDiscard?.() === true,href:location.href})",
+                    move |result| {
+                        let (safe, url) =
+                            parse_memory_safety_result(&result).unwrap_or((false, String::new()));
+                        let _ = proxy.send_event(BrowserEvent::TabDiscardSafetyResult(
+                            window_id, tab_id, safe, url,
+                        ));
+                    },
+                )
+                .is_err()
+            {
+                self.discard_checking_tabs.remove(&(window_id, tab_id));
             }
         }
     }
@@ -1684,7 +2446,19 @@ impl BrowserApp {
         event_loop: &ActiveEventLoop,
         initial_url: Option<String>,
     ) -> Option<WindowId> {
-        self.create_profile_window(event_loop, initial_url, "Default".into(), false)
+        let restore_slot = (initial_url.is_none()
+            && !self
+                .windows
+                .values()
+                .any(|window| !window.private && window.profile_id == "Default"))
+        .then_some(0);
+        self.create_profile_window(
+            event_loop,
+            initial_url,
+            "Default".into(),
+            false,
+            restore_slot,
+        )
     }
 
     fn open_related_window(
@@ -1695,7 +2469,32 @@ impl BrowserApp {
     ) {
         if let Some(win) = self.windows.get(&source) {
             let profile = win.profile_id.clone();
-            self.create_profile_window(event_loop, None, profile, private);
+            self.create_profile_window(event_loop, None, profile, private, None);
+        }
+    }
+
+    fn next_profile_session_slot(&self, profile_id: &str) -> usize {
+        self.windows
+            .values()
+            .filter(|window| !window.private && window.profile_id == profile_id)
+            .map(|window| window.session_slot)
+            .max()
+            .map_or(0, |slot| slot + 1)
+    }
+
+    fn compact_open_session_slots(&mut self, excluded_profile: Option<&str>) {
+        let window_ids = self.windows.keys().copied().collect::<Vec<_>>();
+        let mut next_slot = HashMap::<String, usize>::new();
+        for window_id in window_ids {
+            let Some(window) = self.windows.get_mut(&window_id) else {
+                continue;
+            };
+            if window.private || excluded_profile == Some(window.profile_id.as_str()) {
+                continue;
+            }
+            let slot = next_slot.entry(window.profile_id.clone()).or_default();
+            window.session_slot = *slot;
+            *slot += 1;
         }
     }
 
@@ -1705,13 +2504,13 @@ impl BrowserApp {
         initial_url: Option<String>,
         profile_id: String,
         private: bool,
+        restore_session_slot: Option<usize>,
     ) -> Option<WindowId> {
-        let restore = initial_url.is_none()
-            && !private
-            && !self
-                .windows
-                .values()
-                .any(|w| w.profile_id == profile_id && !w.private);
+        let session_slot = if private {
+            0
+        } else {
+            restore_session_slot.unwrap_or_else(|| self.next_profile_session_slot(&profile_id))
+        };
         let mut window_attributes = window::default_window_attributes();
         let profile_name = self
             .settings
@@ -1799,6 +2598,7 @@ impl BrowserApp {
             },
             proxy: self.proxy.clone(),
             profile_id: profile_id.clone(),
+            session_slot,
             private,
             dns_proxy_port: self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port),
             id: win_id,
@@ -1810,8 +2610,10 @@ impl BrowserApp {
             sidebar_mode: "menu".to_string(),
             tabs: HashMap::new(),
             tab_persisted: HashMap::new(),
+            site_zoom: load_site_zoom(&profile_id, private),
             window_width: win_width,
             window_height: win_height,
+            is_fullscreen: false,
             find_bar_open: false,
             permission_bar_open: false,
             profile_menu_open: false,
@@ -1821,19 +2623,24 @@ impl BrowserApp {
         let chrome_bounds = create_bounds(0.0, 0.0, win_width, CHROME_HEIGHT);
         let proxy_ipc = self.proxy.clone();
 
-        let chrome_html = get_chrome_html(&self.settings.search_engine)
-            .replace(
-                "{{PROFILE_LABEL}}",
-                &profile_name
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-                    .replace('"', "&quot;"),
-            )
-            .replace("{{PRIVATE_LABEL}}", if private { " · Ẩn danh" } else { "" });
+        let profile_settings = self.settings.for_profile(&profile_id);
+        let chrome_html = chrome::get_chrome_html_with_appearance(
+            &profile_settings.search_engine,
+            &profile_settings.appearance.theme,
+            &profile_settings.appearance.density,
+        )
+        .replace(
+            "{{PROFILE_LABEL}}",
+            &profile_name
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;"),
+        )
+        .replace("{{PRIVATE_LABEL}}", if private { " · Ẩn danh" } else { "" });
 
         let chrome_builder = WebViewBuilder::new()
-            .with_additional_browser_args(dns_proxy_browser_args(win_ctx.dns_proxy_port))
+            .with_additional_browser_args(webview_browser_args(win_ctx.dns_proxy_port))
             .with_bounds(chrome_bounds)
             .with_browser_extensions_enabled(true);
         match chrome_builder
@@ -1859,7 +2666,7 @@ impl BrowserApp {
                 let _ = chrome_wv.evaluate_script(&version_script);
                 let engine_script = format!(
                     "if (window.__syncSearchEngine) {{ window.__syncSearchEngine('{}'); }}",
-                    self.settings.search_engine
+                    profile_settings.search_engine
                 );
                 let _ = chrome_wv.evaluate_script(&engine_script);
                 win_ctx.chrome_webview = Some(chrome_wv);
@@ -1876,8 +2683,14 @@ impl BrowserApp {
                 .filter(|a| !a.is_empty() && !a.starts_with('-'))
         });
         self.handle_create_tab(win_id, target_url);
-        if restore {
+        if restore_session_slot.is_some() {
             self.restore_session(win_id);
+        }
+        if !private {
+            self.save_session(win_id);
+        }
+        if !self.restoring_startup_windows && !private {
+            self.persist_open_window_profiles();
         }
 
         // Isolated automation can exercise the real binary without stealing focus.
@@ -1899,7 +2712,14 @@ impl BrowserApp {
         win_height: f64,
         is_sidebar_open: bool,
         chrome_h: f64,
+        popup_opener_url: Option<String>,
     ) -> Result<WebView, wry::Error> {
+        let profile_id = self
+            .windows
+            .get(&win_id)
+            .map(|context| context.profile_id.clone())
+            .unwrap_or_else(|| "Default".to_string());
+        let profile_settings = self.settings.for_profile(&profile_id);
         let content_width = if is_sidebar_open {
             (win_width - 320.0).max(1.0)
         } else {
@@ -1923,10 +2743,10 @@ impl BrowserApp {
         let is_loading_page = url.starts_with("evergreen://loading");
 
         let init_script = format!(
-            "window.__pipLinkPreviewEnabled={};\n{NAV_WATCHER_SCRIPT}",
-            self.settings.features.enable_link_preview
-                && self.settings.appearance.enable_link_preview
-                && self.settings.appearance.show_status_preview
+            "window.__pipLinkPreviewEnabled={};\n{NAV_WATCHER_SCRIPT}\n{DISCARD_SAFETY_SCRIPT}",
+            profile_settings.features.enable_link_preview
+                && profile_settings.appearance.enable_link_preview
+                && profile_settings.appearance.show_status_preview
         );
         let context = self.windows.get(&win_id).expect("tab window exists");
         let is_persistent = !context.private;
@@ -1935,8 +2755,9 @@ impl BrowserApp {
         let google_dns_failed = self.google_dns_start_failed;
         let google_dns_route_ok = self.google_dns_route_ok;
 
+        let browser_args = webview_browser_args(context.dns_proxy_port);
         let mut builder = WebViewBuilder::new()
-            .with_additional_browser_args(dns_proxy_browser_args(context.dns_proxy_port))
+            .with_additional_browser_args(browser_args)
             .with_bounds(bounds)
             .with_browser_extensions_enabled(true)
             .with_incognito(!is_persistent)
@@ -1945,9 +2766,10 @@ impl BrowserApp {
             .with_background_color((24, 24, 32, 255))
             .with_initialization_script(&init_script)
             .with_devtools(true);
-        let search_name = self.settings.search_engine_display_name().to_string();
+        let profile_settings = self.settings.for_profile(&profile_id);
+        let search_name = profile_settings.search_engine_display_name().to_string();
         let ipc_token = self.internal_ipc_token.clone();
-        let settings_clone = self.settings.clone();
+        let settings_clone = profile_settings.clone();
         let protocol_token = ipc_token.clone();
         let protocol_profile = profile_id.clone();
         let protocol_search_name = search_name.clone();
@@ -2045,7 +2867,7 @@ impl BrowserApp {
             builder = builder.with_html(chrome::protect_internal_html(
                 settings_ui::get_settings_html(
                     &active_ver,
-                    &self.settings,
+                    &profile_settings,
                     google_dns_active,
                     google_dns_failed,
                     google_dns_route_ok,
@@ -2105,6 +2927,7 @@ impl BrowserApp {
             self.proxy.clone(),
             self.allowed_cert_hosts.clone(),
             self.adblock.clone(),
+            popup_opener_url,
         );
 
         // Register interception before the first remote navigation, including restored tabs.
@@ -2116,6 +2939,19 @@ impl BrowserApp {
     }
 
     fn handle_create_tab(&mut self, win_id: WindowId, url: Option<String>) {
+        self.handle_create_tab_with_popup_context(win_id, url, None);
+    }
+
+    fn handle_create_popup_tab(&mut self, win_id: WindowId, url: String, opener_url: String) {
+        self.handle_create_tab_with_popup_context(win_id, Some(url), Some(opener_url));
+    }
+
+    fn handle_create_tab_with_popup_context(
+        &mut self,
+        win_id: WindowId,
+        url: Option<String>,
+        popup_opener_url: Option<String>,
+    ) {
         let tab_id = self.next_tab_id();
         let target_url = url.unwrap_or_else(|| "evergreen://newtab".to_string());
 
@@ -2140,6 +2976,7 @@ impl BrowserApp {
                 is_muted: false,
                 pinned: false,
                 keep_awake: false,
+                memory_discard_protected: false,
                 group: None,
                 status: evergreen_core::tabs::TabStatus::Active,
                 last_active_timestamp_secs: Self::now_secs(),
@@ -2166,6 +3003,7 @@ impl BrowserApp {
                 win_height,
                 is_sidebar_open,
                 chrome_h,
+                popup_opener_url,
             ) {
                 Ok(wv) => {
                     let _ = wv.set_visible(true);
@@ -2176,12 +3014,13 @@ impl BrowserApp {
                         win_ctx.update_layout();
                         win_ctx.sync_ui_state();
                         win_ctx.update_sidebar_sync(&self.cert_cache);
-                        let default_zoom = self.settings.appearance.default_zoom_level;
-                        if (default_zoom - 1.0).abs() > f64::EPSILON {
-                            win_ctx.set_active_zoom(default_zoom);
-                        } else {
-                            win_ctx.sync_zoom(1.0);
-                        }
+                        let default_zoom = self
+                            .settings
+                            .for_profile(&win_ctx.profile_id)
+                            .appearance
+                            .default_zoom_level;
+                        let initial_zoom = win_ctx.zoom_for_url(&target_url, default_zoom);
+                        win_ctx.apply_tab_zoom(actual_id, initial_zoom);
                     }
                 }
                 Err(e) => {
@@ -2197,6 +3036,7 @@ impl BrowserApp {
                 }
             }
         }
+        self.sync_profile_open_tabs(win_id);
     }
 
     fn library_path(&self, win_id: WindowId) -> Option<std::path::PathBuf> {
@@ -2348,6 +3188,23 @@ impl BrowserApp {
         }
     }
 
+    fn sync_password_vault_if_enabled(&mut self, win_id: WindowId) {
+        let enabled = self
+            .windows
+            .get(&win_id)
+            .filter(|win| !win.private)
+            .and_then(|win| {
+                self.settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == win.profile_id)
+            })
+            .is_some_and(|profile| profile.sync_passwords);
+        if enabled {
+            self.start_bookmark_sync(win_id, false);
+        }
+    }
+
     fn sync_library(&self, win_id: WindowId) {
         if let Some(win) = self.windows.get(&win_id) {
             if let Some(chrome) = &win.chrome_webview {
@@ -2378,7 +3235,33 @@ impl BrowserApp {
             ));
         }
         let shortcuts = library.home_shortcuts();
-        let data = serde_json::json!({"bookmarks":library.bookmarks,"history":if win.private {vec![]}else{library.history},"shortcuts":shortcuts,"private":win.private});
+        let bookmarks = library
+            .bookmarks
+            .iter()
+            .map(|page| {
+                serde_json::json!({
+                    "url": page.url,
+                    "title": page.title,
+                    "folder_id": library.bookmark_folder_for(&page.url),
+                })
+            })
+            .collect::<Vec<_>>();
+        let history = if win.private {
+            Vec::<serde_json::Value>::new()
+        } else {
+            library
+                .history_visits
+                .iter()
+                .map(|visit| {
+                    serde_json::json!({
+                        "url": visit.url,
+                        "title": visit.title,
+                        "visited_at_ms": visit.visited_at_ms,
+                    })
+                })
+                .collect()
+        };
+        let data = serde_json::json!({"bookmarks":bookmarks,"bookmark_folders":library.bookmark_folders,"history":history,"shortcuts":shortcuts,"private":win.private});
         let script = format!("if(window.__renderLibrary)window.__renderLibrary({data});");
         for (id, view) in &win.tabs {
             if win
@@ -2440,15 +3323,28 @@ impl BrowserApp {
         let Some(path) = self.library_path(win_id) else {
             return;
         };
+        let (history_sync_enabled, open_tabs_sync_enabled) = self
+            .windows
+            .get(&win_id)
+            .filter(|window| !window.private)
+            .and_then(|window| {
+                self.settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == window.profile_id)
+            })
+            .map(|profile| (profile.sync_history, profile.sync_open_tabs))
+            .unwrap_or_default();
         let result = (|| -> std::io::Result<bool> {
             let mut library = evergreen_core::library::Library::load(&path)?;
             let before = library.clone();
             edit(&mut library);
-            let bookmarks_changed = bookmark_sync_state_changed(&before, &library);
+            let sync_needed = bookmark_sync_state_changed(&before, &library, history_sync_enabled);
+            let sync_needed = sync_needed || open_tabs_sync_enabled;
             if before == library {
                 return Ok(false);
             }
-            library.save(&path).map(|()| bookmarks_changed)
+            library.save(&path).map(|()| sync_needed)
         })();
         let bookmarks_changed = match result {
             Ok(changed) => changed,
@@ -2475,6 +3371,69 @@ impl BrowserApp {
         }
     }
 
+    fn ensure_sync_device_id(&mut self, profile_id: &str) -> Option<String> {
+        if let Some(id) = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.sync_device_id.as_deref())
+            .filter(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Some(id.to_string());
+        }
+        let id = sync::generate_device_id();
+        let mut settings = self.settings.clone();
+        let profile = settings.profiles.iter_mut().find(|p| p.id == profile_id)?;
+        profile.sync_device_id = Some(id.clone());
+        if settings.save_to_path(&get_settings_path()).is_err() {
+            return None;
+        }
+        self.settings = settings;
+        Some(id)
+    }
+
+    fn sync_settings_snapshot(
+        &mut self,
+        profile_id: &str,
+        now_ms: u64,
+    ) -> Option<sync_v2::SyncableSettings> {
+        let effective = self.settings.for_profile(profile_id);
+        let mut snapshot = sync::syncable_settings_from(&effective, 0);
+        let fingerprint = sync::syncable_settings_fingerprint(&snapshot);
+        let profile = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)?;
+        let previous_fingerprint = profile.sync_settings_fingerprint.clone();
+        let updated_at = if previous_fingerprint.as_deref() == Some(&fingerprint) {
+            profile.sync_settings_updated_at_ms
+        } else if previous_fingerprint.is_some() {
+            now_ms
+        } else {
+            // On the first device join, allow an existing remote preference snapshot to win.
+            0
+        };
+        snapshot.updated_at_ms = updated_at;
+        if previous_fingerprint.as_deref() != Some(&fingerprint)
+            || profile.sync_settings_updated_at_ms != updated_at
+        {
+            let mut settings = self.settings.clone();
+            let profile = settings
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)?;
+            profile.sync_settings_fingerprint = Some(fingerprint);
+            profile.sync_settings_updated_at_ms = updated_at;
+            if settings.save_to_path(&get_settings_path()).is_err() {
+                return None;
+            }
+            self.settings = settings;
+        }
+        Some(snapshot)
+    }
+
     fn start_bookmark_sync(&mut self, win_id: WindowId, manual: bool) {
         let Some(profile_id) = self
             .windows
@@ -2485,24 +3444,38 @@ impl BrowserApp {
             return;
         };
         if self.syncing_profiles.contains(&profile_id) {
+            self.pending_sync_profiles.insert(profile_id);
             if manual {
                 self.notify_settings(win_id, "Pip Sync của hồ sơ này đang chạy.");
             }
             return;
         }
-        let Some(protected) = self
+        let Some((protected, sync_history, sync_open_tabs, sync_settings, sync_passwords)) = self
             .settings
             .profiles
             .iter()
             .find(|profile| profile.id == profile_id)
-            .and_then(|profile| profile.sync_credentials_protected.as_deref())
+            .and_then(|profile| {
+                profile
+                    .sync_credentials_protected
+                    .as_deref()
+                    .map(|protected| {
+                        (
+                            protected.to_string(),
+                            profile.sync_history,
+                            profile.sync_open_tabs,
+                            profile.sync_settings,
+                            profile.sync_passwords,
+                        )
+                    })
+            })
         else {
             if manual {
                 self.notify_settings(win_id, "Tạo hoặc nhập mã Pip Sync trước.");
             }
             return;
         };
-        let credentials = match sync::unprotect_credentials(protected) {
+        let credentials = match sync::unprotect_credentials(&protected) {
             Ok(credentials) => credentials,
             Err(error) => {
                 if manual {
@@ -2523,18 +3496,115 @@ impl BrowserApp {
                 return;
             }
         };
-        let snapshot = sync::BookmarkSnapshot {
-            version: 1,
-            bookmarks: library.bookmarks,
-            removed_bookmarks: library.removed_bookmarks,
-        };
+        let mut snapshot = sync::sync_payload_from_library(&library, sync_history);
+        if sync_passwords {
+            let Some(password_path) = self.passwords_path(win_id) else {
+                if manual {
+                    self.notify_settings(win_id, "Không tìm thấy kho mật khẩu hồ sơ này.");
+                }
+                return;
+            };
+            let password_snapshot = match passwords::sync_projection(&password_path) {
+                Ok(snapshot) => snapshot,
+                Err(message) => {
+                    if manual {
+                        self.notify_settings(
+                            win_id,
+                            &format!("Không thể chuẩn bị mật khẩu Sync: {message}"),
+                        );
+                    }
+                    return;
+                }
+            };
+            snapshot.passwords = Some(sync_v2::PasswordsCategory {
+                version: password_snapshot.version,
+                entries: password_snapshot
+                    .entries
+                    .into_iter()
+                    .map(|entry| sync_v2::SyncPasswordEntry {
+                        origin: entry.origin,
+                        username: entry.username,
+                        password: entry.password,
+                        updated_at_ms: entry.updated_at_ms,
+                    })
+                    .collect(),
+                tombstones: password_snapshot
+                    .tombstones
+                    .into_iter()
+                    .map(|item| sync_v2::SyncPasswordTombstone {
+                        origin: item.origin,
+                        username: item.username,
+                        deleted_at_ms: item.deleted_at_ms,
+                    })
+                    .collect(),
+            });
+        }
+        let now_ms = BrowserApp::now_millis();
+        if sync_open_tabs {
+            let Some(device_id) = self.ensure_sync_device_id(&profile_id) else {
+                if manual {
+                    self.notify_settings(win_id, "Không lưu được mã thiết bị Pip Sync.");
+                }
+                return;
+            };
+            let mut tabs = self
+                .windows
+                .values()
+                .filter(|window| !window.private && window.profile_id == profile_id)
+                .flat_map(|window| {
+                    let active_id = window.tab_manager.active_tab_id();
+                    window
+                        .tab_manager
+                        .tabs()
+                        .iter()
+                        .filter(|tab| syncable_tab_url(&tab.url))
+                        .map(move |tab| {
+                            (
+                                active_id == Some(tab.id),
+                                tab.last_active_timestamp_secs,
+                                sync_v2::OpenTab {
+                                    url: tab.url.clone(),
+                                    title: tab
+                                        .title
+                                        .chars()
+                                        .take(sync_v2::MAX_TITLE_CHARS)
+                                        .collect(),
+                                    pinned: tab.pinned,
+                                    group: tab.group.as_ref().map(|group| group.name.clone()),
+                                },
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
+            tabs.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.2.url.cmp(&b.2.url))
+            });
+            tabs.truncate(sync_v2::MAX_OPEN_TABS_PER_DEVICE);
+            let tabs = tabs.into_iter().map(|(_, _, tab)| tab).collect();
+            snapshot.open_tabs = Some(sync_v2::OpenTabsCategory {
+                devices: vec![sync_v2::DeviceTabs {
+                    device_id,
+                    updated_at_ms: now_ms,
+                    tabs,
+                }],
+            });
+        }
+        if sync_settings {
+            snapshot.settings = self.sync_settings_snapshot(&profile_id, now_ms);
+            if snapshot.settings.is_none() && manual {
+                self.notify_settings(win_id, "Không lưu được dấu thời gian cài đặt Sync.");
+            }
+        }
+        let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
         let proxy = self.proxy.clone();
         self.syncing_profiles.insert(profile_id.clone());
         let event_profile_id = profile_id.clone();
         if std::thread::Builder::new()
             .name("pip-bookmark-sync".into())
             .spawn(move || {
-                let result = sync::sync_bookmarks(&credentials, snapshot);
+                let result = sync::sync_payload(&credentials, snapshot, dns_proxy_port);
                 let _ = proxy.send_event(BrowserEvent::SyncBookmarksDone(
                     win_id,
                     event_profile_id,
@@ -2544,14 +3614,52 @@ impl BrowserApp {
             })
             .is_ok()
         {
+            self.sync_profiles();
             if manual {
-                self.notify_settings(win_id, "Đang mã hóa và đồng bộ dấu trang…");
+                self.notify_settings(win_id, "Đang mã hóa và đồng bộ dữ liệu đã chọn…");
             }
         } else {
             self.syncing_profiles.remove(&profile_id);
             if manual {
                 self.notify_settings(win_id, "Không khởi chạy được đồng bộ.");
             }
+        }
+    }
+
+    fn sync_profile_setting_changes(&mut self) {
+        let windows = self
+            .windows
+            .iter()
+            .filter(|(_, window)| {
+                !window.private
+                    && self
+                        .settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == window.profile_id)
+                        .is_some_and(|profile| profile.sync_settings)
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for window in windows {
+            self.start_bookmark_sync(window, false);
+        }
+    }
+
+    fn sync_profile_open_tabs(&mut self, win_id: WindowId) {
+        let enabled = self
+            .windows
+            .get(&win_id)
+            .filter(|window| !window.private)
+            .and_then(|window| {
+                self.settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == window.profile_id)
+            })
+            .is_some_and(|profile| profile.sync_open_tabs);
+        if enabled {
+            self.start_bookmark_sync(win_id, false);
         }
     }
 
@@ -2596,7 +3704,7 @@ impl BrowserApp {
         let Some(profile_id) = self.windows.get(&win_id).map(|win| win.profile_id.clone()) else {
             return;
         };
-        let result = (|| -> Result<usize, String> {
+        let result = (|| -> Result<evergreen_core::library::BookmarkImportResult, String> {
             let file_size = std::fs::metadata(&file)
                 .map_err(|error| format!("Không đọc được thông tin tệp dấu trang: {error}"))?
                 .len();
@@ -2618,13 +3726,16 @@ impl BrowserApp {
         match result {
             Ok(imported) => {
                 self.sync_library_profile(&profile_id);
-                if imported > 0 {
+                if imported.bookmarks > 0 || imported.folders > 0 {
                     self.start_bookmark_sync(win_id, false);
                 }
-                let message = if imported == 0 {
-                    "Không có dấu trang mới để nhập. Mục trùng được bỏ qua; hồ sơ đã đủ 200 mục cũng không nhận thêm.".to_string()
+                let message = if imported.bookmarks == 0 && imported.folders == 0 {
+                    "Đã nhập 0 dấu trang và 0 thư mục. Mục trùng được bỏ qua; hồ sơ đã đủ 200 dấu trang cũng không nhận thêm.".to_string()
                 } else {
-                    format!("Đã nhập {imported} dấu trang vào hồ sơ hiện tại.")
+                    format!(
+                        "Đã nhập {} dấu trang và {} thư mục vào hồ sơ hiện tại.",
+                        imported.bookmarks, imported.folders
+                    )
                 };
                 self.notify_library(win_id, &message);
             }
@@ -2695,11 +3806,23 @@ impl BrowserApp {
     }
 
     fn close_window(&mut self, win_id: WindowId, event_loop: &ActiveEventLoop) {
+        if let Some(win) = self.windows.get(&win_id) {
+            let warn = self
+                .settings
+                .for_profile(&win.profile_id)
+                .tabs
+                .warn_on_close_tabs;
+            if !confirm_close_window_tabs(warn, win.tab_manager.tabs().len()) {
+                return;
+            }
+        }
         if self.windows.contains_key(&win_id) {
             self.save_session(win_id);
             self.windows.remove(&win_id);
             if self.windows.is_empty() {
                 event_loop.exit();
+            } else {
+                self.compact_and_save_open_sessions();
             }
         }
     }
@@ -2718,7 +3841,7 @@ impl BrowserApp {
             }
             win_ctx.tab_persisted.remove(&target_id);
 
-            match win_ctx.tab_manager.close_tab(target_id) {
+            match close_tab_for_window(&mut win_ctx.tab_manager, target_id, win_ctx.private) {
                 Some(next_active_id) => {
                     win_ctx.handle_switch_tab(next_active_id, &self.cert_cache);
                     false
@@ -2729,11 +3852,47 @@ impl BrowserApp {
             false
         };
 
+        self.save_session(win_id);
+
+        if let Some(win) = self.windows.get(&win_id) {
+            win.update_sidebar_sync(&self.cert_cache);
+        }
+
+        if !should_close_window {
+            self.sync_passwords(win_id);
+            self.sync_profile_open_tabs(win_id);
+        }
+
         if should_close_window {
             self.windows.remove(&win_id);
             if self.windows.is_empty() {
                 event_loop.exit();
+            } else {
+                self.compact_and_save_open_sessions();
             }
+        }
+    }
+
+    fn handle_reopen_closed_tab(&mut self, win_id: WindowId) {
+        let target_url = self
+            .windows
+            .get_mut(&win_id)
+            .and_then(|win| pop_closed_tab_for_window(&mut win.tab_manager, win.private));
+        if let Some(url) = target_url {
+            self.handle_create_tab(win_id, Some(url));
+            self.save_session(win_id);
+        }
+    }
+
+    fn handle_open_closed_tab(&mut self, win_id: WindowId, index: usize) {
+        let target_url = self
+            .windows
+            .get_mut(&win_id)
+            .filter(|win| !win.private)
+            .and_then(|win| win.tab_manager.take_closed_at_newest_index(index));
+        if let Some(url) = target_url {
+            self.handle_create_tab(win_id, Some(url));
+            self.save_session(win_id);
         }
     }
 
@@ -2791,9 +3950,13 @@ impl BrowserApp {
 
             if let Some(target_id) = target_win_id {
                 self.handle_create_tab(target_id, Some(tab_state.url));
-            } else if let Some(new_win_id) =
-                self.create_profile_window(event_loop, Some(tab_state.url), profile_id, private)
-            {
+            } else if let Some(new_win_id) = self.create_profile_window(
+                event_loop,
+                Some(tab_state.url),
+                profile_id,
+                private,
+                None,
+            ) {
                 if let (Some(sx), Some(sy)) = (screen_x, screen_y) {
                     if let Some(new_win) = self.windows.get(&new_win_id) {
                         new_win
@@ -2824,13 +3987,24 @@ impl BrowserApp {
                 self.windows.remove(&source_win_id);
                 if self.windows.is_empty() {
                     event_loop.exit();
+                } else {
+                    self.compact_and_save_open_sessions();
                 }
             }
         }
     }
 
     fn handle_navigate(&mut self, win_id: WindowId, raw_url: &str) {
-        match normalize_url(raw_url, self.settings.search_url_template()) {
+        let search_template = self
+            .windows
+            .get(&win_id)
+            .map(|win| {
+                self.settings
+                    .for_profile(&win.profile_id)
+                    .search_url_template()
+            })
+            .unwrap_or_else(|| self.settings.search_url_template());
+        match normalize_url(raw_url, search_template) {
             Ok(target) if target.starts_with("evergreen://settings") => {
                 self.handle_open_settings(win_id)
             }
@@ -2838,13 +4012,20 @@ impl BrowserApp {
                 self.handle_navigate_to_newtab(win_id, &target);
             }
             Ok(target) => {
-                if let Some(win) = self.windows.get_mut(&win_id) {
-                    if let Some(id) = win.tab_manager.active_tab_id() {
-                        if let Some(view) = win.tabs.get(&id) {
-                            // SourceChanged is the authoritative committed URL.
-                            if let Err(error) = view.load_url(&target) {
-                                eprintln!("Pip navigation failed for {target}: {error}");
-                            }
+                let navigation = self.windows.get(&win_id).and_then(|win| {
+                    win.tab_manager
+                        .active_tab()
+                        .map(|tab| (tab.id, tab.url.clone()))
+                });
+                if let Some((id, source)) = navigation {
+                    self.adblock
+                        .borrow_mut()
+                        .issue_explicit_navigation_ticket(id.0, &target, &source);
+                    if let Some(view) = self.windows.get(&win_id).and_then(|win| win.tabs.get(&id))
+                    {
+                        // SourceChanged is the authoritative committed URL.
+                        if let Err(error) = view.load_url(&target) {
+                            eprintln!("Pip navigation failed for {target}: {error}");
                         }
                     }
                 }
@@ -2878,6 +4059,7 @@ impl BrowserApp {
             height,
             sidebar_open,
             chrome_height,
+            None,
         ) {
             Ok(replacement) => replacement,
             Err(error) => {
@@ -3007,21 +4189,43 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.start_google_dns_health_check();
         if self.windows.is_empty() {
-            self.create_browser_window(event_loop, None);
-            let profiles = std::mem::take(&mut self.restart_profiles);
+            let saved_profiles = std::mem::take(&mut self.startup_profiles);
+            let known_profiles = self
+                .settings
+                .profiles
+                .iter()
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>();
+            let profiles = valid_startup_profiles(&saved_profiles, &known_profiles);
+            let mut windows_per_profile = HashMap::<String, usize>::new();
             for profile_id in profiles {
-                if profile_id != "Default"
-                    && evergreen_core::settings::valid_profile_id(&profile_id)
-                    && self
-                        .settings
-                        .profiles
-                        .iter()
-                        .any(|profile| profile.id == profile_id)
-                {
-                    self.create_profile_window(event_loop, None, profile_id, false);
+                *windows_per_profile.entry(profile_id).or_default() += 1;
+            }
+            let profiles = self
+                .settings
+                .profiles
+                .iter()
+                .filter_map(|profile| {
+                    windows_per_profile
+                        .get(&profile.id)
+                        .copied()
+                        .map(|count| (profile.id.clone(), count))
+                })
+                .collect::<Vec<_>>();
+            self.restoring_startup_windows = true;
+            for (profile_id, count) in profiles {
+                for slot in 0..count {
+                    self.create_profile_window(
+                        event_loop,
+                        None,
+                        profile_id.clone(),
+                        false,
+                        Some(slot),
+                    );
                 }
             }
-            let _ = std::fs::remove_file(restart_profiles_path());
+            self.restoring_startup_windows = false;
+            self.persist_open_window_profiles();
         }
     }
 
@@ -3046,6 +4250,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: BrowserEvent) {
         match event {
+            BrowserEvent::PopupTabRequested {
+                window_id,
+                url,
+                opener_url,
+            } => self.handle_create_popup_tab(window_id, url, opener_url),
             BrowserEvent::Ipc(win_id, action) => match action {
                 UiToHostMessage::SidebarReady => {
                     if let Some(win) = self.windows.get(&win_id) {
@@ -3071,11 +4280,57 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         .and_then(|w| w.tab_manager.active_tab())
                         .map(|t| (t.url.clone(), t.title.clone()));
                     if let Some((url, title)) = page {
-                        self.edit_library(win_id, |library| library.toggle_bookmark(&url, &title));
+                        let mut changed = false;
+                        self.edit_library(win_id, |library| {
+                            changed = library.toggle_bookmark(&url, &title);
+                        });
+                        if !changed {
+                            self.notify_user(
+                                win_id,
+                                "Không thể thêm dấu trang: địa chỉ không hợp lệ hoặc đã đạt giới hạn 200 mục.",
+                            );
+                        }
                     }
                 }
                 UiToHostMessage::RemoveBookmark { url } => {
                     self.edit_library(win_id, |library| library.remove_bookmark(&url))
+                }
+                UiToHostMessage::CreateBookmarkFolder { name, parent_id } => {
+                    let mut created = false;
+                    self.edit_library(win_id, |library| {
+                        created = library
+                            .create_bookmark_folder(&name, parent_id.as_deref())
+                            .is_some();
+                    });
+                    self.notify_library(
+                        win_id,
+                        if created {
+                            "Đã tạo thư mục dấu trang."
+                        } else {
+                            "Không tạo được thư mục. Hãy kiểm tra tên, thư mục cha và giới hạn 200 thư mục."
+                        },
+                    );
+                }
+                UiToHostMessage::DeleteBookmarkFolder { folder_id } => {
+                    let mut deleted = false;
+                    self.edit_library(win_id, |library| {
+                        deleted = library.delete_bookmark_folder(&folder_id);
+                    });
+                    if !deleted {
+                        self.notify_library(win_id, "Không tìm thấy thư mục dấu trang cần xóa.");
+                    }
+                }
+                UiToHostMessage::MoveBookmarkToFolder { url, folder_id } => {
+                    let mut moved = false;
+                    self.edit_library(win_id, |library| {
+                        moved = library.move_bookmark_to_folder(&url, folder_id.as_deref());
+                    });
+                    if !moved {
+                        self.notify_library(
+                            win_id,
+                            "Không chuyển được dấu trang vào thư mục đã chọn.",
+                        );
+                    }
                 }
                 UiToHostMessage::AddHomeShortcut { url, title } => {
                     let mut added = false;
@@ -3114,11 +4369,18 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         self.edit_library(win_id, |library| library.remove_history(&url));
                     }
                 }
+                UiToHostMessage::RemoveHistoryVisit { url, visited_at_ms } => {
+                    if self.windows.get(&win_id).is_some_and(|win| !win.private) {
+                        self.edit_library(win_id, |library| {
+                            library.remove_history_visit(&url, visited_at_ms)
+                        });
+                    }
+                }
                 UiToHostMessage::ImportBookmarks => self.import_bookmarks(win_id),
                 UiToHostMessage::ExportBookmarks => self.export_bookmarks(win_id),
                 UiToHostMessage::ClearHistory => {
                     if self.windows.get(&win_id).is_some_and(|win| !win.private) {
-                        self.edit_library(win_id, |library| library.history.clear());
+                        self.edit_library(win_id, |library| library.clear_history());
                     }
                 }
                 UiToHostMessage::OpenLibrary { view } => {
@@ -3171,7 +4433,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
                 UiToHostMessage::OpenProfile { id } => {
                     if self.settings.profiles.iter().any(|p| p.id == id) {
-                        self.create_profile_window(event_loop, None, id, false);
+                        let restore_slot = (!self
+                            .windows
+                            .values()
+                            .any(|window| !window.private && window.profile_id == id))
+                        .then_some(0);
+                        self.create_profile_window(event_loop, None, id, false, restore_slot);
                     }
                 }
                 UiToHostMessage::CreateProfile { name } => {
@@ -3187,12 +4454,21 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     id: id.clone(),
                                     name: name.trim().into(),
                                     autofill: true,
+                                    password_autosave: true,
                                     sync_credentials_protected: None,
+                                    sync_history: false,
+                                    sync_open_tabs: false,
+                                    sync_settings: false,
+                                    sync_passwords: false,
+                                    sync_device_id: None,
+                                    sync_settings_updated_at_ms: 0,
+                                    sync_settings_fingerprint: None,
+                                    sync_settings_values: None,
                                 });
                             if settings.save_to_path(&get_settings_path()).is_ok() {
                                 self.settings = settings;
                                 self.sync_profiles();
-                                self.create_profile_window(event_loop, None, id, false);
+                                self.create_profile_window(event_loop, None, id, false, Some(0));
                             }
                         }
                     }
@@ -3238,19 +4514,23 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         );
                         return;
                     }
+                    self.compact_open_session_slots(Some(&id));
                     let profile_view = self
                         .windows
                         .values()
-                        .find(|window| window.profile_id == id)
+                        .find(|window| !window.private && window.profile_id == id)
                         .and_then(|window| window.tabs.values().next());
                     let Some(profile_view) = profile_view else {
-                        self.notify_settings(win_id, "Hãy mở hồ sơ cần xóa trước.");
+                        self.notify_settings(
+                            win_id,
+                            "Hãy mở hồ sơ này trong cửa sổ Pip bình thường trước khi xóa. Cửa sổ ẩn danh không thể dùng để xóa dữ liệu hồ sơ.",
+                        );
                         return;
                     };
 
                     // Save the restart list before destructive work so other open profiles
                     // return after the WebView2 profile has been deleted and Pip restarts.
-                    let restart_profiles: std::collections::HashSet<String> = self
+                    let restart_profiles: Vec<String> = self
                         .windows
                         .values()
                         .filter(|window| !window.private && window.profile_id != id)
@@ -3265,10 +4545,9 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             self.save_session(window_id);
                         }
                     }
-                    let restart_profiles = restart_profiles.into_iter().collect::<Vec<_>>();
                     let restart_list_saved = serde_json::to_vec(&restart_profiles)
                         .map_err(std::io::Error::other)
-                        .and_then(|data| std::fs::write(restart_profiles_path(), data));
+                        .and_then(|data| std::fs::write(startup_profiles_path(), data));
                     if restart_list_saved.is_err() {
                         self.notify_settings(
                             win_id,
@@ -3281,7 +4560,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     let mut settings = previous_settings.clone();
                     settings.profiles.retain(|profile| profile.id != id);
                     if settings.save_to_path(&get_settings_path()).is_err() {
-                        let _ = std::fs::remove_file(restart_profiles_path());
+                        let _ = std::fs::remove_file(startup_profiles_path());
                         self.notify_settings(win_id, "Không thể lưu thay đổi; hồ sơ chưa bị xóa.");
                         return;
                     }
@@ -3302,15 +4581,34 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     };
                     if deletion.is_err() {
                         let _ = previous_settings.save_to_path(&get_settings_path());
-                        let _ = std::fs::remove_file(restart_profiles_path());
+                        let _ = std::fs::remove_file(startup_profiles_path());
                         self.notify_settings(win_id, "WebView2 không thể xóa hồ sơ này. Hãy cập nhật WebView2 Runtime rồi thử lại.");
                         return;
                     }
 
                     self.settings = settings;
                     let data_dir = get_data_directory();
+                    let profiles_directory = data_dir.join("profiles");
+                    let vault_cleanup = passwords::remove_profile_vault(&profiles_directory, &id);
+                    let site_zoom_cleanup = match std::fs::remove_file(
+                        profiles_directory.join(&id).join("site-zoom.json"),
+                    ) {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(_) => Err("Không thể xóa mức thu phóng website của hồ sơ.".to_owned()),
+                    };
+                    if let Err(error) = vault_cleanup.and(site_zoom_cleanup) {
+                        eprintln!("Pip profile sidecar cleanup failed for {id}: {error}");
+                        self.notify_settings(
+                            win_id,
+                            &format!("WebView2 đã xóa hồ sơ, nhưng {error} Pip sẽ khởi động lại."),
+                        );
+                    }
                     let _ =
                         std::fs::remove_file(data_dir.join("sessions").join(format!("{id}.json")));
+                    let _ = std::fs::remove_file(
+                        data_dir.join("sessions").join(format!("{id}.closed.json")),
+                    );
                     let _ = std::fs::remove_file(
                         data_dir.join("profiles").join(&id).join("library.json"),
                     );
@@ -3352,16 +4650,13 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                         win.sync_ui_state();
                     }
+                    self.save_session(win_id);
+                    self.sync_profile_open_tabs(win_id);
                 }
                 UiToHostMessage::RestoreSession => self.restore_session(win_id),
-                UiToHostMessage::ReopenClosedTab => {
-                    let url = self
-                        .windows
-                        .get_mut(&win_id)
-                        .and_then(|w| w.tab_manager.pop_last_closed());
-                    if let Some(url) = url {
-                        self.handle_create_tab(win_id, Some(url));
-                    }
+                UiToHostMessage::ReopenClosedTab => self.handle_reopen_closed_tab(win_id),
+                UiToHostMessage::OpenClosedTab { index } => {
+                    self.handle_open_closed_tab(win_id, index)
                 }
                 UiToHostMessage::TranslatePage => {
                     if let Some(win) = self.windows.get(&win_id) {
@@ -3497,13 +4792,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     };
                     let vault_id = credentials.vault_id.clone();
+                    let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
                     let proxy = self.proxy.clone();
                     let event_profile_id = profile_id.clone();
                     self.syncing_profiles.insert(profile_id.clone());
                     if std::thread::Builder::new()
                         .name("pip-bookmark-sync-delete".into())
                         .spawn(move || {
-                            let result = sync::delete_vault(&credentials);
+                            let result = sync::delete_vault(&credentials, dns_proxy_port);
                             let _ = proxy.send_event(BrowserEvent::SyncDisabled(
                                 win_id,
                                 event_profile_id,
@@ -3569,6 +4865,48 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 UiToHostMessage::SyncBookmarks => {
                     self.start_bookmark_sync(win_id, true);
                 }
+                UiToHostMessage::SetSyncCategories {
+                    history,
+                    open_tabs,
+                    settings: sync_settings,
+                    passwords: sync_passwords,
+                } => {
+                    let profile_id = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|window| (!window.private).then(|| window.profile_id.clone()));
+                    let Some(profile_id) = profile_id else {
+                        return;
+                    };
+                    let mut settings = self.settings.clone();
+                    let Some(profile) = settings
+                        .profiles
+                        .iter_mut()
+                        .find(|profile| profile.id == profile_id)
+                    else {
+                        return;
+                    };
+                    if profile.sync_credentials_protected.is_none() {
+                        self.notify_settings(win_id, "Tạo mã Pip Sync trước khi chọn dữ liệu.");
+                        return;
+                    }
+                    let changed = profile.sync_history != history
+                        || profile.sync_open_tabs != open_tabs
+                        || profile.sync_settings != sync_settings
+                        || profile.sync_passwords != sync_passwords;
+                    profile.sync_history = history;
+                    profile.sync_open_tabs = open_tabs;
+                    profile.sync_settings = sync_settings;
+                    profile.sync_passwords = sync_passwords;
+                    if settings.save_to_path(&get_settings_path()).is_ok() {
+                        self.settings = settings;
+                        if changed {
+                            self.start_bookmark_sync(win_id, false);
+                        }
+                    } else {
+                        self.notify_settings(win_id, "Không lưu được lựa chọn dữ liệu Sync.");
+                    }
+                }
                 UiToHostMessage::GetSitePermissions => self.request_site_permissions(win_id),
                 UiToHostMessage::ResetSitePermission { origin, kind } => {
                     self.reset_site_permission(win_id, origin, kind)
@@ -3581,6 +4919,29 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                             if let Some(profile) = settings.profiles.iter_mut().find(|p| p.id == id)
                             {
                                 profile.autofill = enabled;
+                                if settings.save_to_path(&get_settings_path()).is_ok() {
+                                    self.settings = settings;
+                                    for context in
+                                        self.windows.values().filter(|w| w.profile_id == id)
+                                    {
+                                        for view in context.tabs.values() {
+                                            self.configure_autofill(view, &id, context.private);
+                                        }
+                                    }
+                                    self.sync_profiles();
+                                }
+                            }
+                        }
+                    }
+                }
+                UiToHostMessage::SetPasswordAutosave { enabled } => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if !win.private {
+                            let id = win.profile_id.clone();
+                            let mut settings = self.settings.clone();
+                            if let Some(profile) = settings.profiles.iter_mut().find(|p| p.id == id)
+                            {
+                                profile.password_autosave = enabled;
                                 if settings.save_to_path(&get_settings_path()).is_ok() {
                                     self.settings = settings;
                                     for context in
@@ -3621,14 +4982,29 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     self.change_browser_extension(win_id, id, None);
                 }
                 UiToHostMessage::GetSavedPasswords => self.sync_passwords(win_id),
-                UiToHostMessage::SavePassword {
-                    origin,
+                UiToHostMessage::SavePasswordForTab {
+                    tab_id,
                     username,
                     password,
                 } => {
-                    if self.windows.get(&win_id).is_none_or(|win| win.private) {
+                    let Some(win) = self.windows.get(&win_id).filter(|win| !win.private) else {
                         return;
-                    }
+                    };
+                    let Some(url) = win
+                        .tab_manager
+                        .get_tab_by_id(TabId(tab_id))
+                        .map(|tab| tab.url.clone())
+                    else {
+                        self.notify_settings(win_id, "Tab đã chọn không còn mở.");
+                        return;
+                    };
+                    let Some(origin) = passwords::normalize_origin(&url) else {
+                        self.notify_settings(
+                            win_id,
+                            "Chỉ có thể lưu mật khẩu cho tab HTTP hoặc HTTPS đang mở.",
+                        );
+                        return;
+                    };
                     let Some(path) = self.passwords_path(win_id) else {
                         return;
                     };
@@ -3647,9 +5023,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         return;
                     }
                     self.sync_passwords(win_id);
+                    self.sync_password_vault_if_enabled(win_id);
                     self.notify_settings(
                         win_id,
-                        "Đã lưu mật khẩu được mã hóa bằng tài khoản Windows này.",
+                        &format!(
+                            "Đã lưu mật khẩu cho {origin}, được mã hóa bằng tài khoản Windows này."
+                        ),
                     );
                 }
                 UiToHostMessage::DeletePassword { id } => {
@@ -3678,6 +5057,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         return;
                     }
                     self.sync_passwords(win_id);
+                    self.sync_password_vault_if_enabled(win_id);
                     self.notify_settings(win_id, "Đã xóa mật khẩu khỏi hồ sơ.");
                 }
                 UiToHostMessage::RevealPassword { id } => {
@@ -3990,7 +5370,8 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         });
                 }
                 UiToHostMessage::RestartBrowser => {
-                    let profiles: std::collections::HashSet<String> = self
+                    self.compact_open_session_slots(None);
+                    let profiles: Vec<String> = self
                         .windows
                         .values()
                         .filter(|win| !win.private)
@@ -3999,10 +5380,9 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     for open_win_id in self.windows.keys().copied().collect::<Vec<_>>() {
                         self.save_session(open_win_id);
                     }
-                    let profiles: Vec<String> = profiles.into_iter().collect();
                     let saved = serde_json::to_vec(&profiles)
                         .map_err(std::io::Error::other)
-                        .and_then(|data| std::fs::write(restart_profiles_path(), data));
+                        .and_then(|data| std::fs::write(startup_profiles_path(), data));
                     match saved {
                         Ok(()) => {
                             self.restart_requested = true;
@@ -4181,17 +5561,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     self.handle_open_settings(win_id);
                 }
                 UiToHostMessage::SetSearchEngine { engine } => {
-                    self.settings.search_engine = engine.clone();
-                    let path = get_settings_path();
-                    let _ = self.settings.save_to_path(&path);
-                    for win in self.windows.values() {
-                        if let Some(chrome) = &win.chrome_webview {
-                            let _ = chrome.evaluate_script(&format!(
-                                "if (window.__syncSearchEngine) {{ window.__syncSearchEngine('{}'); }}",
-                                engine
-                            ));
+                    if let Some(profile_id) =
+                        self.windows.get(&win_id).map(|win| win.profile_id.clone())
+                    {
+                        let mut settings = self.settings.clone();
+                        let mut values = settings
+                            .profile_sync_settings(&profile_id)
+                            .unwrap_or_default();
+                        values.search_engine = engine;
+                        if let Some(profile) =
+                            settings.profiles.iter_mut().find(|p| p.id == profile_id)
+                        {
+                            profile.sync_settings_values = Some(values);
+                        }
+                        if settings.save_to_path(&get_settings_path()).is_ok() {
+                            self.settings = settings;
+                            self.sync_settings();
                         }
                     }
+                    self.sync_profile_setting_changes();
                 }
                 UiToHostMessage::ReorderTab {
                     from_index,
@@ -4201,6 +5589,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         win.tab_manager.reorder_tab(from_index, to_index);
                         win.sync_ui_state();
                     }
+                    self.sync_profile_open_tabs(win_id);
                 }
                 UiToHostMessage::DetachTabToNewWindow {
                     tab_id,
@@ -4210,23 +5599,35 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     self.handle_detach_tab(win_id, tab_id, screen_x, screen_y, event_loop);
                 }
                 UiToHostMessage::SetZoom { factor } => {
-                    if let Some(win) = self.windows.get(&win_id) {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
                         win.set_active_zoom(factor);
                     }
                 }
                 UiToHostMessage::ZoomIn => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(win.get_active_zoom() + 0.1);
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        let next = win.get_active_zoom() + 0.1;
+                        win.set_active_zoom(next);
                     }
                 }
                 UiToHostMessage::ZoomOut => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(win.get_active_zoom() - 0.1);
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        let next = win.get_active_zoom() - 0.1;
+                        win.set_active_zoom(next);
                     }
                 }
                 UiToHostMessage::ZoomReset => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(1.0);
+                    let default_zoom = self
+                        .windows
+                        .get(&win_id)
+                        .map(|win| {
+                            self.settings
+                                .for_profile(&win.profile_id)
+                                .appearance
+                                .default_zoom_level
+                        })
+                        .unwrap_or(self.settings.appearance.default_zoom_level);
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        win.reset_active_zoom(default_zoom);
                     }
                 }
                 UiToHostMessage::OpenFindInPage => {
@@ -4397,34 +5798,58 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
                 UiToHostMessage::SaveSettings { settings_json } => {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&settings_json) {
+                        let profile_id =
+                            self.windows.get(&win_id).map(|win| win.profile_id.clone());
+                        let has_profile_sync_patch = sync_settings_patch_present(&val);
                         let mut settings = self.settings.clone();
-                        settings.update_from_json(&val);
+                        settings.update_from_json(&without_sync_settings_patch(&val));
+                        if has_profile_sync_patch {
+                            if let Some(profile_id) = profile_id.as_deref() {
+                                let mut effective = self.settings.for_profile(profile_id);
+                                effective.update_from_json(&val);
+                                if let Some(profile) = settings
+                                    .profiles
+                                    .iter_mut()
+                                    .find(|profile| profile.id == profile_id)
+                                {
+                                    profile.sync_settings_values = Some(
+                                        evergreen_core::settings::ProfileSyncSettings::from_global(
+                                            &effective,
+                                        ),
+                                    );
+                                }
+                            }
+                        }
                         let path = get_settings_path();
                         if settings.save_to_path(&path).is_err() {
                             self.notify_settings(win_id, "Không thể lưu cài đặt. Hãy thử lại.");
                             return;
                         }
+                        self.adblock.borrow_mut().set_mode(settings.adblock_mode);
                         self.settings = settings;
                         self.notify_settings(win_id, "Đã lưu lựa chọn của bạn.");
                         self.sync_settings();
+                        self.sync_profile_setting_changes();
                     }
                 }
                 UiToHostMessage::CheckAppUpdates => {
+                    let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
                     let proxy = self.proxy.clone();
                     std::thread::spawn(move || {
                         let _ = proxy.send_event(BrowserEvent::AppUpdateCheckDone(
                             win_id,
-                            app_updates::check(),
+                            app_updates::check(dns_proxy_port),
                         ));
                     });
                 }
                 UiToHostMessage::UpdateAdblockFilters => {
+                    let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
                     let proxy = self.proxy.clone();
                     let directory = get_data_directory();
                     std::thread::spawn(move || {
                         let _ = proxy.send_event(BrowserEvent::AdblockFilterUpdateDone(
                             win_id,
-                            adblock_updates::fetch_and_store(directory),
+                            adblock_updates::fetch_and_store(directory, dns_proxy_port),
                         ));
                     });
                 }
@@ -4491,7 +5916,10 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::BypassCertificateError { tab_id, host, url } => {
-                    eprintln!("[TLS BYPASS INITIATED] Bypassing certificate error for host: {} on Tab {:?}", host, tab_id);
+                    eprintln!(
+                        "[TLS BYPASS INITIATED] Bypassing certificate error for host: {} on Tab {:?}",
+                        host, tab_id
+                    );
                     if let Ok(mut set) = self.allowed_cert_hosts.lock() {
                         set.insert(host.clone());
                     }
@@ -4535,18 +5963,32 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 {
                     return;
                 }
+                let default_zoom = self
+                    .windows
+                    .get(&win_id)
+                    .map(|win| {
+                        self.settings
+                            .for_profile(&win.profile_id)
+                            .appearance
+                            .default_zoom_level
+                    })
+                    .unwrap_or(self.settings.appearance.default_zoom_level);
                 if let Some(win) = self.windows.get_mut(&win_id) {
-                    if win
-                        .tab_manager
-                        .get_tab_by_id(tab_id)
-                        .is_none_or(|tab| tab.url == url && tab.favicon_uri == favicon_url(&url))
-                    {
+                    if win.tab_manager.get_tab_by_id(tab_id).is_none() {
                         return;
                     }
-                    win.tab_manager.update_url(tab_id, url.clone());
-                    win.tab_manager.update_favicon(tab_id, favicon_url(&url));
-                    win.sync_ui_state();
-                    win.update_sidebar_sync(&self.cert_cache);
+                    let desired_zoom = win.zoom_for_url(&url, default_zoom);
+                    win.apply_tab_zoom(tab_id, desired_zoom);
+                    let url_changed = win
+                        .tab_manager
+                        .get_tab_by_id(tab_id)
+                        .is_some_and(|tab| tab.url != url || tab.favicon_uri != favicon_url(&url));
+                    if url_changed {
+                        win.tab_manager.update_url(tab_id, url.clone());
+                        win.tab_manager.update_favicon(tab_id, favicon_url(&url));
+                        win.sync_ui_state();
+                        win.update_sidebar_sync(&self.cert_cache);
+                    }
                 }
                 let visit = self
                     .windows
@@ -4557,6 +5999,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 if let Some((url, title)) = visit {
                     self.edit_library(win_id, |library| library.visit(&url, &title, false));
                 }
+                self.sync_passwords(win_id);
             }
             BrowserEvent::TabAudioChanged(win_id, tab_id, playing) => {
                 if let Some(win) = self.windows.get_mut(&win_id) {
@@ -4594,18 +6037,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     _ => false,
                 };
                 let pip_passwords_removed = if success && clear_pip_passwords {
-                    let removed =
-                        self.passwords_path(win_id)
-                            .is_some_and(|path| match std::fs::remove_file(path) {
-                                Ok(()) => true,
-                                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-                                Err(error) => {
-                                    eprintln!("Pip password vault removal failed: {error}");
-                                    false
-                                }
-                            });
+                    let removed = self
+                        .passwords_path(win_id)
+                        .is_some_and(|path| passwords::save(&path, &[]).is_ok());
                     if removed {
                         self.sync_passwords(win_id);
+                        self.sync_password_vault_if_enabled(win_id);
                     }
                     removed
                 } else {
@@ -4620,7 +6057,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     )
                 {
-                    self.edit_library(win_id, |library| library.history.clear());
+                    self.edit_library(win_id, |library| library.clear_history());
                 }
                 if success
                     && matches!(
@@ -4831,22 +6268,121 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     ));
                 }
             }
+            BrowserEvent::TabSuspendSafetyResult(win_id, tab_id, safe, checked_url) => {
+                self.sleep_checking_tabs.remove(&(win_id, tab_id));
+                let now_secs = Self::now_secs();
+                let eligible = safe
+                    && self.settings.performance.background_throttling
+                    && self.settings.performance.sleep_after_secs > 0
+                    && self.windows.get(&win_id).is_some_and(|win| {
+                        !win.permission_bar_open
+                            && !win
+                                .downloads
+                                .values()
+                                .any(|download| download["state"] == "InProgress")
+                            && win.tab_manager.active_tab_id() != Some(tab_id)
+                            && win.tab_manager.get_tab_by_id(tab_id).is_some_and(|tab| {
+                                tab.url == checked_url
+                                    && eligible_for_memory_suspend(
+                                        tab,
+                                        now_secs,
+                                        self.settings.performance.sleep_after_secs,
+                                    )
+                            })
+                    });
+                if !safe {
+                    return;
+                }
+                if !eligible {
+                    return;
+                }
+                let Some(view) = self
+                    .windows
+                    .get(&win_id)
+                    .and_then(|win| win.tabs.get(&tab_id))
+                else {
+                    return;
+                };
+                self.suspending_tabs.insert((win_id, tab_id));
+                self.suspending_urls.insert((win_id, tab_id), checked_url);
+                if accelerator::suspend_webview(view, win_id, tab_id, self.proxy.clone()).is_err() {
+                    self.suspending_tabs.remove(&(win_id, tab_id));
+                    self.suspending_urls.remove(&(win_id, tab_id));
+                }
+            }
             BrowserEvent::TabSuspendResult(win_id, tab_id, suspended) => {
                 self.suspending_tabs.remove(&(win_id, tab_id));
+                let checked_url = self.suspending_urls.remove(&(win_id, tab_id));
                 if !suspended {
                     return;
                 }
-                if let Some(win) = self.windows.get_mut(&win_id) {
-                    if win.tab_manager.active_tab_id() != Some(tab_id) {
+                let now_secs = Self::now_secs();
+                let can_mark_suspended = self.settings.performance.background_throttling
+                    && self.settings.performance.sleep_after_secs > 0
+                    && self.windows.get(&win_id).is_some_and(|win| {
+                        !win.permission_bar_open
+                            && !win
+                                .downloads
+                                .values()
+                                .any(|download| download["state"] == "InProgress")
+                            && win.tab_manager.active_tab_id() != Some(tab_id)
+                            && win.tab_manager.get_tab_by_id(tab_id).is_some_and(|tab| {
+                                checked_url.as_deref() == Some(tab.url.as_str())
+                                    && eligible_for_memory_suspend(
+                                        tab,
+                                        now_secs,
+                                        self.settings.performance.sleep_after_secs,
+                                    )
+                            })
+                    });
+                if can_mark_suspended {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
                         win.tab_manager.set_tab_suspended(tab_id, true);
                         win.sync_ui_state();
                     }
+                } else if let Some(view) = self
+                    .windows
+                    .get(&win_id)
+                    .and_then(|win| win.tabs.get(&tab_id))
+                {
+                    accelerator::wake_webview(view);
+                }
+            }
+            BrowserEvent::TabDiscardSafetyResult(win_id, tab_id, safe_to_discard, checked_url) => {
+                self.discard_checking_tabs.remove(&(win_id, tab_id));
+                let memory_still_low = self.memory_pressure_detected();
+                let now_secs = Self::now_secs();
+                let can_discard = safe_to_discard
+                    && memory_still_low
+                    && self.windows.get(&win_id).is_some_and(|win| {
+                        !win.permission_bar_open
+                            && !win
+                                .downloads
+                                .values()
+                                .any(|download| download["state"] == "InProgress")
+                            && win.tab_manager.active_tab_id() != Some(tab_id)
+                            && win.tab_manager.get_tab_by_id(tab_id).is_some_and(|tab| {
+                                tab.url == checked_url && eligible_for_memory_discard(tab, now_secs)
+                            })
+                    });
+                if can_discard {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        if let Some(view) = win.tabs.remove(&tab_id) {
+                            accelerator::hide_webview(&view);
+                            drop(view);
+                            win.tab_manager.set_tab_discarded(tab_id);
+                            win.sync_ui_state();
+                        }
+                    }
+                    self.save_session(win_id);
                 }
             }
             BrowserEvent::SyncBookmarksDone(win_id, profile_id, manual, result) => {
                 self.syncing_profiles.remove(&profile_id);
+                self.sync_profiles();
                 match result {
                     Ok(snapshot) => {
+                        let had_pending_sync = self.pending_sync_profiles.remove(&profile_id);
                         if self
                             .settings
                             .profiles
@@ -4862,25 +6398,259 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                 if let Ok(mut library) =
                                     evergreen_core::library::Library::load(&path)
                                 {
-                                    let uploaded = sync::BookmarkSnapshot {
-                                        version: 1,
-                                        bookmarks: snapshot.bookmarks,
-                                        removed_bookmarks: snapshot.removed_bookmarks,
+                                    let sync_preferences = self
+                                        .settings
+                                        .profiles
+                                        .iter()
+                                        .find(|p| p.id == profile_id)
+                                        .map(|p| {
+                                            (
+                                                p.sync_history,
+                                                p.sync_settings,
+                                                p.sync_open_tabs,
+                                                p.sync_passwords,
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let requested_settings_fingerprint =
+                                        snapshot.requested_settings_fingerprint.clone();
+                                    let uploaded = snapshot.payload;
+                                    let current = sync::sync_payload_from_library(
+                                        &library,
+                                        sync_preferences.0,
+                                    );
+                                    let merged = match current.merge(uploaded.clone()) {
+                                        Ok(merged) => merged,
+                                        Err(error) => {
+                                            self.notify_settings(
+                                                win_id,
+                                                &format!("Không thể gộp dữ liệu Pip Sync: {error}"),
+                                            );
+                                            return;
+                                        }
                                     };
-                                    let current = sync::BookmarkSnapshot {
-                                        version: 1,
-                                        bookmarks: library.bookmarks.clone(),
-                                        removed_bookmarks: library.removed_bookmarks.clone(),
-                                    };
-                                    let merged = sync::merge_snapshots(current, uploaded.clone());
-                                    let needs_followup = merged != uploaded;
-                                    let local_changed = library.bookmarks != merged.bookmarks
-                                        || library.removed_bookmarks != merged.removed_bookmarks;
+                                    let mut needs_followup = merged != uploaded || had_pending_sync;
+                                    let bookmark_category =
+                                        merged.bookmarks.clone().unwrap_or_default();
+                                    let folders = bookmark_category
+                                        .folders
+                                        .iter()
+                                        .map(|folder| evergreen_core::library::BookmarkFolder {
+                                            id: folder.id.clone(),
+                                            name: folder.name.clone(),
+                                            parent_id: folder.parent_id.clone(),
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let placements = bookmark_category
+                                        .placements
+                                        .iter()
+                                        .map(|placement| {
+                                            evergreen_core::library::BookmarkFolderAssignment {
+                                                url: placement.url.clone(),
+                                                folder_id: placement.folder_id.clone(),
+                                                updated_at_ms: i64::try_from(
+                                                    placement.updated_at_ms,
+                                                )
+                                                .unwrap_or(i64::MAX),
+                                            }
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let folder_tombstones = bookmark_category
+                                        .folder_tombstones
+                                        .iter()
+                                        .map(|folder| {
+                                            evergreen_core::library::BookmarkFolderTombstone {
+                                                id: folder.id.clone(),
+                                                deleted_at_ms: i64::try_from(folder.deleted_at_ms)
+                                                    .unwrap_or(i64::MAX),
+                                            }
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let bookmarks = bookmark_category
+                                        .items
+                                        .iter()
+                                        .into_iter()
+                                        .map(|item| evergreen_core::library::Page {
+                                            url: item.page.url.clone(),
+                                            title: item.page.title.clone(),
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let bookmark_updates =
+                                        local_bookmark_updates(&bookmark_category);
+                                    let bookmark_tombstones =
+                                        local_bookmark_tombstones(&bookmark_category);
+                                    let removed_bookmarks = bookmark_category
+                                        .tombstones
+                                        .into_iter()
+                                        .map(|item| item.url)
+                                        .collect::<Vec<_>>();
+                                    let mut local_changed = library.bookmarks != bookmarks
+                                        || library.bookmark_updates != bookmark_updates
+                                        || library.removed_bookmarks != removed_bookmarks
+                                        || library.bookmark_tombstones != bookmark_tombstones
+                                        || library.bookmark_folders != folders
+                                        || library.bookmark_folder_assignments != placements
+                                        || library.bookmark_folder_tombstones != folder_tombstones;
+                                    let mut settings_update = None;
                                     if local_changed {
-                                        library.bookmarks = merged.bookmarks;
-                                        library.removed_bookmarks = merged.removed_bookmarks;
+                                        library.bookmarks = bookmarks;
+                                        library.bookmark_updates = bookmark_updates;
+                                        library.removed_bookmarks = removed_bookmarks;
+                                        library.bookmark_tombstones = bookmark_tombstones;
+                                        library.bookmark_folders = folders;
+                                        library.bookmark_folder_assignments = placements;
+                                        library.bookmark_folder_tombstones = folder_tombstones;
+                                    }
+                                    if sync_preferences.0 {
+                                        if let Some(history) = merged.history.as_ref() {
+                                            let pages = history
+                                                .items
+                                                .iter()
+                                                .filter({
+                                                    let mut seen_urls =
+                                                        std::collections::HashSet::new();
+                                                    move |item: &&sync_v2::HistoryEntry| {
+                                                        seen_urls.insert(item.page.url.as_str())
+                                                    }
+                                                })
+                                                .map(|item| evergreen_core::library::Page {
+                                                    url: item.page.url.clone(),
+                                                    title: item.page.title.clone(),
+                                                })
+                                                .collect::<Vec<_>>();
+                                            let visits = history
+                                                .items
+                                                .iter()
+                                                .map(|item| evergreen_core::library::HistoryVisit {
+                                                    url: item.page.url.clone(),
+                                                    title: item.page.title.clone(),
+                                                    visited_at_ms: i64::try_from(
+                                                        item.visited_at_ms,
+                                                    )
+                                                    .unwrap_or(i64::MAX),
+                                                })
+                                                .collect::<Vec<_>>();
+                                            let mut tombstones = history
+                                                .tombstones
+                                                .iter()
+                                                .map(|item| {
+                                                    evergreen_core::library::HistoryTombstone {
+                                                        url: item.url.clone(),
+                                                        removed_at_ms: i64::try_from(
+                                                            item.deleted_at_ms,
+                                                        )
+                                                        .unwrap_or(i64::MAX),
+                                                        visit_at_ms: None,
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>();
+                                            tombstones.extend(history.visit_tombstones.iter().map(
+                                                |item| {
+                                                    evergreen_core::library::HistoryTombstone {
+                                                        url: item.url.clone(),
+                                                        removed_at_ms: i64::try_from(
+                                                            item.deleted_at_ms,
+                                                        )
+                                                        .unwrap_or(i64::MAX),
+                                                        visit_at_ms: Some(
+                                                            i64::try_from(item.visited_at_ms)
+                                                                .unwrap_or(i64::MAX),
+                                                        ),
+                                                    }
+                                                },
+                                            ));
+                                            if library.history != pages
+                                                || library.history_visits != visits
+                                                || library.removed_history != tombstones
+                                            {
+                                                library.history = pages;
+                                                library.history_visits = visits;
+                                                library.removed_history = tombstones;
+                                                local_changed = true;
+                                            }
+                                        }
+                                    }
+                                    if sync_preferences.1 {
+                                        if let Some(synced_settings) = merged.settings.as_ref() {
+                                            let current_fingerprint =
+                                                sync::syncable_settings_fingerprint(
+                                                    &sync::syncable_settings_from(
+                                                        &self.settings.for_profile(&profile_id),
+                                                        0,
+                                                    ),
+                                                );
+                                            if requested_settings_fingerprint.as_deref()
+                                                == Some(current_fingerprint.as_str())
+                                            {
+                                                let mut settings = self.settings.clone();
+                                                if apply_syncable_settings_to_profile(
+                                                    &mut settings,
+                                                    &profile_id,
+                                                    synced_settings,
+                                                ) {
+                                                    settings_update = Some(settings);
+                                                }
+                                            } else {
+                                                // A preference changed while HTTP was in flight.
+                                                // Keep the newer local choice and upload it next.
+                                                needs_followup = true;
+                                            }
+                                        }
+                                    }
+                                    if sync_preferences.2 {
+                                        self.render_remote_sync_tabs(win_id, &profile_id, &merged);
+                                    }
+                                    if sync_preferences.3 {
+                                        if let (Some(category), Some(password_path)) =
+                                            (merged.passwords.clone(), self.passwords_path(win_id))
+                                        {
+                                            let incoming = passwords::PasswordSyncSnapshot {
+                                                version: category.version,
+                                                entries: category
+                                                    .entries
+                                                    .into_iter()
+                                                    .map(|entry| passwords::PasswordSyncEntry {
+                                                        origin: entry.origin,
+                                                        username: entry.username,
+                                                        password: entry.password,
+                                                        updated_at_ms: entry.updated_at_ms,
+                                                    })
+                                                    .collect(),
+                                                tombstones: category
+                                                    .tombstones
+                                                    .into_iter()
+                                                    .map(|item| passwords::PasswordTombstone {
+                                                        origin: item.origin,
+                                                        username: item.username,
+                                                        deleted_at_ms: item.deleted_at_ms,
+                                                    })
+                                                    .collect(),
+                                            };
+                                            match passwords::apply_sync_snapshot(
+                                                &password_path,
+                                                incoming,
+                                            ) {
+                                                Ok(_) => self.sync_passwords(win_id),
+                                                Err(message) => {
+                                                    self.notify_settings(win_id, &format!("Không thể lưu mật khẩu đã đồng bộ: {message}"));
+                                                    needs_followup = true;
+                                                }
+                                            }
+                                        }
                                     }
                                     if !local_changed || library.save(&path).is_ok() {
+                                        if let Some(settings) = settings_update {
+                                            if settings.save_to_path(&get_settings_path()).is_ok() {
+                                                self.settings = settings;
+                                                self.sync_settings();
+                                                self.sync_profiles();
+                                            } else {
+                                                self.notify_settings(
+                                                    win_id,
+                                                    "Không lưu được cài đặt Pip đã đồng bộ.",
+                                                );
+                                            }
+                                        }
                                         if local_changed {
                                             self.sync_library_profile(&profile_id);
                                         }
@@ -4892,11 +6662,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     } else {
                                         self.notify_settings(
                                             win_id,
-                                            "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
+                                            "Không lưu được dữ liệu đã đồng bộ vào hồ sơ.",
                                         );
                                         self.notify_library(
                                             win_id,
-                                            "Không lưu được dấu trang đã đồng bộ vào hồ sơ.",
+                                            "Không lưu được dữ liệu đã đồng bộ vào hồ sơ.",
                                         );
                                     }
                                 }
@@ -5110,6 +6880,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
             }
             BrowserEvent::Shortcut(win_id, shortcut) => match shortcut.as_str() {
+                "Ctrl+Shift+K" => {
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(chrome) = &win.chrome_webview {
+                            let _ = chrome
+                                .evaluate_script("if(window.openTabSearch)window.openTabSearch()");
+                        }
+                    }
+                }
                 "Ctrl+Shift+M" => {
                     if let Some(win) = self.windows.get(&win_id) {
                         if let Some(chrome) = &win.chrome_webview {
@@ -5229,6 +7007,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         },
                     );
                 }
+                "F11" => {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        win.toggle_fullscreen();
+                    }
+                }
                 "Alt+Shift+P" => {
                     let Some(win) = self.windows.get(&win_id) else {
                         return;
@@ -5275,16 +7058,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 "Ctrl+T" => self.handle_create_tab(win_id, None),
-                "Ctrl+Shift+T" => {
-                    let target_url = if let Some(win) = self.windows.get_mut(&win_id) {
-                        win.tab_manager.pop_last_closed()
-                    } else {
-                        None
-                    };
-                    if let Some(url) = target_url {
-                        self.handle_create_tab(win_id, Some(url));
-                    }
-                }
+                "Ctrl+Shift+T" => self.handle_reopen_closed_tab(win_id),
                 "Ctrl+N" => {
                     let private = self.windows.get(&win_id).is_some_and(|w| w.private);
                     self.open_related_window(event_loop, win_id, private);
@@ -5305,7 +7079,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         win.handle_focus_omnibox();
                     }
                 }
-                "Ctrl+F" => {
+                "Ctrl+F" if shortcut_enabled_by_feature("Ctrl+F", &self.settings) => {
                     if let Some(win) = self.windows.get(&win_id) {
                         if let Some(chrome) = &win.chrome_webview {
                             let _ = chrome.evaluate_script(
@@ -5314,8 +7088,22 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
+                "Ctrl+F" => {}
+                "FindNext" | "FindPrevious"
+                    if shortcut_enabled_by_feature(&shortcut, &self.settings) =>
+                {
+                    let forward = shortcut == "FindNext";
+                    if let Some(win) = self.windows.get(&win_id) {
+                        if let Some(chrome) = &win.chrome_webview {
+                            let _ = chrome.evaluate_script(&format!(
+                                "if (window.__findNext) window.__findNext({forward});"
+                            ));
+                        }
+                    }
+                }
+                "FindNext" | "FindPrevious" => {}
                 "Ctrl+J" => {
-                    if !self.settings.features.enable_downloads_manager {
+                    if !shortcut_enabled_by_feature("Ctrl+J", &self.settings) {
                         return;
                     }
                     if let Some(win) = self.windows.get_mut(&win_id) {
@@ -5341,9 +7129,16 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         .and_then(|win| win.tab_manager.active_tab())
                         .map(|tab| (tab.url.clone(), tab.title.clone()))
                     {
+                        let mut changed = false;
                         self.edit_library(win_id, |library| {
-                            library.toggle_bookmark(&page.0, &page.1)
+                            changed = library.toggle_bookmark(&page.0, &page.1)
                         });
+                        if !changed {
+                            self.notify_user(
+                                win_id,
+                                "Không thể thêm dấu trang: địa chỉ không hợp lệ hoặc đã đạt giới hạn 200 mục.",
+                            );
+                        }
                     }
                 }
                 "Ctrl+P" => {
@@ -5411,39 +7206,25 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 "Alt+Home" => self.handle_navigate(win_id, "evergreen://newtab"),
-                "Ctrl+Tab" => {
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        let tabs = win.tab_manager.tabs();
-                        if tabs.len() > 1 {
-                            let current_idx = tabs
-                                .iter()
-                                .position(|t| {
-                                    Some(t.id) == win.tab_manager.active_tab().map(|a| a.id)
-                                })
-                                .unwrap_or(0);
-                            let next_idx = (current_idx + 1) % tabs.len();
-                            let next_id = tabs[next_idx].id;
-                            win.handle_switch_tab(next_id, &self.cert_cache);
+                "Ctrl+Tab" | "Ctrl+PageDown" => {
+                    let target = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|win| win.tab_manager.adjacent_tab_id(true));
+                    if let Some(target) = target {
+                        if let Some(win) = self.windows.get_mut(&win_id) {
+                            win.handle_switch_tab(target, &self.cert_cache);
                         }
                     }
                 }
-                "Ctrl+Shift+Tab" => {
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        let tabs = win.tab_manager.tabs();
-                        if tabs.len() > 1 {
-                            let current_idx = tabs
-                                .iter()
-                                .position(|t| {
-                                    Some(t.id) == win.tab_manager.active_tab().map(|a| a.id)
-                                })
-                                .unwrap_or(0);
-                            let prev_idx = if current_idx == 0 {
-                                tabs.len() - 1
-                            } else {
-                                current_idx - 1
-                            };
-                            let prev_id = tabs[prev_idx].id;
-                            win.handle_switch_tab(prev_id, &self.cert_cache);
+                "Ctrl+Shift+Tab" | "Ctrl+PageUp" => {
+                    let target = self
+                        .windows
+                        .get(&win_id)
+                        .and_then(|win| win.tab_manager.adjacent_tab_id(false));
+                    if let Some(target) = target {
+                        if let Some(win) = self.windows.get_mut(&win_id) {
+                            win.handle_switch_tab(target, &self.cert_cache);
                         }
                     }
                 }
@@ -5496,36 +7277,50 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                     }
                 }
-                "Ctrl+Plus" => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(win.get_active_zoom() + 0.1);
-                    }
-                }
-                "Ctrl+Minus" => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(win.get_active_zoom() - 0.1);
-                    }
-                }
-                "Ctrl+Zero" => {
-                    if let Some(win) = self.windows.get(&win_id) {
-                        win.set_active_zoom(1.0);
-                    }
-                }
-                "Escape" => {
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        if win.is_sidebar_open {
-                            win.close_sidebar();
-                            if let Some(c) = &win.chrome_webview {
-                                let _ = c.evaluate_script("if (window.__syncSidebarState) window.__syncSidebarState(null);");
-                            }
-                        } else if let Some(active) = win.tab_manager.active_tab() {
-                            if let Some(wv) = win.tabs.get(&active.id) {
-                                let _ = wv.evaluate_script("window.stop()");
+                shortcut @ ("Ctrl+Plus" | "Ctrl+Minus" | "Ctrl+Zero")
+                    if zoom_shortcut_enabled(
+                        shortcut,
+                        self.settings.features.enable_zoom_controls,
+                    ) =>
+                {
+                    match shortcut {
+                        "Ctrl+Plus" => {
+                            if let Some(win) = self.windows.get_mut(&win_id) {
+                                let next = win.get_active_zoom() + 0.1;
+                                win.set_active_zoom(next);
                             }
                         }
+                        "Ctrl+Minus" => {
+                            if let Some(win) = self.windows.get_mut(&win_id) {
+                                let next = win.get_active_zoom() - 0.1;
+                                win.set_active_zoom(next);
+                            }
+                        }
+                        "Ctrl+Zero" => {
+                            let default_zoom = self
+                                .windows
+                                .get(&win_id)
+                                .map(|win| {
+                                    self.settings
+                                        .for_profile(&win.profile_id)
+                                        .appearance
+                                        .default_zoom_level
+                                })
+                                .unwrap_or(self.settings.appearance.default_zoom_level);
+                            if let Some(win) = self.windows.get_mut(&win_id) {
+                                win.reset_active_zoom(default_zoom);
+                            }
+                        }
+                        _ => unreachable!("guard accepts only zoom shortcuts"),
                     }
                 }
-                "F12" | "Ctrl+Shift+J" => {
+                "Ctrl+Plus" | "Ctrl+Minus" | "Ctrl+Zero" => {}
+                "Escape" => {
+                    if let Some(win) = self.windows.get_mut(&win_id) {
+                        win.handle_escape();
+                    }
+                }
+                "F12" | "Ctrl+Shift+I" | "Ctrl+Shift+J" => {
                     if let Some(win) = self.windows.get(&win_id) {
                         if let Some(active) = win.tab_manager.active_tab() {
                             if let Some(wv) = win.tabs.get(&active.id) {
@@ -5547,11 +7342,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                self.save_session(window_id);
-                self.windows.remove(&window_id);
-                if self.windows.is_empty() {
-                    event_loop.exit();
-                }
+                self.close_window(window_id, event_loop);
             }
             WindowEvent::Resized(physical_size) => {
                 if let Some(win_ctx) = self.windows.get_mut(&window_id) {
@@ -5572,6 +7363,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 match event.logical_key {
+                    Key::Named(NamedKey::F11) => {
+                        if let Some(win) = self.windows.get_mut(&window_id) {
+                            win.toggle_fullscreen();
+                        }
+                    }
                     Key::Named(NamedKey::F12) => {
                         if let Some(win) = self.windows.get(&window_id) {
                             if let Some(active) = win.tab_manager.active_tab() {
@@ -5585,14 +7381,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         if s.eq_ignore_ascii_case("t") && self.modifiers.control_key() =>
                     {
                         if self.modifiers.shift_key() {
-                            let target_url = if let Some(win) = self.windows.get_mut(&window_id) {
-                                win.tab_manager.pop_last_closed()
-                            } else {
-                                None
-                            };
-                            if let Some(url) = target_url {
-                                self.handle_create_tab(window_id, Some(url));
-                            }
+                            self.handle_reopen_closed_tab(window_id);
                         } else {
                             self.handle_create_tab(window_id, None);
                         }
@@ -5627,19 +7416,27 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     Key::Character(ref s)
                         if s.eq_ignore_ascii_case("f") && self.modifiers.control_key() =>
                     {
-                        if let Some(win) = self.windows.get(&window_id) {
-                            if let Some(chrome) = &win.chrome_webview {
-                                let _ = chrome.evaluate_script(
-                                    "if (window.__toggleFindBar) { window.__toggleFindBar(); }",
-                                );
+                        if shortcut_enabled_by_feature("Ctrl+F", &self.settings) {
+                            if let Some(win) = self.windows.get(&window_id) {
+                                if let Some(chrome) = &win.chrome_webview {
+                                    let _ = chrome.evaluate_script(
+                                        "if (window.__toggleFindBar) { window.__toggleFindBar(); }",
+                                    );
+                                }
                             }
                         }
                     }
                     Key::Character(ref s)
                         if s.eq_ignore_ascii_case("j") && self.modifiers.control_key() =>
                     {
-                        if let Some(win) = self.windows.get_mut(&window_id) {
-                            win.toggle_sidebar("downloads", &self.cert_cache, self.proxy.clone());
+                        if shortcut_enabled_by_feature("Ctrl+J", &self.settings) {
+                            if let Some(win) = self.windows.get_mut(&window_id) {
+                                win.toggle_sidebar(
+                                    "downloads",
+                                    &self.cert_cache,
+                                    self.proxy.clone(),
+                                );
+                            }
                         }
                     }
                     Key::Character(ref s)
@@ -5704,18 +7501,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                     Key::Named(NamedKey::Escape) => {
                         if let Some(win) = self.windows.get_mut(&window_id) {
-                            if win.sidebar_webview.is_some() {
-                                win.sidebar_webview = None;
-                                win.is_sidebar_open = false;
-                                win.update_layout();
-                                if let Some(c) = &win.chrome_webview {
-                                    let _ = c.evaluate_script("if (window.__syncSidebarState) window.__syncSidebarState(null);");
-                                }
-                            } else if let Some(active) = win.tab_manager.active_tab() {
-                                if let Some(wv) = win.tabs.get(&active.id) {
-                                    let _ = wv.evaluate_script("window.stop()");
-                                }
-                            }
+                            win.handle_escape();
                         }
                     }
                     Key::Character(ref s)
@@ -5739,20 +7525,47 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     Key::Character(ref s)
                         if self.modifiers.control_key() && (s == "+" || s == "=") =>
                     {
-                        if let Some(win) = self.windows.get(&window_id) {
-                            win.set_active_zoom(win.get_active_zoom() + 0.1);
+                        if zoom_shortcut_enabled(
+                            "Ctrl+Plus",
+                            self.settings.features.enable_zoom_controls,
+                        ) {
+                            if let Some(win) = self.windows.get_mut(&window_id) {
+                                let next = win.get_active_zoom() + 0.1;
+                                win.set_active_zoom(next);
+                            }
                         }
                     }
                     Key::Character(ref s)
                         if self.modifiers.control_key() && (s == "-" || s == "_") =>
                     {
-                        if let Some(win) = self.windows.get(&window_id) {
-                            win.set_active_zoom(win.get_active_zoom() - 0.1);
+                        if zoom_shortcut_enabled(
+                            "Ctrl+Minus",
+                            self.settings.features.enable_zoom_controls,
+                        ) {
+                            if let Some(win) = self.windows.get_mut(&window_id) {
+                                let next = win.get_active_zoom() - 0.1;
+                                win.set_active_zoom(next);
+                            }
                         }
                     }
                     Key::Character(ref s) if self.modifiers.control_key() && s == "0" => {
-                        if let Some(win) = self.windows.get(&window_id) {
-                            win.set_active_zoom(1.0);
+                        if zoom_shortcut_enabled(
+                            "Ctrl+Zero",
+                            self.settings.features.enable_zoom_controls,
+                        ) {
+                            let default_zoom = self
+                                .windows
+                                .get(&window_id)
+                                .map(|win| {
+                                    self.settings
+                                        .for_profile(&win.profile_id)
+                                        .appearance
+                                        .default_zoom_level
+                                })
+                                .unwrap_or(self.settings.appearance.default_zoom_level);
+                            if let Some(win) = self.windows.get_mut(&window_id) {
+                                win.reset_active_zoom(default_zoom);
+                            }
                         }
                     }
                     Key::Named(NamedKey::ArrowLeft) if self.modifiers.alt_key() => {
@@ -5812,6 +7625,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
+    if std::env::args().any(|a| a == "--verify-cold-start-child") {
+        headless_ui_tests::run_cold_start_child();
+        return Ok(());
+    }
+    #[cfg(debug_assertions)]
     if std::env::args().any(|a| a == "--verify-google-dns-webview") {
         headless_ui_tests::run_google_dns_webview();
         return Ok(());
@@ -5830,7 +7648,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 let _ = MessageBoxW(
                     None,
-                    w!("Running Pip with Administrator privileges is prohibited for security reasons.\n\nPlease launch the browser as a standard user."),
+                    w!(
+                        "Running Pip with Administrator privileges is prohibited for security reasons.\n\nPlease launch the browser as a standard user."
+                    ),
                     w!("Pip - Security Warning"),
                     MB_OK | MB_ICONERROR,
                 );
@@ -5892,7 +7712,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe {
                     let choice = MessageBoxW(
                         None,
-                        w!("Pip cần Microsoft Edge WebView2 Runtime để mở trang web.\n\nBạn muốn mở trang tải chính thức của Microsoft? Sau khi cài đặt, hãy mở lại Pip."),
+                        w!(
+                            "Pip cần Microsoft Edge WebView2 Runtime để mở trang web.\n\nBạn muốn mở trang tải chính thức của Microsoft? Sau khi cài đặt, hãy mở lại Pip."
+                        ),
                         w!("Cần cài WebView2 Runtime"),
                         MB_YESNO | MB_ICONINFORMATION,
                     );
@@ -5931,9 +7753,141 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn zoom_shortcut_enabled(shortcut: &str, controls_enabled: bool) -> bool {
+    controls_enabled && matches!(shortcut, "Ctrl+Plus" | "Ctrl+Minus" | "Ctrl+Zero")
+}
+
+fn shortcut_enabled_by_feature(
+    shortcut: &str,
+    settings: &evergreen_core::settings::Settings,
+) -> bool {
+    match shortcut {
+        "Ctrl+J" => settings.features.enable_downloads_manager,
+        "Ctrl+F" | "FindNext" | "FindPrevious" => settings.features.enable_find_in_page,
+        "Ctrl+Plus" | "Ctrl+Minus" | "Ctrl+Zero" => {
+            zoom_shortcut_enabled(shortcut, settings.features.enable_zoom_controls)
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod google_dns_preferences_tests {
     use super::*;
+
+    #[test]
+    fn close_warning_only_applies_when_enabled_and_more_than_one_tab_is_open() {
+        assert!(!should_confirm_close_window(false, 8));
+        assert!(!should_confirm_close_window(true, 1));
+        assert!(should_confirm_close_window(true, 2));
+    }
+
+    #[test]
+    fn session_restore_accepts_only_supported_pip_newtab_routes() {
+        assert!(is_restorable_session_url("https://example.com/"));
+        assert!(is_restorable_session_url("http://example.com/"));
+        assert!(is_restorable_session_url("evergreen://newtab"));
+        assert!(is_restorable_session_url("evergreen://newtab?history"));
+        assert!(is_restorable_session_url("evergreen://newtab?bookmarks"));
+        assert!(is_restorable_session_url("evergreen://settings"));
+        assert!(is_restorable_session_url("evergreen://settings?clear-data"));
+        assert!(!is_restorable_session_url("evergreen://newtab?unknown"));
+        assert!(!is_restorable_session_url("evergreen://settings?unknown"));
+        assert!(!is_restorable_session_url("file:///private/path"));
+    }
+
+    #[test]
+    fn fullscreen_layout_hides_chrome_and_sidebar_and_gives_page_the_full_window() {
+        let normal = calculate_window_layout(1280.0, 800.0, 86.0, true, false);
+        assert_eq!(normal.chrome_height, 86.0);
+        assert_eq!(normal.content_width, 960.0);
+        assert_eq!(normal.content_height, 714.0);
+        assert!(normal.sidebar_visible);
+
+        let fullscreen = calculate_window_layout(1920.0, 1080.0, 86.0, true, true);
+        assert_eq!(fullscreen.chrome_height, 0.0);
+        assert_eq!(fullscreen.content_width, 1920.0);
+        assert_eq!(fullscreen.content_height, 1080.0);
+        assert!(!fullscreen.sidebar_visible);
+    }
+
+    #[test]
+    fn zoom_shortcuts_follow_the_zoom_controls_setting() {
+        for shortcut in ["Ctrl+Plus", "Ctrl+Minus", "Ctrl+Zero"] {
+            assert!(zoom_shortcut_enabled(shortcut, true), "{shortcut}");
+            assert!(!zoom_shortcut_enabled(shortcut, false), "{shortcut}");
+        }
+        assert!(!zoom_shortcut_enabled("Ctrl+T", true));
+    }
+
+    #[test]
+    fn keyboard_shortcuts_respect_disabled_feature_settings_on_all_routes() {
+        let mut settings = evergreen_core::settings::Settings::default();
+        settings.features.enable_downloads_manager = false;
+        settings.features.enable_find_in_page = false;
+        settings.features.enable_zoom_controls = false;
+
+        for shortcut in [
+            "Ctrl+J",
+            "Ctrl+F",
+            "FindNext",
+            "FindPrevious",
+            "Ctrl+Plus",
+            "Ctrl+Minus",
+            "Ctrl+Zero",
+        ] {
+            assert!(
+                !shortcut_enabled_by_feature(shortcut, &settings),
+                "{shortcut}"
+            );
+        }
+        assert!(shortcut_enabled_by_feature("Ctrl+T", &settings));
+    }
+
+    #[test]
+    fn private_windows_do_not_record_or_reopen_closed_tabs() {
+        let mut private_tabs = TabManager::new();
+        let private_id = private_tabs.create_tab("https://private.example/", 1);
+        close_tab_for_window(&mut private_tabs, private_id, true);
+        assert!(private_tabs.recently_closed_newest_first().is_empty());
+        assert_eq!(pop_closed_tab_for_window(&mut private_tabs, true), None);
+
+        let mut regular_tabs = TabManager::new();
+        let regular_id = regular_tabs.create_tab("https://regular.example/", 1);
+        close_tab_for_window(&mut regular_tabs, regular_id, false);
+        assert_eq!(
+            pop_closed_tab_for_window(&mut regular_tabs, false).as_deref(),
+            Some("https://regular.example/")
+        );
+    }
+
+    #[test]
+    fn tab_state_sync_serializes_a_borrowed_slice_with_the_existing_wire_shape() {
+        let mut tabs = TabManager::new();
+        tabs.create_tab("https://one.example/", 1);
+        tabs.create_tab("https://two.example/", 2);
+        let tab_slice = tabs.tabs();
+        let active_tab_id = tabs.active_tab().map(|tab| tab.id);
+        let borrowed = BorrowedHostToUiMessage::TabStateSync {
+            tabs: tab_slice,
+            active_tab_id,
+        };
+
+        let BorrowedHostToUiMessage::TabStateSync {
+            tabs: serialized_tabs,
+            ..
+        } = &borrowed;
+        assert!(std::ptr::eq(tab_slice.as_ptr(), serialized_tabs.as_ptr()));
+
+        let owned = HostToUiMessage::TabStateSync {
+            tabs: tab_slice.to_vec(),
+            active_tab_id,
+        };
+        assert_eq!(
+            serde_json::to_string(&borrowed).unwrap(),
+            serde_json::to_string(&owned).unwrap()
+        );
+    }
 
     #[test]
     fn automatic_bookmark_sync_ignores_history_only_edits() {
@@ -5951,16 +7905,125 @@ mod google_dns_preferences_tests {
             removed_bookmarks: Vec::new(),
             ..Default::default()
         };
-        assert!(!bookmark_sync_state_changed(&before, &after));
+        assert!(!bookmark_sync_state_changed(&before, &after, false));
+        assert!(bookmark_sync_state_changed(&before, &after, true));
+        after
+            .bookmark_updates
+            .push(evergreen_core::library::BookmarkUpdate {
+                url: "https://saved.example/".into(),
+                updated_at_ms: 42,
+            });
+        assert!(bookmark_sync_state_changed(&before, &after, false));
         after
             .removed_bookmarks
             .push("https://deleted.example/".into());
-        assert!(bookmark_sync_state_changed(&before, &after));
+        assert!(bookmark_sync_state_changed(&before, &after, false));
+        after
+            .bookmark_tombstones
+            .push(evergreen_core::library::BookmarkTombstone {
+                url: "https://deleted.example/".into(),
+                deleted_at_ms: 43,
+            });
+        assert!(bookmark_sync_state_changed(&before, &after, false));
         before.bookmarks.push(evergreen_core::library::Page {
             url: "https://another.example/".into(),
             title: "Another".into(),
         });
-        assert!(bookmark_sync_state_changed(&before, &after));
+        assert!(bookmark_sync_state_changed(&before, &after, false));
+    }
+
+    #[test]
+    fn merged_bookmark_timestamps_and_deletions_project_back_to_library() {
+        let category = sync_v2::BookmarkCategory {
+            items: vec![sync_v2::TimedBookmark {
+                page: sync_v2::SyncPage {
+                    url: "https://saved.example/".into(),
+                    title: "Saved".into(),
+                },
+                updated_at_ms: 1234,
+            }],
+            tombstones: vec![sync_v2::UrlTombstone {
+                url: "https://removed.example/".into(),
+                deleted_at_ms: 5678,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            local_bookmark_updates(&category),
+            vec![evergreen_core::library::BookmarkUpdate {
+                url: "https://saved.example/".into(),
+                updated_at_ms: 1234,
+            }]
+        );
+        assert_eq!(
+            local_bookmark_tombstones(&category),
+            vec![evergreen_core::library::BookmarkTombstone {
+                url: "https://removed.example/".into(),
+                deleted_at_ms: 5678,
+            }]
+        );
+        let next_snapshot = sync::sync_payload_from_library(
+            &evergreen_core::library::Library {
+                bookmarks: vec![evergreen_core::library::Page {
+                    url: "https://saved.example/".into(),
+                    title: "Saved".into(),
+                }],
+                bookmark_updates: local_bookmark_updates(&category),
+                removed_bookmarks: vec!["https://removed.example/".into()],
+                bookmark_tombstones: local_bookmark_tombstones(&category),
+                ..Default::default()
+            },
+            false,
+        );
+        let next_bookmarks = next_snapshot.bookmarks.unwrap();
+        assert_eq!(next_bookmarks.items[0].updated_at_ms, 1234);
+        assert_eq!(next_bookmarks.tombstones[0].deleted_at_ms, 5678);
+    }
+
+    #[test]
+    fn applying_synced_settings_changes_only_the_selected_profile() {
+        let mut settings = evergreen_core::settings::Settings::default();
+        let mut work_values = evergreen_core::settings::ProfileSyncSettings::from_global(&settings);
+        work_values.search_engine = "bing".into();
+        work_values.default_zoom_level = 1.25;
+        settings
+            .profiles
+            .push(evergreen_core::settings::BrowserProfile {
+                id: "Work".into(),
+                name: "Work".into(),
+                sync_settings_values: Some(work_values),
+                ..settings.profiles[0].clone()
+            });
+
+        let personal_before = sync::syncable_settings_from(&settings.for_profile("Default"), 0);
+        let mut incoming = sync::syncable_settings_from(&settings.for_profile("Default"), 1234);
+        incoming.search_engine = sync_v2::SearchEngine::Brave;
+        incoming.default_zoom_percent = 175;
+        incoming.theme = sync_v2::Theme::Dark;
+        assert!(apply_syncable_settings_to_profile(
+            &mut settings,
+            "Work",
+            &incoming
+        ));
+
+        assert_eq!(
+            sync::syncable_settings_from(&settings.for_profile("Default"), 0),
+            personal_before
+        );
+        let work_after = sync::syncable_settings_from(&settings.for_profile("Work"), 0);
+        assert_eq!(work_after.search_engine, sync_v2::SearchEngine::Brave);
+        assert_eq!(work_after.default_zoom_percent, 175);
+        assert_eq!(work_after.theme, sync_v2::Theme::Dark);
+        let work_profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "Work")
+            .unwrap();
+        assert_eq!(work_profile.sync_settings_updated_at_ms, 1234);
+        assert_eq!(
+            work_profile.sync_settings_fingerprint.as_deref(),
+            Some(sync::syncable_settings_fingerprint(&incoming).as_str())
+        );
     }
 
     #[test]
@@ -5975,6 +8038,101 @@ mod google_dns_preferences_tests {
         assert!(!persist_session_snapshot(&path, b"first").unwrap());
         assert!(persist_session_snapshot(&path, b"second").unwrap());
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_manifest_roundtrips_normal_windows_in_profile_slot_order_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pip-startup-manifest-test-{}-{}",
+            std::process::id(),
+            BrowserApp::now_secs()
+        ));
+        let path = root.join("restart-profiles.json");
+        let profiles = startup_profiles_for_windows([
+            ("Default".into(), 1, false),
+            ("Work".into(), 0, false),
+            ("Default".into(), 0, false),
+            ("Private".into(), 0, true),
+        ]);
+        assert_eq!(profiles, ["Default", "Default", "Work"]);
+
+        assert!(persist_startup_profiles(&path, &profiles).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        let loaded: Vec<String> = serde_json::from_slice(&bytes).unwrap();
+        let known_profiles = vec!["Default".into(), "Work".into()];
+        assert_eq!(valid_startup_profiles(&loaded, &known_profiles), profiles);
+
+        let stale_and_invalid = vec!["Deleted".into(), "bad id".into()];
+        assert_eq!(
+            valid_startup_profiles(&stale_and_invalid, &known_profiles),
+            ["Default"]
+        );
+        assert!(!persist_startup_profiles(&path, &[]).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn updating_an_earlier_session_slot_preserves_later_windows() {
+        let mut sessions = vec![vec!["first-old"], vec!["second-window"]];
+        update_session_slot(&mut sessions, 0, vec!["first-new"]);
+        assert_eq!(sessions, vec![vec!["first-new"], vec!["second-window"]]);
+
+        update_session_slot(&mut sessions, 2, vec!["third-window"]);
+        assert_eq!(
+            sessions,
+            vec![
+                vec!["first-new"],
+                vec!["second-window"],
+                vec!["third-window"]
+            ]
+        );
+    }
+
+    #[test]
+    fn profile_session_readers_preserve_legacy_single_window_files() {
+        let root = std::env::temp_dir().join(format!(
+            "pip-profile-session-format-test-{}-{}",
+            std::process::id(),
+            BrowserApp::now_secs()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let tabs_path = root.join("Default.json");
+        let closed_path = root.join("Default.closed.json");
+        let mut manager = TabManager::new();
+        manager.create_tab("https://legacy.example/", 1);
+        let legacy_tabs = manager.snapshot();
+        let legacy_closed = vec!["https://closed.example/".to_string()];
+
+        std::fs::write(&tabs_path, serde_json::to_vec(&legacy_tabs).unwrap()).unwrap();
+        std::fs::write(&closed_path, serde_json::to_vec(&legacy_closed).unwrap()).unwrap();
+        assert_eq!(load_session_windows(&tabs_path), vec![legacy_tabs.clone()]);
+        assert_eq!(
+            load_closed_histories(&closed_path),
+            vec![legacy_closed.clone()]
+        );
+
+        let second_tabs = vec![legacy_tabs[0].clone()];
+        let second_closed = vec!["https://second-closed.example/".to_string()];
+        std::fs::write(
+            &tabs_path,
+            serde_json::to_vec(&vec![legacy_tabs.clone(), second_tabs.clone()]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &closed_path,
+            serde_json::to_vec(&vec![legacy_closed.clone(), second_closed.clone()]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            load_session_windows(&tabs_path),
+            vec![legacy_tabs, second_tabs]
+        );
+        assert_eq!(
+            load_closed_histories(&closed_path),
+            vec![legacy_closed, second_closed]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5997,6 +8155,29 @@ mod google_dns_preferences_tests {
         );
         std::fs::write(root.join("manifest.json"), r#"{"manifest_version":4}"#).unwrap();
         assert!(validate_browser_extension_folder(&root).is_err());
+        std::fs::write(root.join("manifest.json"), r#"["not","an","object"]"#).unwrap();
+        assert!(validate_browser_extension_folder(&root).is_err());
+        std::fs::write(
+            root.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"   ","version":"1.0"}"#,
+        )
+        .unwrap();
+        assert!(validate_browser_extension_folder(&root).is_err());
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_file;
+            let external_manifest = root.with_extension("outside-manifest.json");
+            std::fs::write(
+                &external_manifest,
+                r#"{"manifest_version":3,"name":"External","version":"1.0"}"#,
+            )
+            .unwrap();
+            std::fs::remove_file(root.join("manifest.json")).unwrap();
+            if symlink_file(&external_manifest, root.join("manifest.json")).is_ok() {
+                assert!(validate_browser_extension_folder(&root).is_err());
+            }
+            let _ = std::fs::remove_file(external_manifest);
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -6013,13 +8194,91 @@ mod google_dns_preferences_tests {
     #[test]
     fn dns_proxy_browser_args_preserve_wry_defaults_and_only_proxy_when_enabled() {
         let defaults = dns_proxy_browser_args(None);
-        assert!(defaults.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+        assert!(defaults.contains("--disable-features=msWebOOUI,msPdfOOUI"));
+        assert!(!defaults.contains("msSmartScreenProtection"));
         assert!(!defaults.contains("--proxy-server="));
 
         let enabled = dns_proxy_browser_args(Some(43210));
         assert!(enabled.contains("--proxy-server=http://127.0.0.1:43210"));
         assert!(enabled.contains("--disable-quic"));
-        assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"));
+        assert!(enabled.contains(
+            "--host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1\""
+        ));
+        assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI"));
+        assert!(!enabled.contains("msSmartScreenProtection"));
+    }
+
+    #[test]
+    fn automatic_memory_discard_requires_a_long_idle_suspended_safe_web_tab() {
+        let mut tabs = TabManager::new();
+        let id = tabs.create_tab("https://example.com", 100);
+        let tab = tabs.get_tab_by_id(id).unwrap();
+        assert!(!eligible_for_memory_discard(
+            tab,
+            100 + AUTO_DISCARD_IDLE_SECS
+        ));
+
+        tabs.set_tab_suspended(id, true);
+        assert!(eligible_for_memory_discard(
+            tabs.get_tab_by_id(id).unwrap(),
+            100 + AUTO_DISCARD_IDLE_SECS
+        ));
+
+        tabs.set_memory_discard_protected(id, true);
+        assert!(!eligible_for_memory_discard(
+            tabs.get_tab_by_id(id).unwrap(),
+            100 + AUTO_DISCARD_IDLE_SECS + 1
+        ));
+        tabs.set_memory_discard_protected(id, false);
+        tabs.set_audio_playing(id, true);
+        assert!(!eligible_for_memory_discard(
+            tabs.get_tab_by_id(id).unwrap(),
+            100 + AUTO_DISCARD_IDLE_SECS + 1
+        ));
+    }
+
+    #[test]
+    fn automatic_memory_suspend_requires_idle_and_no_native_protection() {
+        let mut tabs = TabManager::new();
+        let id = tabs.create_tab("https://example.com", 100);
+        tabs.create_tab("about:blank", 100);
+        let tab = tabs.get_tab_by_id(id).unwrap();
+        assert!(eligible_for_memory_suspend(tab, 400, 300));
+        assert!(!eligible_for_memory_suspend(tab, 399, 300));
+
+        tabs.set_memory_discard_protected(id, true);
+        assert!(!eligible_for_memory_suspend(
+            tabs.get_tab_by_id(id).unwrap(),
+            400,
+            300
+        ));
+        tabs.set_memory_discard_protected(id, false);
+        tabs.set_audio_playing(id, true);
+        assert!(!eligible_for_memory_suspend(
+            tabs.get_tab_by_id(id).unwrap(),
+            400,
+            300
+        ));
+    }
+
+    #[test]
+    fn memory_safety_probe_is_navigation_bound_and_tracks_only_real_risks() {
+        assert_eq!(
+            parse_memory_safety_result(r#"{"safe":true,"href":"https://example.com/"}"#),
+            Some((true, "https://example.com/".into()))
+        );
+        assert_eq!(
+            parse_memory_safety_result(
+                r#""{\"safe\":false,\"href\":\"https://example.com/draft\"}""#
+            ),
+            Some((false, "https://example.com/draft".into()))
+        );
+        assert!(parse_memory_safety_result("true").is_none());
+
+        assert!(!DISCARD_SAFETY_SCRIPT.contains("interacted"));
+        assert!(DISCARD_SAFETY_SCRIPT.contains("hasDirtyPageState"));
+        assert!(DISCARD_SAFETY_SCRIPT.contains("getUserMedia"));
+        assert!(DISCARD_SAFETY_SCRIPT.contains("activeTracks.size > 0"));
     }
 
     #[test]

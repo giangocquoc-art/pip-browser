@@ -5,6 +5,8 @@ Pip-Setup-*.exe
 
 PipSetup.exe
 browser-source/target/
+browser-source/ui-review/
+browser-source/tools/__pycache__/
 browser-source/crates/installer/assets/
 browser-source/dist/
 browser-source/dist-pip/

@@ -132,6 +132,22 @@ test("a delete racing a newer write cannot erase the accepted revision", async (
   }
 });
 
+test("deleting an absent vault revokes a concurrent first create", async () => {
+  const env = testEnv();
+  const url = `https://sync.psharehub.com/v1/vault/${id}`;
+  const [deletion, creation] = await Promise.all([
+    worker.fetch(new Request(url, { method: "DELETE", headers: auth() }), env),
+    worker.fetch(new Request(url, {
+      method: "PUT", headers: auth({ "If-None-Match": "*" }), body: envelope,
+    }), env),
+  ]);
+
+  assert.equal(deletion.status, 204);
+  assert.ok(creation.status === 204 || creation.status === 410);
+  assert.equal((await worker.fetch(new Request(url, { headers: auth() }), env)).status, 410);
+  assert.equal(await env.VAULTS.get(id).storage.get("envelope"), undefined);
+});
+
 test("rejects weak vault IDs, malformed envelopes, and unsupported methods", async () => {
   const env = testEnv();
   assert.equal((await worker.fetch(new Request("https://sync.psharehub.com/v1/vault/abc"), env)).status, 404);

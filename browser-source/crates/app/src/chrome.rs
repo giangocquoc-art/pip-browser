@@ -10,7 +10,9 @@ pub const LOADING_MASCOT_BASE64: &str = include_str!("../ui/assets/mascot-loadin
 // Only shipped internal HTML receives the capability. Never inject it into remote pages.
 pub fn protect_internal_html(html: String, token: &str) -> String {
     let token = serde_json::to_string(token).unwrap();
-    let script = format!("<head><script>window.__pipSend = message => window.ipc.postMessage(JSON.stringify({{token:{token},message}}));</script>");
+    let script = format!(
+        "<head><script>window.__pipSend = message => window.ipc.postMessage(JSON.stringify({{token:{token},message}}));</script>"
+    );
     html.replace("window.ipc.postMessage", "window.__pipSend")
         .replacen("<head>", &script, 1)
 }
@@ -35,6 +37,22 @@ pub fn get_chrome_html(search_engine: &str) -> String {
         .replace("{{LOGO_BASE64}}", LOGO_BASE64.trim())
         .replace("{{MASCOT_LOADING_BASE64}}", LOADING_MASCOT_BASE64.trim())
         .replace("{{SEARCH_ENGINE_NAME}}", display_name)
+}
+
+pub fn get_chrome_html_with_appearance(search_engine: &str, theme: &str, density: &str) -> String {
+    let theme = match theme {
+        "light" | "dark" => theme,
+        _ => "system",
+    };
+    let density = if density == "compact" {
+        "compact"
+    } else {
+        "comfortable"
+    };
+    get_chrome_html(search_engine).replace(
+        "<html lang=\"vi\">",
+        &format!("<html lang=\"vi\" data-theme=\"{theme}\" data-density=\"{density}\">"),
+    )
 }
 
 // Must match the 40px tab strip + 48px navigation row in index.html.
@@ -118,6 +136,14 @@ mod tests {
         assert!(html_google.contains("Tìm kiếm Google hoặc nhập địa chỉ web..."));
         assert!(html_google.contains("data:image/webp;base64,"));
         assert!(!html_google.contains("{{MASCOT_LOADING_BASE64}}"));
+    }
+
+    #[test]
+    fn chrome_preferences_are_seeded_before_settings_sync_runs() {
+        let html = get_chrome_html_with_appearance("google", "dark", "compact");
+        assert!(html.contains("data-theme=\"dark\" data-density=\"compact\""));
+        let fallback = get_chrome_html_with_appearance("google", "unknown", "unknown");
+        assert!(fallback.contains("data-theme=\"system\" data-density=\"comfortable\""));
     }
 
     #[test]

@@ -19,7 +19,7 @@
     .shortcut-item{position:relative}.shortcut-item .shortcut{padding-right:17px}.shortcut-controls{position:absolute;top:3px;right:3px;display:flex;gap:2px;opacity:0;pointer-events:none}.shortcut-item:hover .shortcut-controls,.shortcut-item:focus-within .shortcut-controls{opacity:1;pointer-events:auto}.shortcut-control{width:21px;height:21px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font-size:12px;line-height:1;cursor:pointer}.shortcut-control:hover{border-color:var(--accent);color:var(--accent-dark)}.shortcut-add{border-style:dashed;background:rgba(255,255,255,.78);cursor:pointer}.shortcut-add .shortcut-icon{font-size:22px;font-weight:500}.shortcut-add:focus-visible,.shortcut-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     .guide{margin:24px auto 0;text-align:left;border:1px solid var(--line);border-radius:14px;background:var(--surface);max-width:680px;overflow:hidden}.guide summary{padding:13px 18px;cursor:pointer;color:var(--ink);font-weight:650}.guide-content{padding:0 18px 18px;display:grid;gap:14px}.guide-content p{margin:0;color:var(--muted);font-size:13px}.guide-content b{color:var(--ink)}kbd{font:12px "Segoe UI",sans-serif;white-space:nowrap;padding:2px 5px;background:var(--soft);border:1px solid var(--line);border-radius:5px}button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #d9510a;outline-offset:3px}
     .state-view{display:none;min-height:calc(100vh - 195px);align-items:center;justify-content:center}.state-card{width:min(760px,100%);min-height:340px;padding:26px 34px;border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:var(--shadow);display:grid;grid-template-columns:minmax(0,1fr) 270px;align-items:center;gap:22px;overflow:hidden}.state-card h2{margin:0 0 8px;font-size:27px;letter-spacing:-.8px}.state-card p{margin:0;color:var(--muted);max-width:360px}.state-card button{margin-top:20px;padding:10px 18px;border:0;border-radius:20px;background:var(--accent);color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.state-card img{width:100%;max-height:285px;object-fit:contain}.state-card.empty img{max-height:290px}.state-card.history{grid-template-columns:1fr 220px}.state-card.history img{max-height:230px}
-    .state-view{flex-direction:column;gap:18px}.library-list{width:min(760px,100%);display:grid;gap:8px}.library-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border:1px solid var(--line);border-radius:12px;background:white}.library-row a{min-width:0;flex:1;color:var(--ink);text-decoration:none;overflow:hidden}.library-row strong,.library-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row small{color:var(--muted);font-size:11px;margin-top:3px}.library-row button,.library-heading button{border:1px solid var(--line);border-radius:8px;background:white;color:#b84b08;padding:7px 12px;cursor:pointer}.library-heading{display:flex;width:min(760px,100%);align-items:center;justify-content:space-between;gap:8px}.library-heading h2{font-size:22px}.library-search{width:min(300px,100%);min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit}.library-empty{width:min(760px,100%);margin:0;color:var(--muted);font-size:13px}#libraryStatus{position:fixed;z-index:20;top:14px;right:16px;max-width:min(420px,calc(100vw - 32px));padding:11px 15px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}[hidden]{display:none!important}
+    .state-view{flex-direction:column;gap:18px}.library-list{width:min(760px,100%);display:grid;gap:8px}.library-row{display:flex;align-items:center;gap:12px;padding:13px 16px;border:1px solid var(--line);border-radius:12px;background:white}.library-row a{min-width:0;flex:1;color:var(--ink);text-decoration:none;overflow:hidden}.library-row strong,.library-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row small{color:var(--muted);font-size:11px;margin-top:3px}.library-row button,.library-heading button{border:1px solid var(--line);border-radius:8px;background:white;color:#b84b08;padding:7px 12px;cursor:pointer}.library-row select{max-width:180px;padding:7px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}.library-heading{display:flex;width:min(760px,100%);align-items:center;justify-content:space-between;gap:8px}.library-heading h2{font-size:22px}.library-search{width:min(300px,100%);min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--ink);font:inherit}.bookmark-folders{width:min(760px,100%);display:flex;flex-wrap:wrap;gap:6px}.bookmark-folders button{border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--ink);padding:7px 11px;cursor:pointer}.bookmark-folders button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent-dark)}.library-empty{width:min(760px,100%);margin:0;color:var(--muted);font-size:13px}#libraryStatus{position:fixed;z-index:20;top:14px;right:16px;max-width:min(420px,calc(100vw - 32px));padding:11px 15px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}[hidden]{display:none!important}
     *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;backdrop-filter:none!important}
     .state-view{padding:28px 24px;min-height:100vh}.library-heading{gap:16px}.library-row a:focus-visible{outline-offset:5px}
     @media(max-width:900px){.layout{grid-template-columns:62px minmax(0,1fr)}.rail{padding:17px 7px;align-items:center}.brand{padding:0;font-size:0}.brand img{width:31px;height:31px}.rail-link{width:42px;padding:0;justify-content:center;font-size:0}.rail-link span{display:none}.hero{padding:32px 24px;background-position:65% center}.hero::before{background:rgba(255,250,246,.48)}.hero-copy{padding:24px 0}.state-card,.state-card.history{grid-template-columns:1fr;text-align:center;padding:24px;gap:10px}.state-card p{margin:auto}.state-card img,.state-card.empty img,.state-card.history img{grid-row:1;max-height:210px}.state-card button{margin-top:15px}}
@@ -60,7 +60,7 @@
           </div></details>
         </div>
       </section>
-      <section class="state-view" id="bookmarksView"><div class="library-heading"><h2>Dấu trang của bạn</h2><input id="bookmarksSearch" class="library-search" type="search" aria-label="Tìm trong dấu trang" placeholder="Tìm theo tên hoặc địa chỉ"><button id="importBookmarksButton" data-action="ImportBookmarks" title="Nhập tệp dấu trang HTML từ trình duyệt khác">Nhập</button><button id="exportBookmarksButton" data-action="ExportBookmarks" title="Xuất dấu trang thành tệp HTML">Xuất</button></div><div class="library-list" id="bookmarksList"></div><p class="library-empty" id="bookmarksNoResults" hidden>Không tìm thấy dấu trang phù hợp.</p><div class="state-card empty"><div><p class="eyebrow">Dấu trang</p><h2>Chưa có gì ở đây</h2><p>Bấm ngôi sao cạnh thanh địa chỉ hoặc Ctrl+D để lưu trang đang xem. Dấu trang được lưu riêng trong hồ sơ hiện tại.</p><button data-view="home">Về trang chủ</button></div><img src="data:image/webp;base64,{{EMPTY_BASE64}}" loading="lazy" decoding="async" alt="Mascot Pip ngồi cầm tờ giấy trống"></div></section>
+      <section class="state-view" id="bookmarksView"><div class="library-heading"><h2>Dấu trang của bạn</h2><input id="bookmarksSearch" class="library-search" type="search" aria-label="Tìm trong dấu trang" placeholder="Tìm theo tên hoặc địa chỉ"><button id="createBookmarkFolderButton" type="button">Thư mục mới</button><button id="importBookmarksButton" data-action="ImportBookmarks" title="Nhập tệp dấu trang HTML từ trình duyệt khác">Nhập</button><button id="exportBookmarksButton" data-action="ExportBookmarks" title="Xuất dấu trang thành tệp HTML">Xuất</button></div><nav id="bookmarkFolders" class="bookmark-folders" aria-label="Thư mục dấu trang"></nav><div class="library-list" id="bookmarksList"></div><p class="library-empty" id="bookmarksNoResults" hidden>Không tìm thấy dấu trang phù hợp.</p><div class="state-card empty"><div><p class="eyebrow">Dấu trang</p><h2>Chưa có gì ở đây</h2><p>Bấm ngôi sao cạnh thanh địa chỉ hoặc Ctrl+D để lưu trang đang xem. Dấu trang được lưu riêng trong hồ sơ hiện tại.</p><button data-view="home">Về trang chủ</button></div><img src="data:image/webp;base64,{{EMPTY_BASE64}}" loading="lazy" decoding="async" alt="Mascot Pip ngồi cầm tờ giấy trống"></div></section>
       <section class="state-view" id="historyView"><div class="library-heading"><h2>Trang đã xem</h2><input id="historySearch" class="library-search" type="search" aria-label="Tìm trong lịch sử" placeholder="Tìm theo tên hoặc địa chỉ"><button id="clearHistoryButton" onclick="if(confirm('Xóa toàn bộ lịch sử trong hồ sơ này?'))send('ClearHistory')">Xóa lịch sử</button></div><div class="library-list" id="historyList"></div><p class="library-empty" id="historyNoResults" hidden>Không tìm thấy trang phù hợp.</p><div class="state-card history"><div><p class="eyebrow">Lịch sử</p><h2>Chưa có trang đã xem</h2><p>Các trang đã xem sẽ xuất hiện ở đây. Pip không lưu lịch sử trong cửa sổ ẩn danh.</p><button data-view="home">Về trang chủ</button></div><img id="historyMascot" loading="lazy" decoding="async" alt="Mascot Pip cầm tờ giấy"></div></section>
     </main>
   </div>
@@ -107,6 +107,8 @@
         });list.append(add);
       }
       const libraryPages={bookmarks:[],history:[]};
+      let bookmarkFolders=[];
+      let activeBookmarkFolder=null;
       let libraryStatusTimer;
       window.__showLibraryStatus=message=>{
         const status=document.getElementById('libraryStatus');
@@ -118,7 +120,7 @@
       function renderLibraryKind(kind){
         const pages=libraryPages[kind],section=document.getElementById(kind+'View'),list=document.getElementById(kind+'List');
         const query=document.getElementById(kind+'Search').value.trim().toLocaleLowerCase();
-        const matches=pages.filter(page=>`${page.title||''} ${page.url}`.toLocaleLowerCase().includes(query));
+        const matches=pages.filter(page=>(kind!=='bookmarks'||activeBookmarkFolder===null||page.folder_id===activeBookmarkFolder)&&`${page.title||''} ${page.url}`.toLocaleLowerCase().includes(query));
         list.replaceChildren();section.querySelector('.state-card').hidden=pages.length>0;
         document.getElementById(kind+'NoResults').hidden=pages.length===0||matches.length>0;
         for(const page of matches){
@@ -127,11 +129,19 @@
           const link=document.createElement('a');link.href=page.url;
           const name=document.createElement('strong');name.textContent=page.title||page.url;
           const url=document.createElement('small');url.textContent=page.url;link.append(name,url);
+          if(kind==='history'&&Number.isFinite(page.visited_at_ms)&&page.visited_at_ms>0){const visited=document.createElement('small');visited.textContent=new Intl.DateTimeFormat('vi-VN',{dateStyle:'medium',timeStyle:'short'}).format(new Date(page.visited_at_ms));visited.setAttribute('aria-label','Thời điểm truy cập');link.append(visited);}
           link.onclick=e=>{e.preventDefault();send('Navigate',{url:page.url});};row.append(link);
+          if(kind==='bookmarks'){
+            const folder=document.createElement('select');folder.setAttribute('aria-label',`Thư mục của ${page.title||page.url}`);
+            const root=document.createElement('option');root.value='';root.textContent='Không có thư mục';folder.append(root);
+            for(const item of bookmarkFolders){const option=document.createElement('option');option.value=item.id;option.textContent=`${'　'.repeat(item.depth)}${item.name}`;folder.append(option);}
+            folder.value=page.folder_id||'';folder.addEventListener('change',()=>send('MoveBookmarkToFolder',{url:page.url,folder_id:folder.value||null}));row.append(folder);
+          }
           const remove=document.createElement('button');
           remove.textContent='Xóa';
-          remove.setAttribute('aria-label',`${kind==='bookmarks'?'Xóa dấu trang':'Xóa khỏi lịch sử'} ${page.title||page.url}`);
-          remove.onclick=()=>send(kind==='bookmarks'?'RemoveBookmark':'RemoveHistory',{url:page.url});
+          remove.setAttribute('aria-label',kind==='bookmarks'?`Xóa dấu trang ${page.title||page.url}`:`Xóa lượt truy cập ${page.title||page.url}`);
+          remove.onclick=()=>send(kind==='bookmarks'?'RemoveBookmark':'RemoveHistoryVisit',kind==='bookmarks'?{url:page.url}:{url:page.url,visited_at_ms:page.visited_at_ms});
+          if(kind==='history')remove.textContent='Xóa lượt này';
           row.append(remove);
           list.append(row);
         }
@@ -141,9 +151,23 @@
           libraryPages[kind]=Array.isArray(data[kind])?data[kind]:[];
           renderLibraryKind(kind);
         }
+        bookmarkFolders=Array.isArray(data.bookmark_folders)?data.bookmark_folders:[];
+        renderBookmarkFolders();
+        renderLibraryKind('bookmarks');
         renderHomeShortcuts(data.shortcuts);
         document.getElementById('clearHistoryButton').hidden=!!data.private||!data.history?.length;
       };
+      function renderBookmarkFolders(){
+        const nav=document.getElementById('bookmarkFolders');nav.replaceChildren();
+        const add=(label,id)=>{const button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-pressed',activeBookmarkFolder===id?'true':'false');button.addEventListener('click',()=>{activeBookmarkFolder=id;renderBookmarkFolders();renderLibraryKind('bookmarks');});nav.append(button);};
+        add('Tất cả',null);
+        const byId=new Map(bookmarkFolders.map(folder=>[folder.id,folder]));
+        for(const folder of bookmarkFolders){let depth=0,parent=folder.parent_id;const seen=new Set([folder.id]);while(parent&&byId.has(parent)&&!seen.has(parent)){seen.add(parent);depth++;parent=byId.get(parent).parent_id;}folder.depth=depth;add(`${'　'.repeat(depth)}📁 ${folder.name}`,folder.id);const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.title=`Xóa ${folder.name} và thư mục con`;remove.setAttribute('aria-label',`Xóa thư mục ${folder.name}`);remove.addEventListener('click',()=>{if(confirm(`Xóa thư mục “${folder.name}” cùng các thư mục con? Dấu trang vẫn được giữ và chuyển ra ngoài thư mục.`))send('DeleteBookmarkFolder',{folder_id:folder.id});});nav.append(remove);}
+      }
+      document.getElementById('createBookmarkFolderButton').addEventListener('click',()=>{
+        const name=prompt('Tên thư mục mới');if(!name||!name.trim())return;
+        send('CreateBookmarkFolder',{name:name.trim(),parent_id:activeBookmarkFolder});
+      });
       for(const kind of ['bookmarks','history'])document.getElementById(kind+'Search').addEventListener('input',()=>renderLibraryKind(kind));
       view('{{INITIAL_VIEW}}');
       send('GetLibrary');

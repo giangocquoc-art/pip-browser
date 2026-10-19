@@ -13,6 +13,8 @@ pub enum TabStatus {
     Inactive,
     /// Suspended via TrySuspendAsync to reclaim memory
     Suspended,
+    /// Renderer released under memory pressure; selecting the tab reloads its URL.
+    Discarded,
     /// Encountered a crash/render failure
     Crashed,
 }
@@ -34,6 +36,9 @@ pub struct TabState {
     /// Prevent automatic suspension while the user needs this tab to stay active.
     #[serde(default)]
     pub keep_awake: bool,
+    /// Runtime-only conservative guard for pages that may contain unsaved state.
+    #[serde(skip)]
+    pub memory_discard_protected: bool,
     /// Optional visual grouping metadata, persisted with the tab session.
     #[serde(default)]
     pub group: Option<TabGroup>,
@@ -53,7 +58,7 @@ pub struct TabManager {
     tabs: Vec<TabState>,
     active_tab_id: Option<TabId>,
     next_id: u64,
-    closed_history: Vec<String>, // URL history of closed tabs for Ctrl+Shift+T (in-memory only)
+    closed_history: Vec<String>, // Recent URLs are persisted with the profile session.
 }
 
 impl TabManager {
@@ -82,6 +87,7 @@ impl TabManager {
             is_muted: false,
             pinned: false,
             keep_awake: false,
+            memory_discard_protected: false,
             group: None,
             status: TabStatus::Active,
             last_active_timestamp_secs: current_time_secs,
@@ -102,7 +108,7 @@ impl TabManager {
     pub fn close_tab(&mut self, id: TabId) -> Option<TabId> {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             let removed = self.tabs.remove(pos);
-            if !removed.url.is_empty() && removed.url != "about:blank" {
+            if is_reopenable_url(&removed.url) && removed.url != "evergreen://newtab" {
                 self.closed_history.push(removed.url);
                 if self.closed_history.len() > 50 {
                     self.closed_history.remove(0);
@@ -137,6 +143,7 @@ impl TabManager {
             if tab.id == id {
                 tab.status = TabStatus::Active;
                 tab.last_active_timestamp_secs = current_time_secs;
+                tab.memory_discard_protected = false;
             } else if tab.status == TabStatus::Active {
                 tab.status = TabStatus::Inactive;
             }
@@ -152,6 +159,25 @@ impl TabManager {
 
     pub fn active_tab_id(&self) -> Option<TabId> {
         self.active_tab_id
+    }
+
+    /// Return the tab adjacent to the active tab, wrapping at either end.
+    pub fn adjacent_tab_id(&self, forward: bool) -> Option<TabId> {
+        if self.tabs.len() < 2 {
+            return None;
+        }
+        let current = self
+            .tabs
+            .iter()
+            .position(|tab| Some(tab.id) == self.active_tab_id)?;
+        let next = if forward {
+            (current + 1) % self.tabs.len()
+        } else if current == 0 {
+            self.tabs.len() - 1
+        } else {
+            current - 1
+        };
+        Some(self.tabs[next].id)
     }
 
     pub fn tabs(&self) -> &[TabState] {
@@ -171,6 +197,7 @@ impl TabManager {
     pub fn update_url(&mut self, id: TabId, url: String) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
             tab.url = url;
+            tab.memory_discard_protected = false;
         }
     }
 
@@ -194,6 +221,22 @@ impl TabManager {
             } else {
                 TabStatus::Inactive
             };
+        }
+    }
+
+    pub fn set_tab_discarded(&mut self, id: TabId) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
+            tab.status = TabStatus::Discarded;
+            tab.can_go_back = false;
+            tab.can_go_forward = false;
+            tab.is_audio_playing = false;
+            tab.is_muted = false;
+        }
+    }
+
+    pub fn set_memory_discard_protected(&mut self, id: TabId, protected: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.memory_discard_protected = protected;
         }
     }
 
@@ -251,6 +294,50 @@ impl TabManager {
 
     pub fn pop_last_closed(&mut self) -> Option<String> {
         self.closed_history.pop()
+    }
+
+    pub fn clear_closed_history(&mut self) {
+        self.closed_history.clear();
+    }
+
+    /// Returns reopenable recently closed URLs newest-first for lightweight UI pickers.
+    pub fn recently_closed_newest_first(&self) -> Vec<String> {
+        self.closed_history
+            .iter()
+            .rev()
+            .filter(|url| is_reopenable_url(url))
+            .take(50)
+            .cloned()
+            .collect()
+    }
+
+    /// Removes one item by its newest-first display index, rejecting invalid or unsafe entries.
+    pub fn take_closed_at_newest_index(&mut self, index: usize) -> Option<String> {
+        let position = self
+            .closed_history
+            .len()
+            .checked_sub(index.checked_add(1)?)?;
+        let url = self.closed_history.get(position)?;
+        if !is_reopenable_url(url) {
+            return None;
+        }
+        Some(self.closed_history.remove(position))
+    }
+
+    pub fn closed_history_snapshot(&self) -> Vec<String> {
+        self.closed_history.clone()
+    }
+
+    pub fn restore_closed_history(&mut self, urls: Vec<String>) {
+        self.closed_history = urls
+            .into_iter()
+            .filter(|url| is_reopenable_url(url))
+            .rev()
+            .take(50)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
     }
 
     pub fn reorder_tab(&mut self, from_idx: usize, to_idx: usize) -> bool {
@@ -326,20 +413,73 @@ impl TabManager {
     }
 
     pub fn snapshot(&self) -> Vec<TabState> {
-        self.tabs.clone()
+        self.tabs
+            .iter()
+            .filter(|tab| !url_has_userinfo(&tab.url))
+            .cloned()
+            .collect()
     }
 
     pub fn restore_from_snapshot(&mut self, tabs: Vec<TabState>) {
-        self.tabs = tabs;
-        if let Some(active) = self.tabs.iter().find(|t| t.status == TabStatus::Active) {
-            self.active_tab_id = Some(active.id);
-        } else if let Some(first) = self.tabs.first() {
-            self.active_tab_id = Some(first.id);
+        // Session files written by older builds may contain userinfo in URLs.
+        // Drop those tabs before callers recreate WebViews from the snapshot.
+        self.tabs = tabs
+            .into_iter()
+            .filter(|tab| !url_has_userinfo(&tab.url))
+            .collect();
+        // A stale or partially-written session can contain multiple Active tabs,
+        // or none at all. Keep the manager's active id and the tab statuses in
+        // sync so callers never restore two foreground tabs (or an inactive
+        // foreground tab).
+        let active_index = self
+            .tabs
+            .iter()
+            .position(|tab| tab.status == TabStatus::Active)
+            .or_else(|| (!self.tabs.is_empty()).then_some(0));
+        self.active_tab_id = active_index.map(|index| self.tabs[index].id);
+        if let Some(active_index) = active_index {
+            for (index, tab) in self.tabs.iter_mut().enumerate() {
+                if index == active_index {
+                    tab.status = TabStatus::Active;
+                } else if tab.status == TabStatus::Active {
+                    tab.status = TabStatus::Inactive;
+                }
+            }
         }
         if let Some(max_id) = self.tabs.iter().map(|t| t.id.0).max() {
             self.next_id = max_id + 1;
         }
     }
+}
+
+fn is_reopenable_url(url: &str) -> bool {
+    if url.len() > 8192 {
+        return false;
+    }
+    if url == "evergreen://newtab" {
+        return true;
+    }
+    let Some((scheme, _)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    // Userinfo can embed credentials in the URL. Closed-tab history is
+    // persisted in the profile session, so never retain those URLs there.
+    !url_has_userinfo(url)
+}
+
+fn url_has_userinfo(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    rest.split(['/', '?', '#'])
+        .next()
+        .is_some_and(|authority| authority.contains('@'))
 }
 
 /// Normalize an omnibox input string into a valid HTTP/HTTPS URL or search engine query.
@@ -406,4 +546,146 @@ pub fn url_encode(input: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_reopenable_url, TabManager, TabStatus};
+
+    fn tab_with_status(manager: &mut TabManager, url: &str, status: TabStatus) -> super::TabId {
+        let id = manager.create_tab(url, 0);
+        manager
+            .tabs_mut()
+            .iter_mut()
+            .find(|tab| tab.id == id)
+            .unwrap()
+            .status = status;
+        id
+    }
+
+    #[test]
+    fn restore_snapshot_normalizes_multiple_active_tabs() {
+        let mut source = TabManager::new();
+        let first = tab_with_status(&mut source, "https://first.example", TabStatus::Active);
+        let second = tab_with_status(&mut source, "https://second.example", TabStatus::Active);
+        source
+            .tabs_mut()
+            .iter_mut()
+            .find(|tab| tab.id == first)
+            .unwrap()
+            .status = TabStatus::Active;
+
+        let mut restored = TabManager::new();
+        restored.restore_from_snapshot(source.snapshot());
+
+        assert_eq!(restored.active_tab_id(), Some(first));
+        assert_eq!(
+            restored.get_tab_by_id(first).unwrap().status,
+            TabStatus::Active
+        );
+        assert_eq!(
+            restored.get_tab_by_id(second).unwrap().status,
+            TabStatus::Inactive
+        );
+        assert_eq!(
+            restored
+                .tabs()
+                .iter()
+                .filter(|tab| tab.status == TabStatus::Active)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn restore_snapshot_activates_fallback_when_saved_status_has_no_active_tab() {
+        let mut source = TabManager::new();
+        let first = tab_with_status(&mut source, "https://first.example", TabStatus::Suspended);
+        tab_with_status(&mut source, "https://second.example", TabStatus::Inactive);
+
+        let mut restored = TabManager::new();
+        restored.restore_from_snapshot(source.snapshot());
+
+        assert_eq!(restored.active_tab_id(), Some(first));
+        assert_eq!(
+            restored.get_tab_by_id(first).unwrap().status,
+            TabStatus::Active
+        );
+        assert_eq!(
+            restored
+                .tabs()
+                .iter()
+                .filter(|tab| tab.status == TabStatus::Active)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn closed_tab_history_rejects_urls_with_credentials() {
+        let mut manager = TabManager::new();
+        for url in [
+            "https://alice:secret@example.com/path",
+            "http://user@example.com/",
+        ] {
+            let id = manager.create_tab(url, 0);
+            manager.close_tab(id);
+        }
+
+        assert!(manager.recently_closed_newest_first().is_empty());
+        assert!(!is_reopenable_url("https://alice:secret@example.com/path"));
+        assert!(!is_reopenable_url("http://user@example.com/"));
+        assert!(is_reopenable_url(
+            "https://example.com/path?contact=a@b.test"
+        ));
+    }
+
+    #[test]
+    fn restoring_legacy_closed_history_drops_urls_with_credentials() {
+        let mut manager = TabManager::new();
+        manager.restore_closed_history(vec![
+            "https://safe.example/path".into(),
+            "https://alice:secret@example.com/path".into(),
+            "http://user@example.com/".into(),
+        ]);
+
+        assert_eq!(
+            manager.recently_closed_newest_first(),
+            vec!["https://safe.example/path"]
+        );
+    }
+
+    #[test]
+    fn session_snapshots_do_not_persist_or_restore_urls_with_credentials() {
+        let mut manager = TabManager::new();
+        manager.create_tab("https://alice:secret@example.com/", 0);
+        manager.create_tab("HTTPS://bob:secret@example.net/", 0);
+        manager.create_tab("https://safe.example/", 0);
+
+        let snapshot = manager.snapshot();
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].url, "https://safe.example/");
+
+        // Legacy session files are passed through restore_from_snapshot too.
+        let legacy: Vec<_> = [
+            "https://alice:secret@example.com/",
+            "http://bob:secret@example.net/",
+            "https://safe.example/",
+        ]
+        .into_iter()
+        .map(|url| {
+            let mut source = TabManager::new();
+            source.create_tab("https://placeholder.example/", 0);
+            let mut tab = source.snapshot().into_iter().next().unwrap();
+            tab.url = url.into();
+            tab
+        })
+        .collect();
+        let mut restored = TabManager::new();
+        restored.restore_from_snapshot(legacy);
+        assert_eq!(restored.tabs().len(), 1);
+        assert_eq!(restored.tabs()[0].url, "https://safe.example/");
+    }
 }

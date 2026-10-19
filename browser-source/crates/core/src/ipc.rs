@@ -16,8 +16,23 @@ pub enum UiToHostMessage {
     RemoveBookmark {
         url: String,
     },
+    CreateBookmarkFolder {
+        name: String,
+        parent_id: Option<String>,
+    },
+    DeleteBookmarkFolder {
+        folder_id: String,
+    },
+    MoveBookmarkToFolder {
+        url: String,
+        folder_id: Option<String>,
+    },
     RemoveHistory {
         url: String,
+    },
+    RemoveHistoryVisit {
+        url: String,
+        visited_at_ms: i64,
     },
     AddHomeShortcut {
         url: String,
@@ -78,6 +93,9 @@ pub enum UiToHostMessage {
     },
     RestoreSession,
     ReopenClosedTab,
+    OpenClosedTab {
+        index: usize,
+    },
     TranslatePage,
     EnableBookmarkSync,
     ShowBookmarkSyncCode,
@@ -86,12 +104,21 @@ pub enum UiToHostMessage {
         recovery_code: String,
     },
     SyncBookmarks,
+    SetSyncCategories {
+        history: bool,
+        open_tabs: bool,
+        settings: bool,
+        passwords: bool,
+    },
     SetAutofill {
         enabled: bool,
     },
+    SetPasswordAutosave {
+        enabled: bool,
+    },
     GetSavedPasswords,
-    SavePassword {
-        origin: String,
+    SavePasswordForTab {
+        tab_id: u64,
         username: String,
         password: String,
     },
@@ -375,6 +402,32 @@ mod tests {
             passwords: false,
             autofill: true,
             download_history: true,
+        };
+        let encoded = serde_json::to_string(&message).unwrap();
+        let decoded: UiToHostMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn password_save_ipc_carries_tab_id_but_no_caller_supplied_origin() {
+        let message = UiToHostMessage::SavePasswordForTab {
+            tab_id: 42,
+            username: "account".into(),
+            password: "secret".into(),
+        };
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert!(!encoded.contains("origin"));
+        assert_eq!(
+            serde_json::from_str::<UiToHostMessage>(&encoded).unwrap(),
+            message
+        );
+    }
+
+    #[test]
+    fn history_row_removal_ipc_targets_one_timestamped_visit() {
+        let message = UiToHostMessage::RemoveHistoryVisit {
+            url: "https://example.com/visited".into(),
+            visited_at_ms: 1_700_000_000_123,
         };
         let encoded = serde_json::to_string(&message).unwrap();
         let decoded: UiToHostMessage = serde_json::from_str(&encoded).unwrap();

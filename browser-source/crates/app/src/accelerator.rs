@@ -9,6 +9,50 @@ use windows::core::Interface;
 use winit::event_loop::EventLoopProxy;
 use wry::WebView;
 
+#[cfg(any(target_os = "windows", test))]
+fn find_navigation_shortcut(
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    virtual_key: u32,
+) -> Option<&'static str> {
+    if alt {
+        return None;
+    }
+
+    match (ctrl, shift, virtual_key) {
+        (true, false, 0x47) | (false, false, 0x72) => Some("FindNext"),
+        (true, true, 0x47) | (false, true, 0x72) => Some("FindPrevious"),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn devtools_shortcut(ctrl: bool, shift: bool, alt: bool, virtual_key: u32) -> Option<&'static str> {
+    if !ctrl || !shift || alt {
+        return None;
+    }
+    match virtual_key {
+        0x49 => Some("Ctrl+Shift+I"),
+        0x4A => Some("Ctrl+Shift+J"),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn unmodified_browser_key(ctrl: bool, alt: bool, virtual_key: u32) -> Option<&'static str> {
+    if ctrl || alt {
+        return None;
+    }
+    match virtual_key {
+        0x7A => Some("F11"),
+        0x7B => Some("F12"),
+        0x74 => Some("F5"),
+        0x1B => Some("Escape"),
+        _ => None,
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub struct ActivePermission {
     window: winit::window::WindowId,
@@ -72,18 +116,33 @@ pub fn wake_webview(wv: &WebView) {
     let controller = wv.controller();
     let _ = unsafe { controller.NotifyParentWindowPositionChanged() };
     if let Ok(core) = unsafe { controller.CoreWebView2() } {
-        if let Ok(core19) =
-            core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_19>()
-        {
-            let _ = unsafe {
-                core19.SetMemoryUsageTargetLevel(webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL)
-            };
-        }
         if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
             let mut is_suspended = windows::core::BOOL(0);
-            if unsafe { core3.IsSuspended(&mut is_suspended) }.is_ok() && is_suspended.as_bool() {
+            let suspended =
+                unsafe { core3.IsSuspended(&mut is_suspended) }.is_ok() && is_suspended.as_bool();
+            if suspended {
+                // Resume automatically restores the NORMAL memory target. Setting it
+                // first is ignored by WebView2 while suspended, so avoid that extra COM call.
                 let _ = unsafe { core3.Resume() };
+            } else if let Ok(core19) =
+                core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_19>()
+            {
+                // Tabs hidden without entering suspension were marked LOW by hide_webview.
+                let _ = unsafe {
+                    core19.SetMemoryUsageTargetLevel(
+                        webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+                    )
+                };
             }
+        } else if let Ok(core19) =
+            core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_19>()
+        {
+            // This runtime can request a memory target but cannot expose suspension.
+            let _ = unsafe {
+                core19.SetMemoryUsageTargetLevel(
+                    webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+                )
+            };
         }
     }
 }
@@ -242,7 +301,13 @@ pub fn attach_accelerator_keys(
                     let mut handled = false;
                     let mut shortcut = None;
 
-                    if ctrl && !alt {
+                    if let Some(find_shortcut) = find_navigation_shortcut(ctrl, shift, alt, vkey) {
+                        shortcut = Some(find_shortcut);
+                        handled = true;
+                    } else if let Some(devtools) = devtools_shortcut(ctrl, shift, alt, vkey) {
+                        shortcut = Some(devtools);
+                        handled = true;
+                    } else if ctrl && !alt {
                         match vkey {
                             0x2E if shift => {
                                 // Open the browser data-clear controls.
@@ -282,6 +347,11 @@ pub fn attach_accelerator_keys(
                                 shortcut = Some("Ctrl+E");
                                 handled = true;
                             }
+                            0x4B if shift => {
+                                // Open Pip's lightweight tab switcher.
+                                shortcut = Some("Ctrl+Shift+K");
+                                handled = true;
+                            }
                             0x4B => {
                                 // 'K'
                                 shortcut = Some("Ctrl+K");
@@ -290,11 +360,6 @@ pub fn attach_accelerator_keys(
                             0x46 => {
                                 // 'F'
                                 shortcut = Some("Ctrl+F");
-                                handled = true;
-                            }
-                            0x4A if shift => {
-                                // 'J' opens the DevTools console in Chrome-style browsers.
-                                shortcut = Some("Ctrl+Shift+J");
                                 handled = true;
                             }
                             0x4A => {
@@ -352,6 +417,16 @@ pub fn attach_accelerator_keys(
                                 } else {
                                     shortcut = Some("Ctrl+Tab");
                                 }
+                                handled = true;
+                            }
+                            0x21 => {
+                                // Page Up: previous tab, as in Chrome.
+                                shortcut = Some("Ctrl+PageUp");
+                                handled = true;
+                            }
+                            0x22 => {
+                                // Page Down: next tab, as in Chrome.
+                                shortcut = Some("Ctrl+PageDown");
                                 handled = true;
                             }
                             0x31 => {
@@ -432,25 +507,9 @@ pub fn attach_accelerator_keys(
                                 _ => {}
                             }
                         }
-                    } else if !ctrl && !alt {
-                        match vkey {
-                            0x7B => {
-                                // F12
-                                shortcut = Some("F12");
-                                handled = true;
-                            }
-                            0x74 => {
-                                // F5
-                                shortcut = Some("F5");
-                                handled = true;
-                            }
-                            0x1B => {
-                                // Escape
-                                shortcut = Some("Escape");
-                                handled = true;
-                            }
-                            _ => {}
-                        }
+                    } else if let Some(browser_key) = unmodified_browser_key(ctrl, alt, vkey) {
+                        shortcut = Some(browser_key);
+                        handled = true;
                     }
 
                     if handled {
@@ -480,14 +539,143 @@ pub fn attach_navigation_events(
     proxy: EventLoopProxy<crate::BrowserEvent>,
     allowed_cert_hosts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
+    popup_opener_url: Option<String>,
 ) {
     use webview2_com::{
         DocumentTitleChangedEventHandler, HistoryChangedEventHandler,
-        IsDocumentPlayingAudioChangedEventHandler, SourceChangedEventHandler,
+        IsDocumentPlayingAudioChangedEventHandler, NavigationCompletedEventHandler,
+        NavigationStartingEventHandler, SourceChangedEventHandler,
     };
     use wry::WebViewExtWindows;
 
+    // WebView2 raises the top-level NavigationStarting event for the document but
+    // iframe navigations have their own event source. Subscribe to every frame,
+    // including nested frames, so a redirect inside an ad iframe cannot evade the
+    // same narrow cross-site destination checks used for top-level redirects.
+    fn attach_frame_ad_navigation_filter(
+        frame: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Frame,
+        top_level: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+        blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
+        popup_navigation_context: std::rc::Rc<
+            std::cell::RefCell<crate::adblock::PopupNavigationContext>,
+        >,
+    ) {
+        use webview2_com::{
+            FrameChildFrameCreatedEventHandler, FrameNavigationStartingEventHandler,
+            Microsoft::Web::WebView2::Win32::{ICoreWebView2Frame2, ICoreWebView2Frame7},
+        };
+
+        if let Ok(frame2) = frame.cast::<ICoreWebView2Frame2>() {
+            let navigation_blocker = blocker.clone();
+            let source_core = top_level.clone();
+            let popup_context_for_frame = popup_navigation_context.clone();
+            let navigation_handler =
+                FrameNavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut raw_uri = windows::core::PWSTR::null();
+                    if unsafe { args.Uri(&mut raw_uri) }.is_err() || raw_uri.is_null() {
+                        return Ok(());
+                    }
+                    let target = webview2_com::take_pwstr(raw_uri);
+                    let mut raw_source = windows::core::PWSTR::null();
+                    let source = if unsafe { source_core.Source(&mut raw_source) }.is_ok()
+                        && !raw_source.is_null()
+                    {
+                        webview2_com::take_pwstr(raw_source)
+                    } else {
+                        String::new()
+                    };
+                    let popup_opener = popup_context_for_frame.borrow().opener_for_source(&source);
+                    let blocked = if let Some(popup_opener) = popup_opener.as_deref() {
+                        navigation_blocker
+                            .borrow()
+                            .should_block_frame_navigation_with_popup_context(
+                                &target,
+                                &source,
+                                Some(popup_opener),
+                            )
+                    } else {
+                        navigation_blocker
+                            .borrow()
+                            .should_block_frame_navigation(&target, &source)
+                    };
+                    if blocked {
+                        let _ = unsafe { args.SetCancel(true) };
+                        navigation_blocker.borrow_mut().blocked += 1;
+                    }
+                    Ok(())
+                }));
+            let mut navigation_token = Default::default();
+            if let Err(error) =
+                unsafe { frame2.add_NavigationStarting(&navigation_handler, &mut navigation_token) }
+            {
+                eprintln!("Could not attach iframe ad navigation filter: {error}");
+            }
+        }
+
+        // Frame7 is available on current WebView2 runtimes. Recursively observe
+        // descendants where supported; older runtimes still get the frame's own
+        // NavigationStarting protection above.
+        if let Ok(frame7) = frame.cast::<ICoreWebView2Frame7>() {
+            let child_blocker = blocker;
+            let child_source = top_level;
+            let child_popup_context = popup_navigation_context;
+            let child_handler =
+                FrameChildFrameCreatedEventHandler::create(Box::new(move |_sender, args| {
+                    if let Some(child) = args.and_then(|args| unsafe { args.Frame() }.ok()) {
+                        attach_frame_ad_navigation_filter(
+                            child,
+                            child_source.clone(),
+                            child_blocker.clone(),
+                            child_popup_context.clone(),
+                        );
+                    }
+                    Ok(())
+                }));
+            let mut child_token = Default::default();
+            if let Err(error) = unsafe { frame7.add_FrameCreated(&child_handler, &mut child_token) }
+            {
+                eprintln!("Could not attach nested iframe ad navigation filter: {error}");
+            }
+        }
+    }
+
     if let Ok(core) = unsafe { webview.controller().CoreWebView2() } {
+        let popup_navigation_context = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::adblock::PopupNavigationContext::from_opener(popup_opener_url),
+        ));
+        if popup_navigation_context.borrow().is_pending() {
+            let completion_context = popup_navigation_context.clone();
+            let navigation_completed =
+                NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut success = windows::core::BOOL(0);
+                    if unsafe { args.IsSuccess(&mut success) }.is_err() || !success.as_bool() {
+                        return Ok(());
+                    }
+                    let Some(sender) = sender else {
+                        return Ok(());
+                    };
+                    let mut raw_source = windows::core::PWSTR::null();
+                    if unsafe { sender.Source(&mut raw_source) }.is_err() || raw_source.is_null() {
+                        return Ok(());
+                    }
+                    let source = webview2_com::take_pwstr(raw_source);
+                    completion_context
+                        .borrow_mut()
+                        .navigation_committed(&source);
+                    Ok(())
+                }));
+            let mut completion_token = Default::default();
+            let _ = unsafe {
+                core.add_NavigationCompleted(&navigation_completed, &mut completion_token)
+            };
+        }
+
         if let Ok(core8) =
             core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8>()
         {
@@ -613,6 +801,88 @@ pub fn attach_navigation_events(
         let mut token_s = Default::default();
         let _ = unsafe { core.add_SourceChanged(&source_handler, &mut token_s) };
 
+        // Popup filters also need to catch scripts that replace the current tab with an
+        // advertising destination instead of requesting a new window.
+        let navigation_blocker = blocker.clone();
+        let popup_context_for_navigation = popup_navigation_context.clone();
+        let proxy_blocked_navigation = proxy.clone();
+        let navigation_handler =
+            NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+                if let Some(args) = args {
+                    let mut uri = windows::core::PWSTR::null();
+                    if unsafe { args.Uri(&mut uri) }.is_ok() && !uri.is_null() {
+                        let target = webview2_com::take_pwstr(uri);
+                        let source = sender
+                            .and_then(|sender| {
+                                let mut raw = windows::core::PWSTR::null();
+                                unsafe { sender.Source(&mut raw) }.ok()?;
+                                (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
+                            })
+                            .unwrap_or_default();
+                        let popup_opener_url = popup_context_for_navigation
+                            .borrow()
+                            .opener_for_source(&source);
+                        let explicit_navigation = navigation_blocker
+                            .borrow_mut()
+                            .consume_explicit_navigation_ticket(tab_id.0, &target, &source);
+                        let blocked = if explicit_navigation {
+                            false
+                        } else if let Some(popup_opener) = popup_opener_url.as_deref() {
+                            navigation_blocker
+                                .borrow()
+                                .should_block_navigation_with_popup_context(
+                                    &target,
+                                    &source,
+                                    Some(popup_opener),
+                                )
+                        } else {
+                            navigation_blocker
+                                .borrow()
+                                .should_block_navigation(&target, &source)
+                        };
+                        if blocked {
+                            let _ = unsafe { args.SetCancel(true) };
+                            navigation_blocker.borrow_mut().blocked += 1;
+                            let _ = proxy_blocked_navigation.send_event(
+                                crate::BrowserEvent::TabNavigated(window_id, tab_id, source),
+                            );
+                        }
+                    }
+                }
+                Ok(())
+            }));
+        let mut token_n = Default::default();
+        if let Err(error) =
+            unsafe { core.add_NavigationStarting(&navigation_handler, &mut token_n) }
+        {
+            eprintln!("Could not attach current-tab ad navigation filter: {error}");
+        }
+
+        if let Ok(core4) =
+            core.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4>()
+        {
+            let frame_blocker = blocker.clone();
+            let frame_source = core.clone();
+            let frame_popup_context = popup_navigation_context.clone();
+            let frame_handler =
+                webview2_com::FrameCreatedEventHandler::create(Box::new(move |_sender, args| {
+                    if let Some(frame) = args.and_then(|args| unsafe { args.Frame() }.ok()) {
+                        attach_frame_ad_navigation_filter(
+                            frame,
+                            frame_source.clone(),
+                            frame_blocker.clone(),
+                            frame_popup_context.clone(),
+                        );
+                    }
+                    Ok(())
+                }));
+            let mut frame_token = Default::default();
+            if let Err(error) = unsafe { core4.add_FrameCreated(&frame_handler, &mut frame_token) }
+            {
+                eprintln!("Could not attach iframe ad navigation filter: {error}");
+            }
+        }
+
         // 3. Document Title Changed (instantaneous title updates)
         let proxy_title = proxy.clone();
         let title_handler =
@@ -643,35 +913,57 @@ pub fn attach_navigation_events(
             webview2_com::NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
                     let mut uri_pwstr = windows::core::PWSTR::null();
-                    if unsafe { args.Uri(&mut uri_pwstr) }.is_ok() && !uri_pwstr.is_null() {
-                        let uri_str = webview2_com::take_pwstr(uri_pwstr);
-                        if !uri_str.is_empty() {
-                            let source = sender
-                                .and_then(|sender| {
-                                    let mut raw = windows::core::PWSTR::null();
-                                    unsafe { sender.Source(&mut raw) }.ok()?;
-                                    (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
-                                })
-                                .unwrap_or_default();
-                            let mut user_initiated = windows::core::BOOL(0);
-                            let _ = unsafe { args.IsUserInitiated(&mut user_initiated) };
-                            if popup_blocker.borrow().should_block_popup(
-                                &uri_str,
-                                &source,
-                                user_initiated.as_bool(),
-                            ) {
-                                let _ = unsafe { args.SetHandled(true) };
-                                popup_blocker.borrow_mut().blocked += 1;
-                                return Ok(());
-                            }
-                            let _ = unsafe { args.SetHandled(true) };
-                            let _ = proxy_new_win.send_event(crate::BrowserEvent::Ipc(
-                                window_id,
-                                evergreen_core::ipc::UiToHostMessage::CreateTab {
-                                    url: Some(uri_str),
-                                },
-                            ));
-                        }
+                    let uri_result = unsafe { args.Uri(&mut uri_pwstr) };
+                    let uri_str = if uri_result.is_ok() && !uri_pwstr.is_null() {
+                        webview2_com::take_pwstr(uri_pwstr)
+                    } else {
+                        String::new()
+                    };
+                    // An unhandled NewWindowRequested with no NewWindow lets WebView2
+                    // create an unmanaged popup. Treat an empty target as about:blank
+                    // so normal user-initiated blank windows still become Pip tabs and
+                    // non-user-initiated ones pass through the existing popup blocker.
+                    let uri_str = if uri_str.is_empty() {
+                        "about:blank".to_string()
+                    } else {
+                        uri_str
+                    };
+                    let source = sender
+                        .and_then(|sender| {
+                            let mut raw = windows::core::PWSTR::null();
+                            unsafe { sender.Source(&mut raw) }.ok()?;
+                            (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
+                        })
+                        .unwrap_or_default();
+                    let mut user_initiated = windows::core::BOOL(0);
+                    let _ = unsafe { args.IsUserInitiated(&mut user_initiated) };
+                    let blocked = popup_blocker.borrow().should_block_popup(
+                        &uri_str,
+                        &source,
+                        user_initiated.as_bool(),
+                    );
+                    if blocked {
+                        let _ = unsafe { args.SetHandled(true) };
+                        popup_blocker.borrow_mut().blocked += 1;
+                        return Ok(());
+                    }
+                    let _ = unsafe { args.SetHandled(true) };
+                    if uri_str == "about:blank"
+                        && source.parse::<wry::http::Uri>().ok().is_some_and(|uri| {
+                            matches!(uri.scheme_str(), Some("http" | "https"))
+                                && uri.host().is_some()
+                        })
+                    {
+                        let _ = proxy_new_win.send_event(crate::BrowserEvent::PopupTabRequested {
+                            window_id,
+                            url: uri_str,
+                            opener_url: source,
+                        });
+                    } else {
+                        let _ = proxy_new_win.send_event(crate::BrowserEvent::Ipc(
+                            window_id,
+                            evergreen_core::ipc::UiToHostMessage::CreateTab { url: Some(uri_str) },
+                        ));
                     }
                 }
                 Ok(())
@@ -867,5 +1159,59 @@ pub fn attach_navigation_events(
     _proxy: EventLoopProxy<crate::BrowserEvent>,
     _allowed_cert_hosts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     _blocker: std::rc::Rc<std::cell::RefCell<crate::adblock::Blocker>>,
+    _popup_opener_url: Option<String>,
 ) {
+}
+
+#[cfg(test)]
+mod find_navigation_shortcut_tests {
+    use super::{devtools_shortcut, find_navigation_shortcut, unmodified_browser_key};
+
+    #[test]
+    fn f11_is_forwarded_as_an_unmodified_browser_shortcut() {
+        assert_eq!(unmodified_browser_key(false, false, 0x7A), Some("F11"));
+        assert_eq!(unmodified_browser_key(true, false, 0x7A), None);
+        assert_eq!(unmodified_browser_key(false, true, 0x7A), None);
+    }
+
+    #[test]
+    fn ctrl_g_and_f3_select_next_or_previous_find_match() {
+        assert_eq!(
+            find_navigation_shortcut(true, false, false, 0x47),
+            Some("FindNext")
+        );
+        assert_eq!(
+            find_navigation_shortcut(true, true, false, 0x47),
+            Some("FindPrevious")
+        );
+        assert_eq!(
+            find_navigation_shortcut(false, false, false, 0x72),
+            Some("FindNext")
+        );
+        assert_eq!(
+            find_navigation_shortcut(false, true, false, 0x72),
+            Some("FindPrevious")
+        );
+    }
+
+    #[test]
+    fn unrelated_modifier_combinations_do_not_trigger_find_navigation() {
+        assert_eq!(find_navigation_shortcut(true, false, true, 0x47), None);
+        assert_eq!(find_navigation_shortcut(false, false, true, 0x72), None);
+        assert_eq!(find_navigation_shortcut(true, false, false, 0x46), None);
+    }
+
+    #[test]
+    fn chrome_devtools_shortcuts_include_control_shift_i_and_j() {
+        assert_eq!(
+            devtools_shortcut(true, true, false, 0x49),
+            Some("Ctrl+Shift+I")
+        );
+        assert_eq!(
+            devtools_shortcut(true, true, false, 0x4A),
+            Some("Ctrl+Shift+J")
+        );
+        assert_eq!(devtools_shortcut(true, false, false, 0x49), None);
+        assert_eq!(devtools_shortcut(true, true, true, 0x49), None);
+    }
 }
