@@ -17,10 +17,11 @@ launcher from a future packaged release.
 - BrowserOS neo's existing MCP service provides tab selection, DOM snapshots, stable element
   references, actions, waits, diffs and multi-step workflows.
 - MCP `visual_targets` finds visible canvas, image, video, SVG and `role=img` regions without
-  capturing the page. `screenshot.region` returns one visible-viewport crop inline, limited to
-  1 megapixel, and does not save it. Each crop requires the matching `observationId`, checked
-  before and after capture against URL, viewport, scroll and visual target bounds. MCP tool
-  metadata warns that the crop is delivered to the caller and may be forwarded to an external
+  capturing the page. `screenshot.region` only accepts a crop fully contained within one of the
+  regions returned by that exact observation. It returns one visible-viewport crop inline, limited
+  to 1 megapixel, and does not save it. Each crop requires the matching `observationId`, checked
+  before and after capture against URL, viewport, scroll and returned visual-target bounds. MCP
+  tool metadata warns that the crop is delivered to the caller and may be forwarded to an external
   model; the browser cannot determine where the MCP client sends it next.
 - Layout changes invalidate old crop coordinates. The observation token does not detect pixel
   changes inside a same-sized canvas; callers must inspect the crop and verify application

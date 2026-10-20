@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pip Dev MCP smoke fixture</title>
+    <style>
+      :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; }
+      body { margin: 2rem; color: #14233b; background: #f7f9fc; }
+      main { max-width: 46rem; margin: auto; padding: 1.5rem; border: 1px solid #ccd6e4; border-radius: 1rem; background: white; }
+      button { padding: .7rem 1rem; border: 0; border-radius: .5rem; color: white; background: #f97316; font: inherit; cursor: pointer; }
+      output { display: block; margin: 1rem 0; font-weight: 700; }
+      canvas { display: block; width: 320px; height: 180px; max-width: 100%; border: 1px solid #94a3b8; border-radius: .5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pip Dev local MCP smoke test</h1>
+      <p>This page stays on loopback and contains deterministic DOM and canvas targets.</p>
+      <button id="advance" type="button" onclick="document.querySelector('#state').textContent = 'State: verified'">Advance state</button>
+      <output id="state" aria-live="polite">State: initial</output>
+      <canvas id="board" width="320" height="180" aria-label="Pip Dev smoke canvas"></canvas>
+    </main>
+    <script>
+      const canvas = document.querySelector('#board');
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff7ed';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ea580c';
+      ctx.fillRect(32, 28, 110, 110);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 24px system-ui';
+      ctx.fillText('PIP', 172, 96);
+    </script>
+  </body>
+</html>

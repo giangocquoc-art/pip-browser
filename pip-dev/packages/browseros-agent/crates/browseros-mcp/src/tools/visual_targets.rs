@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 const MAX_TARGETS: usize = 12;
-const DESCRIPTION: &str = "Find visible canvas, image, video, SVG and role=img regions in a page without capturing them. Returns viewport-relative CSS-pixel bounds and an observationId; pass the token with a selected region to screenshot.region for a transient crop. The crop is rejected if the URL, viewport, scroll position, or visual target bounds changed.";
+const DESCRIPTION: &str = "Find visible canvas, image, video, SVG and role=img regions in a page without capturing them. Returns viewport-relative CSS-pixel bounds and an observationId; screenshot.region only accepts crops contained within one of these returned regions. The crop is rejected if the URL, viewport, scroll position, or visual target bounds changed.";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -25,9 +25,9 @@ struct EvaluateResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct VisualTargetSnapshot {
-    observation_id: String,
-    regions: Value,
+pub struct VisualTargetSnapshot {
+    pub observation_id: String,
+    pub regions: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,70 +59,16 @@ fn handler<'a>(
         let max_targets = args
             .max_targets
             .unwrap_or(MAX_TARGETS as u32)
-            .clamp(1, MAX_TARGETS as u32);
+            .clamp(1, MAX_TARGETS as u32) as usize;
         let page = ctx.browser.page_session(PageId(args.page)).await?;
-        let expression = format!(
-            r#"(() => {{
-              const maxTargets = {max_targets};
-              const selectors = 'canvas,img,video,svg,[role="img"]';
-              const viewportWidth = window.innerWidth || 0;
-              const viewportHeight = window.innerHeight || 0;
-              const regions = Array.from(document.querySelectorAll(selectors)).flatMap((element, index) => {{
-                const rect = element.getBoundingClientRect();
-                const style = getComputedStyle(element);
-                const left = Math.max(0, rect.left);
-                const top = Math.max(0, rect.top);
-                const right = Math.min(viewportWidth, rect.right);
-                const bottom = Math.min(viewportHeight, rect.bottom);
-                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || right - left < 12 || bottom - top < 12) return [];
-                const tag = element.tagName.toLowerCase();
-                const naturalWidth = element.naturalWidth || element.videoWidth || element.width || 0;
-                const naturalHeight = element.naturalHeight || element.videoHeight || element.height || 0;
-                return [{{
-                  index,
-                  type: tag,
-                  label: element.getAttribute('aria-label') || element.getAttribute('alt') || element.getAttribute('title') || '',
-                  x: Math.round(left),
-                  y: Math.round(top),
-                  width: Math.round(right - left),
-                  height: Math.round(bottom - top),
-                  contentWidth: naturalWidth,
-                  contentHeight: naturalHeight
-                }}];
-              }}).slice(0, 64);
-              const state = JSON.stringify({{
-                url: location.href,
-                viewport: [viewportWidth, viewportHeight, window.scrollX || 0, window.scrollY || 0, window.devicePixelRatio || 1],
-                regions
-              }});
-              let hash = 2166136261;
-              for (let index = 0; index < state.length; index++) {{
-                hash ^= state.charCodeAt(index);
-                hash = Math.imul(hash, 16777619);
-              }}
-              return {{ observationId: (hash >>> 0).toString(16).padStart(8, '0'), regions: regions.slice(0, maxTargets) }};
-            }})()"#
-        );
-        let mut result: EvaluateResult = page
-            .session
-            .send(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true,
-                    "awaitPromise": false
-                }),
-            )
-            .await?;
-        if let Some(exception) = result.exception_details.take() {
-            return Ok(Some(crate::framework::error_result(format!(
-                "visual_targets: {}",
-                exception.text
-            ))));
-        }
-        let snapshot: VisualTargetSnapshot =
-            serde_json::from_value(result.result.value.unwrap_or_else(|| json!({})))
-                .map_err(|error| crate::framework::ToolError::message(error.to_string()))?;
+        let snapshot = match evaluate_snapshot(&page.session, max_targets).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Ok(Some(crate::framework::error_result(format!(
+                    "visual_targets: {error}"
+                ))));
+            }
+        };
         let regions = snapshot.regions;
         let count = regions.as_array().map_or(0, Vec::len);
         let text = serde_json::to_string_pretty(&regions).unwrap_or_else(|_| "[]".to_string());
@@ -139,45 +85,113 @@ fn handler<'a>(
     })
 }
 
-pub async fn current_observation_id(
+pub async fn current_observation(
     session: &browseros_core::ProtocolSession,
-) -> ToolExecResult<String> {
-    let expression = r#"(() => {
-      const width = window.innerWidth || 0;
-      const height = window.innerHeight || 0;
-      const regions = Array.from(document.querySelectorAll('canvas,img,video,svg,[role="img"]')).flatMap((element, index) => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        const left = Math.max(0, rect.left);
-        const top = Math.max(0, rect.top);
-        const right = Math.min(width, rect.right);
-        const bottom = Math.min(height, rect.bottom);
-        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || right - left < 12 || bottom - top < 12) return [];
-        const naturalWidth = element.naturalWidth || element.videoWidth || element.width || 0;
-        const naturalHeight = element.naturalHeight || element.videoHeight || element.height || 0;
-        return [{ index, type: element.tagName.toLowerCase(), label: element.getAttribute('aria-label') || element.getAttribute('alt') || element.getAttribute('title') || '', x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top), contentWidth: naturalWidth, contentHeight: naturalHeight }];
-      }).slice(0, 64);
-      const state = JSON.stringify({ url: location.href, viewport: [width, height, window.scrollX || 0, window.scrollY || 0, window.devicePixelRatio || 1], regions });
-      let hash = 2166136261;
-      for (let index = 0; index < state.length; index++) { hash ^= state.charCodeAt(index); hash = Math.imul(hash, 16777619); }
-      return (hash >>> 0).toString(16).padStart(8, '0');
-    })()"#;
-    let result: EvaluateResult = session
+    observation_id: &str,
+) -> ToolExecResult<VisualTargetSnapshot> {
+    let max_targets = parse_target_limit(observation_id).ok_or_else(|| {
+        crate::framework::ToolError::message(
+            "invalid observationId; call visual_targets again and use a returned token".to_string(),
+        )
+    })?;
+    evaluate_snapshot(session, max_targets).await
+}
+
+fn parse_target_limit(observation_id: &str) -> Option<usize> {
+    let mut parts = observation_id.split(':');
+    if parts.next()? != "v1" {
+        return None;
+    }
+    let max_targets = parts.next()?.parse::<usize>().ok()?;
+    let hash = parts.next()?;
+    if parts.next().is_some()
+        || !(1..=MAX_TARGETS).contains(&max_targets)
+        || hash.len() != 8
+        || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(max_targets)
+}
+
+async fn evaluate_snapshot(
+    session: &browseros_core::ProtocolSession,
+    max_targets: usize,
+) -> ToolExecResult<VisualTargetSnapshot> {
+    let expression = format!(
+        r#"(() => {{
+          const maxTargets = {max_targets};
+          const selectors = 'canvas,img,video,svg,[role="img"]';
+          const viewportWidth = window.innerWidth || 0;
+          const viewportHeight = window.innerHeight || 0;
+          const regions = Array.from(document.querySelectorAll(selectors)).flatMap((element, index) => {{
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const left = Math.max(0, rect.left);
+            const top = Math.max(0, rect.top);
+            const right = Math.min(viewportWidth, rect.right);
+            const bottom = Math.min(viewportHeight, rect.bottom);
+            const x = Math.ceil(left);
+            const y = Math.ceil(top);
+            const safeRight = Math.floor(right);
+            const safeBottom = Math.floor(bottom);
+            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || safeRight - x < 12 || safeBottom - y < 12) return [];
+            const tag = element.tagName.toLowerCase();
+            const naturalWidth = element.naturalWidth || element.videoWidth || element.width || 0;
+            const naturalHeight = element.naturalHeight || element.videoHeight || element.height || 0;
+            return [{{
+              index,
+              type: tag,
+              label: element.getAttribute('aria-label') || element.getAttribute('alt') || element.getAttribute('title') || '',
+              x,
+              y,
+              width: safeRight - x,
+              height: safeBottom - y,
+              contentWidth: naturalWidth,
+              contentHeight: naturalHeight
+            }}];
+          }}).slice(0, 64).slice(0, maxTargets);
+          const state = JSON.stringify({{
+            url: location.href,
+            viewport: [viewportWidth, viewportHeight, window.scrollX || 0, window.scrollY || 0, window.devicePixelRatio || 1],
+            maxTargets,
+            regions
+          }});
+          let hash = 2166136261;
+          for (let index = 0; index < state.length; index++) {{
+            hash ^= state.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+          }}
+          return {{ observationId: `v1:${{maxTargets}}:${{(hash >>> 0).toString(16).padStart(8, '0')}}`, regions }};
+        }})()"#
+    );
+    let mut result: EvaluateResult = session
         .send(
             "Runtime.evaluate",
-            json!({ "expression": expression, "returnByValue": true, "awaitPromise": false }),
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": false
+            }),
         )
         .await?;
     if let Some(exception) = result.exception_details {
         return Err(crate::framework::ToolError::message(exception.text));
     }
-    result
-        .result
-        .value
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or_else(|| {
-            crate::framework::ToolError::message(
-                "could not read page observation token".to_string(),
-            )
-        })
+    serde_json::from_value(result.result.value.take().unwrap_or_else(|| json!({})))
+        .map_err(|error| crate::framework::ToolError::message(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_limit_is_read_from_a_well_formed_observation_id() {
+        assert_eq!(parse_target_limit("v1:1:0123abcd"), Some(1));
+        assert_eq!(parse_target_limit("v1:12:ABCDEF09"), Some(12));
+        assert_eq!(parse_target_limit("0123abcd"), None);
+        assert_eq!(parse_target_limit("v1:13:0123abcd"), None);
+        assert_eq!(parse_target_limit("v1:1:xyz"), None);
+    }
 }

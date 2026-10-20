@@ -16,7 +16,7 @@ const DESCRIPTION: &str = concat!(
     "Defaults to JPEG quality 80 at the current CSS viewport, with native device pixel density; ",
     "prefer snapshot for structure/actions. Use region for canvas, games, charts, or image-only content. ",
     "region uses CSS pixels relative to the visible viewport and returns only that crop. ",
-    "Pass the observationId from visual_targets; capture fails if its layout token is stale. ",
+    "Pass the observationId from visual_targets; the crop must fit inside one returned visual target, and stale tokens are rejected. ",
     "Crop limit is 1 megapixel. Privacy: image bytes are returned to the MCP caller, which may forward them to an external model; this tool does not save the image.",
 );
 
@@ -128,12 +128,24 @@ fn handler<'a>(
             // target-incarnation checks; the raw registry session would bypass the profile.
             let page = ctx.browser.page_session(PageId(args.page)).await?;
             if let Some(region) = args.region.as_ref() {
-                let current = super::visual_targets::current_observation_id(&page.session).await?;
-                if current != region.observation_id {
+                let current = super::visual_targets::current_observation(
+                    &page.session,
+                    &region.observation_id,
+                )
+                .await?;
+                if current.observation_id != region.observation_id {
                     return Err(crate::framework::ToolError::InvalidArguments(vec![
                         crate::framework::ArgIssue {
                             path: "region.observationId".to_string(),
                             message: "page layout changed; call visual_targets again and use its fresh observationId".to_string(),
+                        },
+                    ]));
+                }
+                if !crop_is_contained_by_target(region, &current.regions) {
+                    return Err(crate::framework::ToolError::InvalidArguments(vec![
+                        crate::framework::ArgIssue {
+                            path: "region".to_string(),
+                            message: "crop must be fully contained within one of the visual targets returned by visual_targets".to_string(),
                         },
                     ]));
                 }
@@ -147,8 +159,10 @@ fn handler<'a>(
         let result = ctx.browser.screenshot(PageId(args.page), options).await?;
         if let Some(region) = args.region.as_ref() {
             let page = ctx.browser.page_session(PageId(args.page)).await?;
-            let current = super::visual_targets::current_observation_id(&page.session).await?;
-            if current != region.observation_id {
+            let current =
+                super::visual_targets::current_observation(&page.session, &region.observation_id)
+                    .await?;
+            if current.observation_id != region.observation_id {
                 return Ok(Some(crate::framework::error_result(
                     "page layout changed during crop; discard it and call visual_targets again"
                         .to_string(),
@@ -275,6 +289,65 @@ async fn build_region_clip(
         width,
         height,
         scale: 1.0,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CssRect {
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+}
+
+impl CssRect {
+    fn contains(self, other: Self) -> bool {
+        if self.x < 0
+            || self.y < 0
+            || self.width <= 0
+            || self.height <= 0
+            || other.x < 0
+            || other.y < 0
+            || other.width <= 0
+            || other.height <= 0
+        {
+            return false;
+        }
+        let (Some(self_right), Some(self_bottom), Some(other_right), Some(other_bottom)) = (
+            self.x.checked_add(self.width),
+            self.y.checked_add(self.height),
+            other.x.checked_add(other.width),
+            other.y.checked_add(other.height),
+        ) else {
+            return false;
+        };
+        other.x >= self.x
+            && other.y >= self.y
+            && other_right <= self_right
+            && other_bottom <= self_bottom
+    }
+}
+
+fn crop_is_contained_by_target(region: &ScreenshotRegion, targets: &Value) -> bool {
+    let crop = CssRect {
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
+    };
+    targets.as_array().is_some_and(|targets| {
+        targets.iter().any(|target| {
+            let Some(rect) = target.as_object() else {
+                return false;
+            };
+            let target = CssRect {
+                x: rect.get("x").and_then(Value::as_i64).unwrap_or(-1),
+                y: rect.get("y").and_then(Value::as_i64).unwrap_or(-1),
+                width: rect.get("width").and_then(Value::as_i64).unwrap_or(0),
+                height: rect.get("height").and_then(Value::as_i64).unwrap_or(0),
+            };
+            target.contains(crop)
+        })
     })
 }
 
@@ -426,6 +499,50 @@ mod tests {
             json!({}),
         );
         assert!(validate_args(&too_large).is_err());
+    }
+
+    #[test]
+    fn region_crop_must_fit_inside_a_returned_visual_target() {
+        let region = |x, y, width, height| ScreenshotRegion {
+            x,
+            y,
+            width,
+            height,
+            observation_id: "v1:12:0123abcd".to_string(),
+        };
+        let targets = json!([
+            { "x": 40, "y": 30, "width": 200, "height": 120 },
+            { "x": 400, "y": 100, "width": 80, "height": 80 }
+        ]);
+
+        assert!(crop_is_contained_by_target(
+            &region(40, 30, 200, 120),
+            &targets
+        ));
+        assert!(crop_is_contained_by_target(
+            &region(80, 50, 40, 40),
+            &targets
+        ));
+        assert!(crop_is_contained_by_target(
+            &region(420, 120, 20, 20),
+            &targets
+        ));
+        assert!(!crop_is_contained_by_target(
+            &region(39, 30, 20, 20),
+            &targets
+        ));
+        assert!(!crop_is_contained_by_target(
+            &region(220, 30, 21, 20),
+            &targets
+        ));
+        assert!(!crop_is_contained_by_target(
+            &region(250, 60, 20, 20),
+            &targets
+        ));
+        assert!(!crop_is_contained_by_target(
+            &region(40, 30, 0, 20),
+            &targets
+        ));
     }
 
     #[test]
