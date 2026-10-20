@@ -40,6 +40,12 @@ pub(crate) enum FilterAction {
     Redirect(String),
 }
 
+struct FilterSiteContext<'a> {
+    top_host: &'a str,
+    top_registrable_domain: Option<&'a str>,
+    source_is_http_site: bool,
+}
+
 /// Ephemeral provenance retained only for popup-created `about:blank` tabs.
 /// It is consumed after the first successful HTTP(S) document commit.
 #[derive(Default)]
@@ -163,9 +169,11 @@ impl CachedTopSite {
         }
         (
             self.host.as_deref(),
-            include_domain
-                .then(|| self.registrable_domain.as_deref())
-                .flatten(),
+            if include_domain {
+                self.registrable_domain.as_deref()
+            } else {
+                None
+            },
         )
     }
 
@@ -580,9 +588,11 @@ impl Blocker {
             source,
             kind,
             method,
-            &host,
-            registrable_domain(top).as_deref(),
-            is_http_site(source),
+            FilterSiteContext {
+                top_host: &host,
+                top_registrable_domain: registrable_domain(top).as_deref(),
+                source_is_http_site: is_http_site(source),
+            },
         )
     }
 
@@ -592,10 +602,13 @@ impl Blocker {
         source: &str,
         kind: &str,
         method: &str,
-        top_host: &str,
-        top_registrable_domain: Option<&str>,
-        source_is_http_site: bool,
+        site_context: FilterSiteContext<'_>,
     ) -> Option<FilterAction> {
+        let FilterSiteContext {
+            top_host,
+            top_registrable_domain,
+            source_is_http_site,
+        } = site_context;
         if self.disabled.contains(top_host) || !source_is_http_site {
             return None;
         }
@@ -1142,9 +1155,11 @@ pub fn attach(view: &wry::WebView, blocker: Rc<RefCell<Blocker>>) -> windows::co
                     &source,
                     kind,
                     &method,
-                    top_host,
-                    top_registrable_domain,
-                    source_is_http_site,
+                    FilterSiteContext {
+                        top_host,
+                        top_registrable_domain,
+                        source_is_http_site,
+                    },
                 )
             })
         };
@@ -1514,9 +1529,11 @@ mod tests {
             source,
             "script",
             "GET",
-            &top_host,
-            top_domain.as_deref(),
-            is_http_site(source),
+            FilterSiteContext {
+                top_host: &top_host,
+                top_registrable_domain: top_domain.as_deref(),
+                source_is_http_site: is_http_site(source),
+            },
         );
         assert!(matches!(legacy_action, Some(FilterAction::Block)));
         assert!(matches!(contextual_action, Some(FilterAction::Block)));
@@ -1529,9 +1546,11 @@ mod tests {
                 "evergreen://newtab",
                 "script",
                 "GET",
-                &top_host,
-                top_domain.as_deref(),
-                false
+                FilterSiteContext {
+                    top_host: &top_host,
+                    top_registrable_domain: top_domain.as_deref(),
+                    source_is_http_site: false,
+                }
             )
             .is_none());
     }

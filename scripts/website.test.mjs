@@ -185,7 +185,7 @@ test("feature page only reveals features included in the public version", async 
   const oldRelease = await evaluate("0.1.9");
   assert.deepEqual(oldRelease.sections.map(({ hidden }) => hidden), [true, true]);
   assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.12/);
-  const currentRelease = await evaluate("0.1.12");
+  const currentRelease = await evaluate("0.1.13");
   assert.deepEqual(currentRelease.sections.map(({ hidden }) => hidden), [false, false]);
   assert.equal(currentRelease.status.hidden, true);
 });

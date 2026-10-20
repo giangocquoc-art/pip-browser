@@ -431,11 +431,18 @@ impl TabManager {
         // or none at all. Keep the manager's active id and the tab statuses in
         // sync so callers never restore two foreground tabs (or an inactive
         // foreground tab).
-        let active_index = self
-            .tabs
-            .iter()
-            .position(|tab| tab.status == TabStatus::Active)
-            .or_else(|| (!self.tabs.is_empty()).then_some(0));
+        // Find the foreground tab and the next id in one traversal. Session
+        // restore can include many lazy/background tabs, so avoid scanning the
+        // full list separately for each piece of metadata.
+        let mut active_index = None;
+        let mut max_id = None;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if active_index.is_none() && tab.status == TabStatus::Active {
+                active_index = Some(index);
+            }
+            max_id = Some(max_id.map_or(tab.id.0, |current: u64| current.max(tab.id.0)));
+        }
+        let active_index = active_index.or_else(|| (!self.tabs.is_empty()).then_some(0));
         self.active_tab_id = active_index.map(|index| self.tabs[index].id);
         if let Some(active_index) = active_index {
             for (index, tab) in self.tabs.iter_mut().enumerate() {
@@ -446,7 +453,7 @@ impl TabManager {
                 }
             }
         }
-        if let Some(max_id) = self.tabs.iter().map(|t| t.id.0).max() {
+        if let Some(max_id) = max_id {
             self.next_id = max_id + 1;
         }
     }

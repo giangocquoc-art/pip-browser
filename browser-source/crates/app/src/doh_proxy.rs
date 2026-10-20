@@ -566,32 +566,65 @@ fn parse_request_line(line: &str) -> Option<(&str, &str, &str)> {
 
 fn parse_authority(authority: &str, default_port: u16) -> Option<(String, u16)> {
     let authority = authority.trim();
+    if authority.is_empty()
+        || authority
+            .chars()
+            .any(|character| character.is_ascii_control() || character.is_ascii_whitespace())
+        || authority.contains('@')
+    {
+        return None;
+    }
     if let Some(rest) = authority.strip_prefix('[') {
         let end = rest.find(']')?;
-        let host = rest[..end].to_string();
-        let port = rest[end + 1..]
-            .strip_prefix(':')
-            .map(str::parse::<u16>)
-            .transpose()
-            .ok()?
-            .unwrap_or(default_port);
+        let host = rest[..end].parse::<std::net::Ipv6Addr>().ok()?.to_string();
+        let suffix = &rest[end + 1..];
+        let port = if suffix.is_empty() {
+            default_port
+        } else {
+            suffix.strip_prefix(':')?.parse::<u16>().ok()?
+        };
         return Some((host, port));
     }
+    if authority.contains(['[', ']']) {
+        return None;
+    }
     match authority.rsplit_once(':') {
-        Some((host, port)) if port.bytes().all(|byte| byte.is_ascii_digit()) => {
+        Some((host, port)) => {
+            // IPv6 literals must use brackets in an HTTP authority. Besides
+            // following URI syntax, rejecting ambiguous suffixes avoids
+            // interpreting malformed CONNECT targets as a different host.
+            if host.is_empty()
+                || host.contains(':')
+                || port.is_empty()
+                || !port.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
             Some((host.to_string(), port.parse().ok()?))
         }
-        _ => Some((authority.to_string(), default_port)),
+        None => Some((authority.to_string(), default_port)),
     }
 }
 
 fn parse_http_target(target: &str, request: &str) -> Option<(String, u16, String)> {
     if let Some(rest) = target.strip_prefix("http://") {
-        let (authority, path) = rest
-            .find('/')
-            .map_or((rest, "/"), |index| (&rest[..index], &rest[index..]));
+        // The absolute-form request target may omit the slash when the URL has
+        // only a query (for example `http://example.test?x=1`). Split authority
+        // at any URI delimiter so the query is never sent to DNS as part of
+        // the hostname. Fragments are not sent over HTTP.
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..authority_end];
+        let suffix = &rest[authority_end..];
+        let path_and_query = suffix.split('#').next().unwrap_or_default();
+        let path = if path_and_query.is_empty() {
+            "/".to_string()
+        } else if path_and_query.starts_with('?') {
+            format!("/{path_and_query}")
+        } else {
+            path_and_query.to_string()
+        };
         let (host, port) = parse_authority(authority, 80)?;
-        return Some((host, port, path.to_string()));
+        return Some((host, port, path));
     }
 
     let host_header = request
@@ -687,7 +720,9 @@ fn resolve_google_doh(
     if addresses.is_empty() {
         return Err("Google DNS returned no address".to_string());
     }
-    ttl = ttl.min(CACHE_MAX_AGE).max(Duration::from_secs(5));
+    // DNS TTLs are upper bounds: do not extend short CNAME/address lifetimes
+    // to a convenience minimum, which can keep stale answers after a change.
+    ttl = ttl.min(CACHE_MAX_AGE);
     let now = Instant::now();
     let mut entries = cache
         .lock()
@@ -733,18 +768,45 @@ fn query_google_json(
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
+    let record_code = match record_type {
+        "A" => 1,
+        "AAAA" => 28,
+        _ => return Err("unsupported DNS record type".into()),
+    };
+    parse_google_json_answers(&result, record_code)
+}
+
+fn parse_google_json_answers(
+    result: &Value,
+    requested_record_code: u64,
+) -> Result<(Vec<IpAddr>, Duration), String> {
+    if result.get("Status").and_then(Value::as_u64) != Some(0) {
+        return Err("Google DNS returned an unsuccessful response".into());
+    }
     let mut addresses = Vec::new();
     let mut ttl = CACHE_MAX_AGE;
     if let Some(answers) = result.get("Answer").and_then(Value::as_array) {
         for answer in answers {
-            if let Some(ip) = answer
-                .get("data")
-                .and_then(Value::as_str)
-                .and_then(|data| data.parse().ok())
-            {
-                addresses.push(ip);
+            let record_code = answer.get("type").and_then(Value::as_u64);
+            // The alias lifetime constrains the cached address too. Ignoring
+            // CNAME TTLs can keep an old target after the alias has changed.
+            if record_code == Some(5) || record_code == Some(requested_record_code) {
                 if let Some(seconds) = answer.get("TTL").and_then(Value::as_u64) {
                     ttl = ttl.min(Duration::from_secs(seconds));
+                }
+            }
+            if record_code == Some(requested_record_code) {
+                if let Some(ip) = answer
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .and_then(|data| data.parse::<IpAddr>().ok())
+                    .filter(|ip| match requested_record_code {
+                        1 => ip.is_ipv4(),
+                        28 => ip.is_ipv6(),
+                        _ => false,
+                    })
+                {
+                    addresses.push(ip);
                 }
             }
         }
@@ -926,6 +988,89 @@ mod tests {
             parse_authority("[2001:4860:4860::8888]:8443", 80),
             Some(("2001:4860:4860::8888".into(), 8443))
         );
+        assert_eq!(parse_authority("[::1]", 80), Some(("::1".into(), 80)));
+    }
+
+    #[test]
+    fn rejects_malformed_or_ambiguous_proxy_authorities() {
+        for authority in [
+            "",
+            "example.com:",
+            "example.com:not-a-port",
+            "example.com:443:8443",
+            "2001:db8::1:443",
+            "[::1]junk",
+            "[::1]:",
+            "[::1]:port",
+            "[not-ipv6]:443",
+            "user@example.com:443",
+            "example.com\r\nX-Injected: yes",
+        ] {
+            assert_eq!(
+                parse_authority(authority, 80),
+                None,
+                "malformed authority should be rejected: {authority:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_absolute_http_urls_with_query_only_path_without_polluting_host() {
+        assert_eq!(
+            parse_http_target(
+                "http://example.test?campaign=casino",
+                "GET http://example.test?campaign=casino HTTP/1.1\r\nHost: example.test\r\n"
+            ),
+            Some(("example.test".into(), 80, "/?campaign=casino".into()))
+        );
+        assert_eq!(
+            parse_http_target(
+                "http://example.test#ignored",
+                "GET http://example.test#ignored HTTP/1.1\r\nHost: example.test\r\n"
+            ),
+            Some(("example.test".into(), 80, "/".into()))
+        );
+    }
+
+    #[test]
+    fn google_dns_answer_cache_ttl_includes_cname_and_uses_requested_record_type() {
+        let response = serde_json::json!({
+            "Status": 0,
+            "Answer": [
+                { "name": "alias.example.", "type": 5, "TTL": 3, "data": "target.example." },
+                { "name": "target.example.", "type": 1, "TTL": 120, "data": "192.0.2.7" },
+                { "name": "target.example.", "type": 28, "TTL": 1, "data": "2001:db8::7" }
+            ]
+        });
+
+        let (addresses, ttl) = parse_google_json_answers(&response, 1).unwrap();
+        assert_eq!(addresses, vec!["192.0.2.7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(ttl, Duration::from_secs(3));
+
+        let (addresses, ttl) = parse_google_json_answers(&response, 28).unwrap();
+        assert_eq!(addresses, vec!["2001:db8::7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(ttl, Duration::from_secs(1));
+
+        let zero_ttl_response = serde_json::json!({
+            "Status": 0,
+            "Answer": [
+                { "name": "alias.example.", "type": 5, "TTL": 0, "data": "target.example." },
+                { "name": "target.example.", "type": 1, "TTL": 120, "data": "192.0.2.7" }
+            ]
+        });
+        let (_, ttl) = parse_google_json_answers(&zero_ttl_response, 1).unwrap();
+        assert_eq!(ttl, Duration::ZERO);
+    }
+
+    #[test]
+    fn google_dns_answer_parser_rejects_unsuccessful_dns_status() {
+        let response = serde_json::json!({
+            "Status": 3,
+            "Answer": [
+                { "name": "missing.example.", "type": 1, "TTL": 60, "data": "192.0.2.7" }
+            ]
+        });
+        assert!(parse_google_json_answers(&response, 1).is_err());
     }
 
     #[test]

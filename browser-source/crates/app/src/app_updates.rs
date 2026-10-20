@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(available.latest_version, "0.1.10");
 
         let current = parse_release(
-            "0.1.12",
+            "0.1.13",
             "v0.1.9",
             "https://github.com/giangocquoc-art/pip-browser/releases/tag/v0.1.9",
             false,

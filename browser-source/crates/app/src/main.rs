@@ -363,7 +363,12 @@ pub(crate) enum BrowserEvent {
     TabSuspendResult(WindowId, TabId, bool),
     TabSuspendSafetyResult(WindowId, TabId, bool, String),
     TabDiscardSafetyResult(WindowId, TabId, bool, String),
-    SyncBookmarksDone(WindowId, String, bool, Result<sync::SyncOutcome, String>),
+    SyncBookmarksDone(
+        WindowId,
+        String,
+        bool,
+        Box<Result<sync::SyncOutcome, String>>,
+    ),
     SyncDisabled(WindowId, String, String, Result<(), String>),
     Shortcut(WindowId, String),
     DownloadRequested(WindowId, u64),
@@ -3609,7 +3614,7 @@ impl BrowserApp {
                     win_id,
                     event_profile_id,
                     manual,
-                    result,
+                    Box::new(result),
                 ));
             })
             .is_ok()
@@ -6380,7 +6385,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
             BrowserEvent::SyncBookmarksDone(win_id, profile_id, manual, result) => {
                 self.syncing_profiles.remove(&profile_id);
                 self.sync_profiles();
-                match result {
+                match *result {
                     Ok(snapshot) => {
                         let had_pending_sync = self.pending_sync_profiles.remove(&profile_id);
                         if self
@@ -6469,7 +6474,6 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     let bookmarks = bookmark_category
                                         .items
                                         .iter()
-                                        .into_iter()
                                         .map(|item| evergreen_core::library::Page {
                                             url: item.page.url.clone(),
                                             title: item.page.title.clone(),
@@ -7110,17 +7114,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         win.toggle_sidebar("downloads", &self.cert_cache, self.proxy.clone());
                     }
                 }
-                "Ctrl+H" => {
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        win.close_sidebar();
+                "Ctrl+H" | "Ctrl+Shift+O" => {
+                    if let Some(target) = shortcut_library_target(&shortcut) {
+                        // Chrome opens these internal managers in the current tab. Replacing
+                        // the active WebView also keeps the tab count and session slot stable.
+                        self.handle_navigate(win_id, target);
                     }
-                    self.handle_create_tab(win_id, Some("evergreen://newtab?history".into()));
-                }
-                "Ctrl+Shift+O" => {
-                    if let Some(win) = self.windows.get_mut(&win_id) {
-                        win.close_sidebar();
-                    }
-                    self.handle_create_tab(win_id, Some("evergreen://newtab?bookmarks".into()));
                 }
                 "Ctrl+D" => {
                     if let Some(page) = self
@@ -7757,6 +7756,14 @@ fn zoom_shortcut_enabled(shortcut: &str, controls_enabled: bool) -> bool {
     controls_enabled && matches!(shortcut, "Ctrl+Plus" | "Ctrl+Minus" | "Ctrl+Zero")
 }
 
+fn shortcut_library_target(shortcut: &str) -> Option<&'static str> {
+    match shortcut {
+        "Ctrl+H" => Some("evergreen://newtab?history"),
+        "Ctrl+Shift+O" => Some("evergreen://newtab?bookmarks"),
+        _ => None,
+    }
+}
+
 fn shortcut_enabled_by_feature(
     shortcut: &str,
     settings: &evergreen_core::settings::Settings,
@@ -7818,6 +7825,19 @@ mod google_dns_preferences_tests {
             assert!(!zoom_shortcut_enabled(shortcut, false), "{shortcut}");
         }
         assert!(!zoom_shortcut_enabled("Ctrl+T", true));
+    }
+
+    #[test]
+    fn chrome_library_shortcuts_route_to_history_and_bookmarks_in_the_active_tab() {
+        assert_eq!(
+            shortcut_library_target("Ctrl+H"),
+            Some("evergreen://newtab?history")
+        );
+        assert_eq!(
+            shortcut_library_target("Ctrl+Shift+O"),
+            Some("evergreen://newtab?bookmarks")
+        );
+        assert_eq!(shortcut_library_target("Ctrl+T"), None);
     }
 
     #[test]

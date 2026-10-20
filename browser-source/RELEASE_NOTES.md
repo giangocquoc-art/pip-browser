@@ -1,3 +1,7 @@
+# Pip 0.1.13
+
+Fixed Google DNS routing for WebView2 by forcing web traffic through Pip's local DNS-over-HTTPS proxy and preventing direct system-DNS lookups. Tightened proxy URL and DNS-answer parsing, respected DNS record TTLs, and verified that YouTube loads through the proxy without showing its offline page.
+
 # Pip 0.1.12
 
 Added a Keep Awake option in the Pip menu. It protects the selected tab from automatic suspension, displays its state, and persists the choice with the tab session; legacy sessions default to normal sleeping behavior. Audio, downloads, pinned tabs, and user-protected tabs stay active. Added a guided video playback repair action in the Pip menu. After confirmation, Pip disables ad blocking for the current website only and reloads that page; the choice is saved until the user turns blocking back on. The prompt warns that unsent page content may be lost. Google DNS proxy handling now switches accepted Windows sockets to blocking mode before relaying traffic, so WebView2 HTTPS requests can pass through the local DoH proxy.

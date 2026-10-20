@@ -1398,6 +1398,7 @@ struct ColdStartChild {
     artifact: std::path::PathBuf,
     expected_base: String,
     checked: bool,
+    verify_deadline: Option<Instant>,
 }
 
 impl ColdStartChild {
@@ -1444,9 +1445,11 @@ impl ColdStartChild {
                 .any(|window| window.tab_manager.active_tab_id().is_none())
         {
             return Err(format!(
-                "Cold-start restore did not recover distinct grouped windows and all routes: first={:?}, second={:?}",
+                "Cold-start restore did not recover distinct grouped windows and all routes: first={:?}, second={:?}, page_webviews={:?}, active_tabs={:?}",
                 first_tabs.iter().map(|tab| (&tab.url, &tab.group)).collect::<Vec<_>>(),
-                second_tabs.iter().map(|tab| (&tab.url, &tab.group)).collect::<Vec<_>>()
+                second_tabs.iter().map(|tab| (&tab.url, &tab.group)).collect::<Vec<_>>(),
+                windows.iter().map(|window| window.tabs.len()).collect::<Vec<_>>(),
+                windows.iter().map(|window| window.tab_manager.active_tab_id()).collect::<Vec<_>>()
             ));
         }
         Ok(serde_json::json!({
@@ -1466,17 +1469,9 @@ impl ColdStartChild {
             ]
         }))
     }
-}
 
-impl ApplicationHandler<BrowserEvent> for ColdStartChild {
-    fn resumed(&mut self, events: &ActiveEventLoop) {
-        if self.checked {
-            return;
-        }
-        self.checked = true;
-        self.app.resumed(events);
-        let result = self.verify_restored_state();
-        let report = match result {
+    fn finish_verification(&mut self, events: &ActiveEventLoop) {
+        let report = match self.verify_restored_state() {
             Ok(report) => report,
             Err(error) => {
                 let _ = std::fs::write(
@@ -1489,20 +1484,35 @@ impl ApplicationHandler<BrowserEvent> for ColdStartChild {
                     .unwrap_or_default(),
                 );
                 events.exit();
-                panic!("Cold-start session restore failed: {error}");
+                return;
             }
         };
         if let Err(error) = std::fs::write(
             &self.artifact,
             serde_json::to_vec_pretty(&report).unwrap_or_default(),
         ) {
+            eprintln!("Write cold-start child report: {error}");
             events.exit();
-            panic!("Write cold-start child report: {error}");
+            return;
         }
         for window in self.app.windows.values() {
-            let _ = window.window.set_visible(false);
+            window.window.set_visible(false);
         }
         events.exit();
+    }
+}
+
+impl ApplicationHandler<BrowserEvent> for ColdStartChild {
+    fn resumed(&mut self, events: &ActiveEventLoop) {
+        if self.checked {
+            return;
+        }
+        self.checked = true;
+        self.app.resumed(events);
+        self.verify_deadline = Some(Instant::now() + Duration::from_secs(10));
+        events.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_millis(50),
+        ));
     }
 
     fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -1515,6 +1525,24 @@ impl ApplicationHandler<BrowserEvent> for ColdStartChild {
 
     fn about_to_wait(&mut self, events: &ActiveEventLoop) {
         self.app.about_to_wait(events);
+        let Some(deadline) = self.verify_deadline else {
+            return;
+        };
+        let active_views_ready = self.app.windows.len() == 2
+            && self.app.windows.values().all(|window| {
+                window
+                    .tab_manager
+                    .active_tab_id()
+                    .is_some_and(|id| window.tabs.contains_key(&id))
+            });
+        if active_views_ready || Instant::now() >= deadline {
+            self.verify_deadline = None;
+            self.finish_verification(events);
+        } else {
+            events.set_control_flow(ControlFlow::WaitUntil(
+                (Instant::now() + Duration::from_millis(50)).min(deadline),
+            ));
+        }
     }
 }
 
@@ -1548,6 +1576,7 @@ pub fn run_cold_start_child() {
         artifact,
         expected_base,
         checked: false,
+        verify_deadline: None,
     };
     events
         .run_app(&mut child)
@@ -1856,6 +1885,9 @@ pub fn run() {
 struct GoogleDnsWebViewCheck {
     app: BrowserApp,
     main: Option<WindowId>,
+    destination: &'static str,
+    expected_domain: &'static str,
+    target_name: &'static str,
     proxy_count_before_navigation: Option<u64>,
     doh_resolutions_before_navigation: Option<u64>,
     connect_tunnels_before_navigation: Option<u64>,
@@ -1940,11 +1972,18 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
             BrowserEvent::CommandDone(name, _, reply) if name == "__google_dns_webview_check" => {
                 self.pending = false;
                 self.last_reply = Some(reply.clone());
-                if reply == "null" {
+                let page = serde_json::from_str::<serde_json::Value>(&reply)
+                    .ok()
+                    .or_else(|| {
+                        serde_json::from_str::<String>(&reply)
+                            .ok()
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                    });
+                let Some(page) = page else {
                     self.next = Instant::now() + Duration::from_millis(500);
                     return;
-                }
-                if reply != "true" {
+                };
+                if page.get("loaded").and_then(serde_json::Value::as_bool) != Some(true) {
                     self.next = Instant::now() + Duration::from_millis(500);
                     return;
                 }
@@ -1956,9 +1995,10 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                     .unwrap_or(0);
                 let before = self.proxy_count_before_navigation.unwrap_or(current);
                 if current <= before {
-                    self.error = Some(
-                        "WebView2 loaded Google without connecting to Pip's local DoH proxy".into(),
-                    );
+                    self.error = Some(format!(
+                        "WebView2 reached {} without connecting to Pip's local DoH proxy",
+                        self.target_name
+                    ));
                     events.exit();
                     return;
                 }
@@ -1972,9 +2012,10 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                     .doh_resolutions_before_navigation
                     .unwrap_or(doh_resolutions);
                 if doh_resolutions <= doh_before {
-                    self.error = Some(
-                        "WebView2 loaded Google through Pip's proxy without a successful Google DoH hostname resolution".into(),
-                    );
+                    self.error = Some(format!(
+                        "WebView2 reached {} through Pip's proxy without a successful Google DoH hostname resolution",
+                        self.target_name
+                    ));
                     events.exit();
                     return;
                 }
@@ -1988,9 +2029,10 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                     .connect_tunnels_before_navigation
                     .unwrap_or(connect_tunnels);
                 if connect_tunnels <= tunnels_before {
-                    self.error = Some(
-                        "WebView2 reached Google's page without opening an upstream HTTPS CONNECT tunnel through Pip's proxy".into(),
-                    );
+                    self.error = Some(format!(
+                        "WebView2 reached {} without opening an upstream HTTPS CONNECT tunnel through Pip's proxy",
+                        self.target_name
+                    ));
                     events.exit();
                     return;
                 }
@@ -1998,10 +2040,11 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                     .join("../../target/google-dns-webview-verification.json");
                 let report = serde_json::json!({
                     "status": "passed",
-                    "destination": "https://www.google.com/",
+                    "destination": self.destination,
                     "proxy_connections": current - before,
                     "successful_doh_resolutions": doh_resolutions - doh_before,
                     "successful_https_connect_tunnels": connect_tunnels - tunnels_before,
+                    "page": page,
                     "host_resolver_rule_configured": "MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1",
                     "windows_hidden": true
                 });
@@ -2081,8 +2124,11 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                 .doh_proxy
                 .as_ref()
                 .map(doh_proxy::DohProxy::successful_connect_tunnels);
-            self.app.handle_navigate(window, "https://www.google.com/");
-            self.phase = "navigated to Google";
+            self.app.handle_navigate(window, self.destination);
+            self.phase = match self.target_name {
+                "YouTube" => "navigated to YouTube",
+                _ => "navigated to Google",
+            };
             self.next = Instant::now() + Duration::from_millis(250);
             events.set_control_flow(ControlFlow::WaitUntil(self.next.min(self.deadline)));
             return;
@@ -2107,9 +2153,12 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
             return;
         };
         let proxy = self.app.proxy.clone();
+        let expected_domain = serde_json::to_string(self.expected_domain).unwrap_or_default();
         self.pending = true;
         if let Err(error) = view.evaluate_script_with_callback(
-            "location.hostname.endsWith('google.com')&&document.readyState==='complete'&&!!document.body&&document.body.innerText.length>0",
+            &format!(
+                "(()=>{{const expected={expected_domain};const hostname=location.hostname.toLowerCase();const body=(document.body?.innerText||'').slice(0,500);const resources=performance.getEntriesByType('resource').slice(-100).map(entry=>{{try{{const url=new URL(entry.name,location.href);return {{origin:url.origin,path:url.pathname.slice(0,120),status:Number.isInteger(entry.responseStatus)?entry.responseStatus:null}}}}catch{{return null}}}}).filter(Boolean);return {{loaded:(hostname===expected||hostname.endsWith('.'+expected))&&document.readyState==='complete'&&body.length>0,hostname,title:document.title,offlineUiDetected:/connect to the internet|you'?re offline|you are offline|no internet connection/i.test(body),visibleTextExcerpt:body,resources}}}})()"
+            ),
             move |reply| {
                 let _ = proxy.send_event(BrowserEvent::CommandDone(
                     "__google_dns_webview_check".into(),
@@ -2154,9 +2203,17 @@ pub fn run_google_dns_webview() {
     let mut app = BrowserApp::new(events.create_proxy(), "Google DNS verification".into());
     app.background_check = true;
     app.google_dns_health_check_started = true;
+    let (destination, expected_domain, target_name) =
+        match std::env::var("PIP_VERIFY_DOH_TARGET").as_deref() {
+            Ok("youtube") => ("https://www.youtube.com/", "youtube.com", "YouTube"),
+            _ => ("https://www.google.com/", "google.com", "Google"),
+        };
     let mut check = GoogleDnsWebViewCheck {
         app,
         main: None,
+        destination,
+        expected_domain,
+        target_name,
         proxy_count_before_navigation: None,
         doh_resolutions_before_navigation: None,
         connect_tunnels_before_navigation: None,
@@ -2184,6 +2241,7 @@ pub fn run_google_dns_webview() {
     let _ = std::fs::remove_dir_all(stage);
     assert!(check.complete, "{:?}", check.error);
     println!(
-        "PASS: WebView2 loaded Google's test response and opened a connection to Pip's local Google DNS proxy."
+        "PASS: WebView2 reached {} and opened a connection to Pip's local Google DNS proxy.",
+        target_name
     );
 }
