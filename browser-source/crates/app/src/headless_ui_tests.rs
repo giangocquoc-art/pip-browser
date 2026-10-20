@@ -1901,6 +1901,34 @@ struct GoogleDnsWebViewCheck {
     last_navigation: Option<String>,
 }
 
+fn google_dns_verification_page_is_usable(page: &serde_json::Value) -> bool {
+    page.get("loaded").and_then(serde_json::Value::as_bool) == Some(true)
+        && page
+            .get("offlineUiDetected")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+}
+
+fn google_dns_offline_page_diagnostic(page: &serde_json::Value) -> String {
+    let title = page
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing>");
+    let excerpt = page
+        .get("visibleTextExcerpt")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing>");
+    let failed_resources = page
+        .get("failedResources")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    format!(
+        "title={title:?}, visible_text={excerpt:?}, failed_resources={}",
+        serde_json::Value::Array(failed_resources)
+    )
+}
+
 impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
     fn resumed(&mut self, events: &ActiveEventLoop) {
         self.app.resumed(events);
@@ -1985,6 +2013,23 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
                 };
                 if page.get("loaded").and_then(serde_json::Value::as_bool) != Some(true) {
                     self.next = Instant::now() + Duration::from_millis(500);
+                    return;
+                }
+                if !google_dns_verification_page_is_usable(&page) {
+                    let offline_state = page
+                        .get("offlineUiDetected")
+                        .and_then(serde_json::Value::as_bool);
+                    let reason = if offline_state == Some(true) {
+                        "the offline UI is present"
+                    } else {
+                        "the offline UI check returned no definitive result"
+                    };
+                    self.error = Some(format!(
+                        "WebView2 reached {} but verification failed because {reason}; {}",
+                        self.target_name,
+                        google_dns_offline_page_diagnostic(&page)
+                    ));
+                    events.exit();
                     return;
                 }
                 let current = self
@@ -2157,7 +2202,7 @@ impl ApplicationHandler<BrowserEvent> for GoogleDnsWebViewCheck {
         self.pending = true;
         if let Err(error) = view.evaluate_script_with_callback(
             &format!(
-                "(()=>{{const expected={expected_domain};const hostname=location.hostname.toLowerCase();const body=(document.body?.innerText||'').slice(0,500);const resources=performance.getEntriesByType('resource').slice(-100).map(entry=>{{try{{const url=new URL(entry.name,location.href);return {{origin:url.origin,path:url.pathname.slice(0,120),status:Number.isInteger(entry.responseStatus)?entry.responseStatus:null}}}}catch{{return null}}}}).filter(Boolean);return {{loaded:(hostname===expected||hostname.endsWith('.'+expected))&&document.readyState==='complete'&&body.length>0,hostname,title:document.title,offlineUiDetected:/connect to the internet|you'?re offline|you are offline|no internet connection/i.test(body),visibleTextExcerpt:body,resources}}}})()"
+                "(()=>{{const expected={expected_domain};const hostname=location.hostname.toLowerCase();const pageText=(document.body?.innerText||'').replace(/\\s+/g,' ').trim();const resources=performance.getEntriesByType('resource').slice(-100).map(entry=>{{try{{const url=new URL(entry.name,location.href);return {{origin:url.origin,path:url.pathname.slice(0,120),status:Number.isInteger(entry.responseStatus)?entry.responseStatus:null}}}}catch{{return null}}}}).filter(Boolean);const failedResources=resources.filter(resource=>resource.status===0||resource.status>=400).slice(0,20);return {{loaded:(hostname===expected||hostname.endsWith('.'+expected))&&document.readyState==='complete'&&pageText.length>0,hostname,title:document.title,offlineUiDetected:/connect to the internet|you'?re offline|you are offline|no internet connection/i.test(pageText),visibleTextExcerpt:pageText.slice(0,1200),failedResources,resources}}}})()"
             ),
             move |reply| {
                 let _ = proxy.send_event(BrowserEvent::CommandDone(
@@ -2244,4 +2289,29 @@ pub fn run_google_dns_webview() {
         "PASS: WebView2 reached {} and opened a connection to Pip's local Google DNS proxy.",
         target_name
     );
+}
+
+#[cfg(test)]
+mod google_dns_verification_tests {
+    use super::google_dns_verification_page_is_usable;
+    use serde_json::json;
+
+    #[test]
+    fn verifier_rejects_youtube_offline_shell_and_missing_offline_status() {
+        assert!(google_dns_verification_page_is_usable(&json!({
+            "loaded": true,
+            "offlineUiDetected": false
+        })));
+        assert!(!google_dns_verification_page_is_usable(&json!({
+            "loaded": true,
+            "offlineUiDetected": true
+        })));
+        assert!(!google_dns_verification_page_is_usable(&json!({
+            "loaded": true
+        })));
+        assert!(!google_dns_verification_page_is_usable(&json!({
+            "loaded": false,
+            "offlineUiDetected": false
+        })));
+    }
 }
