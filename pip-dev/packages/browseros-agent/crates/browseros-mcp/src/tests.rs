@@ -821,13 +821,71 @@ fn run_has_compat_output_schema() {
 }
 
 #[test]
-fn only_targeting_tools_and_run_advertise_output_schemas() {
+fn structured_output_tools_advertise_output_schemas() {
     let advertised = catalog()
         .into_iter()
         .filter(|tool| tool.output_schema.is_some())
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    assert_eq!(advertised, ["browser_profiles", "browser_target", "run"]);
+    assert_eq!(
+        advertised,
+        [
+            "browser_profiles",
+            "browser_target",
+            "visual_targets",
+            "run"
+        ]
+    );
+}
+
+#[test]
+fn visual_targets_output_schema_describes_fresh_crop_observations() {
+    let tool = catalog()
+        .into_iter()
+        .find(|tool| tool.name == "visual_targets")
+        .unwrap_or_else(|| panic!("missing visual_targets tool"));
+    let schema = Value::Object(
+        tool.output_schema
+            .unwrap_or_else(|| panic!("missing visual_targets output schema"))
+            .as_ref()
+            .clone(),
+    );
+    assert_eq!(schema["type"], "object");
+    assert_eq!(
+        schema["required"],
+        json!([
+            "page",
+            "coordinateSpace",
+            "observationId",
+            "regions",
+            "count"
+        ])
+    );
+    let properties = &schema["properties"];
+    assert_eq!(properties["page"]["type"], "integer");
+    assert_eq!(properties["coordinateSpace"]["type"], "string");
+    assert_eq!(properties["observationId"]["type"], "string");
+    assert_eq!(properties["count"]["type"], "integer");
+    let region = &properties["regions"]["items"];
+    assert_eq!(region["type"], "object");
+    assert_eq!(
+        region["required"],
+        json!([
+            "index",
+            "type",
+            "label",
+            "x",
+            "y",
+            "width",
+            "height",
+            "contentWidth",
+            "contentHeight"
+        ])
+    );
+    assert_eq!(region["properties"]["type"]["type"], "string");
+    assert_eq!(region["properties"]["x"]["type"], "integer");
+    assert_eq!(region["properties"]["width"]["type"], "integer");
+    assert_eq!(region["properties"]["contentWidth"]["type"], "number");
 }
 
 #[test]

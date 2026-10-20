@@ -77,7 +77,7 @@ Ask the agent to inspect the intended Pip Dev tab, for example:
 
 > Inspect the localhost page open in Pip Dev and tell me which button submits the form. Do not submit it.
 
-The agent should identify the tab, read its structured state, and use fresh element references. For canvas-only content it may request a crop fully inside one of the visible regions returned by the current `visual_targets` observation; arbitrary viewport crops are rejected. It should verify important state after an action and stop when the result is uncertain. Follow the stop/release control in Pip Dev when you want your tab back.
+The agent should identify the tab, read its structured state, and use fresh element references. `visual_targets` returns the current `observationId` and `regions` in MCP structured output (while retaining its text region list for older clients). For canvas-only content, pass that token to request a crop fully inside one of the returned regions; arbitrary viewport crops are rejected. It should verify important state after an action and stop when the result is uncertain. Follow the stop/release control in Pip Dev when you want your tab back.
 
 ## Marketplace scope
 

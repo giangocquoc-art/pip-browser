@@ -317,7 +317,27 @@ impl FixtureConnection {
             ),
             "Runtime.evaluate" => {
                 let session = session.map(SessionId::as_str).unwrap_or_default();
-                let value = if session.contains("sw-eng-bad") {
+                let value = if params
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .is_some_and(|expression| {
+                        expression.contains("const selectors = 'canvas,img,video,svg")
+                    }) {
+                    json!({
+                        "observationId": "v1:12:89abcdef",
+                        "regions": [{
+                            "index": 0,
+                            "type": "canvas",
+                            "label": "test board",
+                            "x": 20,
+                            "y": 30,
+                            "width": 640,
+                            "height": 480,
+                            "contentWidth": 640,
+                            "contentHeight": 480
+                        }]
+                    })
+                } else if session.contains("sw-eng-bad") {
                     json!({ "error": "downloads unavailable" })
                 } else if session.contains("sw-eng-good") {
                     json!({ "records": [{ "id": 1, "filename": "/synthetic/download.txt", "state": "complete", "bytes": 12 }] })
@@ -664,6 +684,101 @@ async fn profiles_output_schema_preserves_descriptors_and_load_outcomes() -> any
         call.method.as_str(),
         "Browser.createWindow" | "Browser.createTab"
     )));
+    Ok(())
+}
+
+#[tokio::test]
+async fn visual_targets_exposes_crop_token_as_structured_mcp_output() -> anyhow::Result<()> {
+    let connection = FixtureConnection::new().with_default_profile();
+    let session = BrowserSession::new_with_native(
+        connection,
+        BrowserSessionHooks::default(),
+        crate::tests::current_native(),
+    );
+    let page_id = session
+        .pages
+        .list()
+        .await?
+        .into_iter()
+        .find(|page| {
+            page.browser_profile_id
+                .as_ref()
+                .is_some_and(|profile| profile.0 == "original")
+        })
+        .map(|page| page.page_id.0)
+        .ok_or_else(|| anyhow::anyhow!("fixture Default page missing"))?;
+    let mut options = super::tests::service_options(session);
+    // Declared output schemas must retain structured results even when the
+    // host suppresses legacy structured results for tools without a schema.
+    options.include_structured_content = Some(false);
+    let service = BrowserMcpService::new(options);
+    let result = service
+        .call_tool_for_testing(
+            "visual_targets",
+            json!({ "page": page_id, "max_targets": 12 }),
+            CancellationToken::new(),
+        )
+        .await?;
+
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    assert_eq!(
+        result.structured_content,
+        Some(json!({
+            "page": page_id,
+            "coordinateSpace": "visible-viewport-css-pixels",
+            "observationId": "v1:12:89abcdef",
+            "regions": [{
+                "index": 0,
+                "type": "canvas",
+                "label": "test board",
+                "x": 20,
+                "y": 30,
+                "width": 640,
+                "height": 480,
+                "contentWidth": 640,
+                "contentHeight": 480
+            }],
+            "count": 1
+        }))
+    );
+    let text_regions = result
+        .content
+        .iter()
+        .find_map(|content| content.as_text())
+        .map(|content| content.text.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("legacy visual target text is missing"))?;
+    assert_eq!(
+        serde_json::from_str::<Value>(text_regions)?,
+        result.structured_content.as_ref().unwrap()["regions"]
+    );
+
+    let observation_id = result.structured_content.as_ref().unwrap()["observationId"]
+        .as_str()
+        .unwrap();
+    let region = &result.structured_content.as_ref().unwrap()["regions"][0];
+    let crop = service
+        .call_tool_for_testing(
+            "screenshot",
+            json!({
+                "page": page_id,
+                "region": {
+                    "x": region["x"],
+                    "y": region["y"],
+                    "width": region["width"],
+                    "height": region["height"],
+                    "observationId": observation_id
+                }
+            }),
+            CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(crop.is_error, Some(false), "{crop:?}");
+    assert!(
+        crop.content
+            .iter()
+            .any(|content| matches!(content, rmcp::model::ContentBlock::Image(_))),
+        "crop did not return an inline image: {crop:?}"
+    );
     Ok(())
 }
 

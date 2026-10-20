@@ -21,7 +21,9 @@ launcher from a future packaged release.
   regions returned by that exact observation. It returns one visible-viewport crop inline, limited
   to 1 megapixel, and does not save it. Each crop requires the matching `observationId`, checked
   before and after capture against URL, viewport, scroll and returned visual-target bounds. MCP
-  tool metadata warns that the crop is delivered to the caller and may be forwarded to an external
+  `visual_targets` declares a structured output schema with that token and the regions, so clients
+  can pass the fresh token directly to `screenshot.region`; its legacy text region list remains.
+  Tool metadata warns that the crop is delivered to the caller and may be forwarded to an external
   model; the browser cannot determine where the MCP client sends it next.
 - Layout changes invalidate old crop coordinates. The observation token does not detect pixel
   changes inside a same-sized canvas; callers must inspect the crop and verify application

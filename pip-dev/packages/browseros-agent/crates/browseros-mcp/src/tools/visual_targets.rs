@@ -30,6 +30,38 @@ pub struct VisualTargetSnapshot {
     pub regions: Value,
 }
 
+/// Structured MCP contract for a fresh set of visible visual targets.
+///
+/// The text content remains the legacy JSON array of regions. The declared
+/// output schema allows MCP hosts to retain the structured observation token
+/// even when they suppress structured results for tools without a schema.
+#[allow(dead_code)] // Fields are consumed by schemars when advertising the MCP contract.
+#[derive(JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct VisualTargetsOutput {
+    page: u32,
+    coordinate_space: String,
+    observation_id: String,
+    regions: Vec<VisualTargetRegionOutput>,
+    count: usize,
+}
+
+#[allow(dead_code)] // Fields are consumed by schemars when advertising the MCP contract.
+#[derive(JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct VisualTargetRegionOutput {
+    index: usize,
+    #[serde(rename = "type")]
+    element_type: String,
+    label: String,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    content_width: f64,
+    content_height: f64,
+}
+
 #[derive(Debug, Deserialize)]
 struct RemoteObject {
     value: Option<Value>,
@@ -41,7 +73,7 @@ struct ExceptionDetails {
 }
 
 pub fn definition() -> crate::framework::ToolDef {
-    super::def::<VisualTargetsArgs>(
+    super::def_with_output::<VisualTargetsArgs, VisualTargetsOutput>(
         "visual_targets",
         DESCRIPTION,
         Some(super::read_only_annotations()),
