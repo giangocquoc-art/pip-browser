@@ -40,6 +40,21 @@ Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, ki�
 
 Pip hỗ trợ Windows 10/11 64-bit và cài riêng cho tài khoản Windows hiện tại. Bộ cài chưa ký số; SmartScreen có thể cảnh báo. Trang giới thiệu ghi rõ giới hạn của chế độ ẩn danh, DNS và bộ lọc quảng cáo.
 
+## Pip Dev cho Codex và agent AI
+
+Pip Dev là dự án trình duyệt Chromium riêng đang phát triển trong [`pip-dev/`](pip-dev/). Nó bổ sung kết nối MCP để Codex và agent tương thích đọc, thao tác trên tab Pip Dev. Plugin không cài trình duyệt; hiện chưa có bộ cài Pip Dev cho người dùng cuối và trình duyệt cần chạy trên cùng máy với agent.
+
+Codex CLI có thể thêm GitHub repo marketplace và cài plugin bằng các lệnh sau:
+
+```powershell
+codex plugin marketplace add giangocquoc-art/pip-browser --sparse .agents/plugins --sparse pip-dev/plugins/pip-dev-browser
+codex plugin add pip-dev-browser --marketplace pip-dev-plugins
+```
+
+Xem [hướng dẫn cài Pip Dev trên Windows](pip-dev/docs/INSTALL_WINDOWS.md), [kết nối Codex qua MCP](pip-dev/docs/PIP_DEV_AGENT_SETUP.md) và [trạng thái triển khai](pip-dev/PIP_DEV_STATUS.md). Plugin sẽ chỉ điều khiển tab khi Pip Dev và MCP server đang chạy trên PC đó.
+
+Đây là marketplace của repo GitHub, chưa phải mục được liệt kê trong thư mục plugin công khai của Codex/ChatGPT. Pip Dev cũng chưa có bộ cài trình duyệt Windows cho người dùng cuối.
+
 ## Báo cáo bảo mật
 
 Đọc [chính sách bảo mật và cách báo cáo lỗ hổng](SECURITY.md). Không đăng chi tiết khai thác hoặc dữ liệu cá nhân trong issue công khai.

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pip-dev-browser",
+  "version": "0.1.0",
+  "description": "Connect Codex and compatible agents to Pip Dev's local browser MCP.",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["browser", "mcp", "chromium", "automation", "developer-tools"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pip Dev Browser",
+        "shortDescription": "Control Pip Dev tabs through local MCP tools.",
+        "longDescription": "Use Pip Dev's local MCP server to inspect structured page state, target elements, perform verified actions, and request focused canvas or image crops when needed.",
+        "developerName": "Pip",
+        "category": "Productivity",
+        "websiteURL": "https://pip.psharehub.com",
+        "brandColor": "#ff6b1a",
+        "defaultPrompt": [
+          "Use Pip Dev to inspect and interact with the page I have open.",
+          "Use Pip Dev MCP for the localhost page I am developing."
+        ]
+      },
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  }
+}

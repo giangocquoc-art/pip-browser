@@ -1,0 +1,178 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches:
+      - main
+      - epic/app-onboard
+    paths:
+      - ".github/workflows/code-quality.yml"
+      - "packages/browseros-agent/**"
+
+jobs:
+  biome:
+    name: runner / Biome
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/browseros-agent
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: packages/browseros-agent/package.json
+
+      # Run Biome through the repo's own lint script (bunx @biomejs/biome) so CI
+      # uses the exact same Biome as local `bun run lint`, instead of a version
+      # pinned separately in a setup action that drifts from package.json.
+      - name: Run Biome
+        run: bun run lint
+
+  typecheck:
+    name: runner / Typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/browseros-agent
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Full history so Turbo's --affected can compute the merge base;
+          # a shallow checkout silently makes it treat every package as changed.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: packages/browseros-agent/package.json
+
+      - name: Start Turbo remote cache (GitHub Actions cache)
+        uses: rharkor/caching-for-turbo@2238fae6eb9a9936f92356f54cb3660200d105e7 # v2.5.1
+
+      - name: Install dependencies
+        run: bun ci
+
+      - name: Check env examples
+        run: bun run env:examples:check
+
+      - name: Create dev env file
+        run: cp .env.development.example .env.development
+
+      # Turbo runs each affected package's typecheck (its script self-contains
+      # wxt prepare) after its `codegen` task dep, so unchanged packages are
+      # cache hits. Replaces the manual wxt-prepare + codegen + `bun run
+      # typecheck` steps.
+      - name: Run Typecheck (affected)
+        run: bunx turbo run typecheck --affected
+
+  claw-api-codegen:
+    name: runner / Claw API generated code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/browseros-agent
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: packages/browseros-agent/package.json
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+        with:
+          version: 2.5.4
+
+      - name: Setup Rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Check Claw API generated code
+        run: bun run codegen:claw-api:check
+
+  claw-api-contract:
+    name: runner / Claw API conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: packages/browseros-agent
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: packages/browseros-agent/package.json
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/browseros-agent/target
+          key: ${{ runner.os }}-claw-api-cargo-${{ hashFiles('packages/browseros-agent/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-claw-api-cargo-
+
+      - name: Install dependencies
+        run: bun ci
+
+      - name: Run Claw API contract tests
+        run: bun run test:claw-api-contract
+
+  fallow:
+    name: runner / Fallow
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/browseros-agent
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: packages/browseros-agent/package.json
+
+      - name: Install dependencies
+        run: bun ci
+
+      - name: Run Fallow
+        run: bun fallow

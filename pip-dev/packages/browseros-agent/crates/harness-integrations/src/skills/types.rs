@@ -1,0 +1,149 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
+
+use crate::catalog::AgentId;
+use crate::error::Error;
+
+/// Product-owned skill content and the directory name used by each harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillSpec {
+    pub(crate) name: String,
+    pub(crate) content: String,
+}
+
+impl SkillSpec {
+    pub fn new(name: impl Into<String>, content: impl Into<String>) -> Result<Self, Error> {
+        let name = name.into();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(Error::InvalidSkillSpec {
+                reason: "name must contain only lowercase ASCII letters, digits, and hyphens"
+                    .to_string(),
+            });
+        }
+        Ok(Self {
+            name,
+            content: content.into(),
+        })
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPlatform {
+    Darwin,
+    Linux,
+    Windows,
+}
+
+impl TargetPlatform {
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Darwin
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+/// Explicit path inputs for portable, deterministic global-root resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillEnvironment {
+    pub home_dir: PathBuf,
+    pub platform: TargetPlatform,
+    variables: BTreeMap<String, PathBuf>,
+}
+
+impl SkillEnvironment {
+    pub fn new(home_dir: impl Into<PathBuf>, platform: TargetPlatform) -> Self {
+        Self {
+            home_dir: home_dir.into(),
+            platform,
+            variables: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn current(home_dir: impl Into<PathBuf>) -> Self {
+        let mut environment = Self::new(home_dir, TargetPlatform::current());
+        for variable in ["CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "COPILOT_HOME"] {
+            if let Some(value) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+                environment
+                    .variables
+                    .insert(variable.to_string(), PathBuf::from(value));
+            }
+        }
+        environment
+    }
+
+    #[must_use]
+    pub fn with_variable(mut self, name: impl Into<String>, value: impl Into<PathBuf>) -> Self {
+        self.variables.insert(name.into(), value.into());
+        self
+    }
+
+    /// Common local agents discover the shared root; Claude Code needs its personal
+    /// root too. Custom Copilot homes opt out of shared-root discovery, so provision
+    /// their skills directly when that override is visible to the installer.
+    #[must_use]
+    pub fn common_skill_roots(&self) -> Vec<PathBuf> {
+        self.common_skill_roots_except(&BTreeSet::new())
+    }
+
+    /// Shared roots remain available to other local agents, including clients
+    /// outside the MCP catalog. An opt-out removes only its private baseline.
+    #[must_use]
+    pub fn common_skill_roots_except(&self, disconnected: &BTreeSet<AgentId>) -> Vec<PathBuf> {
+        let mut roots = vec![self.home_dir.join(".agents/skills")];
+        if !disconnected.contains(&AgentId::ClaudeCode) {
+            roots.push(
+                self.variable("CLAUDE_CONFIG_DIR")
+                    .unwrap_or_else(|| self.home_dir.join(".claude"))
+                    .join("skills"),
+            );
+        }
+        if let Some(copilot_home) = self.variable("COPILOT_HOME") {
+            roots.push(copilot_home.join("skills"));
+        }
+        roots
+    }
+
+    pub(crate) fn variable(&self, name: &str) -> Option<PathBuf> {
+        match name {
+            "HOME" | "USERPROFILE" => Some(self.home_dir.clone()),
+            _ => self.variables.get(name).cloned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillWarning {
+    pub target: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillReconcileOutcome {
+    pub installed: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub warnings: Vec<SkillWarning>,
+}

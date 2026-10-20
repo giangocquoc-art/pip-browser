@@ -1,0 +1,18 @@
+diff --git a/third_party/blink/public/devtools_protocol/domains/Input.pdl b/third_party/blink/public/devtools_protocol/domains/Input.pdl
+index 815bf7c414..97a391331c 100644
+--- a/third_party/blink/public/devtools_protocol/domains/Input.pdl
++++ b/third_party/blink/public/devtools_protocol/domains/Input.pdl
+@@ -262,6 +262,13 @@ domain Input
+       # Ignores input events processing when set to true.
+       boolean ignore
+ 
++  # Blocks native user input for this target while allowing DevTools input
++  # dispatch. The lock is scoped to the attached session and releases when it
++  # is disabled or the session detaches.
++  experimental command setAgentInputLock
++    parameters
++      boolean locked
++
+   # Prevents default drag and drop behavior and instead emits `Input.dragIntercepted` events.
+   # Drag and drop behavior can be directly controlled via `Input.dispatchDragEvent`.
+   experimental command setInterceptDrags

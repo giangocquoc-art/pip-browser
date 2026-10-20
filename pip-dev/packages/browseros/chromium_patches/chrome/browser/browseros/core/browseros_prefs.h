@@ -1,0 +1,140 @@
+diff --git a/chrome/browser/browseros/core/browseros_prefs.h b/chrome/browser/browseros/core/browseros_prefs.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..19e8b58261088485efa15d05db4819df283d81a7
+--- /dev/null
++++ b/chrome/browser/browseros/core/browseros_prefs.h
+@@ -0,0 +1,134 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_BROWSEROS_CORE_BROWSEROS_PREFS_H_
++#define CHROME_BROWSER_BROWSEROS_CORE_BROWSEROS_PREFS_H_
++
++#include <string>
++
++#include "components/prefs/pref_service.h"
++#include "ui/actions/action_id.h"
++
++namespace user_prefs {
++class PrefRegistrySyncable;
++}  // namespace user_prefs
++
++namespace browseros {
++
++namespace prefs {
++
++// Toolbar visibility prefs
++// Boolean: Show LLM Chat in toolbar (default: true)
++inline constexpr char kShowLLMChat[] = "browseros.show_llm_chat";
++
++// Boolean: Show Assistant in toolbar (default: true)
++inline constexpr char kShowAssistant[] = "browseros.show_assistant";
++
++// Boolean: Show labels on BrowserOS toolbar actions (default: true)
++inline constexpr char kShowToolbarLabels[] = "browseros.show_toolbar_labels";
++
++// Boolean: Enable vertical tabs (default: true)
++inline constexpr char kVerticalTabsEnabled[] =
++    "browseros.vertical_tabs_enabled";
++
++// Boolean: Show saved tab groups in the bookmark bar (default: true, false for
++// BrowserClaw).
++inline constexpr char kShowTabGroupsInBookmarkBar[] =
++    "browseros.show_tab_groups_in_bookmark_bar";
++
++// AI Provider prefs
++// JSON string containing the list of AI providers and configuration
++inline constexpr char kProviders[] = "browseros.providers";
++
++// JSON string containing custom AI providers for BrowserOS
++inline constexpr char kCustomProviders[] = "browseros.custom_providers";
++
++// String containing the default provider ID for BrowserOS
++inline constexpr char kDefaultProviderId[] = "browseros.default_provider_id";
++
++// Boolean: Focus NTP content instead of omnibox on new tab (default: true)
++inline constexpr char kNtpFocusContent[] = "browseros.ntp_focus_content";
++
++inline constexpr char kOnboardingCompleted[] = "browseros.onboarding_completed";
++
++// Local-only first-install records keyed by active product extension ID. An
++// empty record is eligible; discovery adds the bundled version, then READY adds
++// a fixed deadline. Expiry marks the record released until that bundled version
++// is replaced, covering installers that finish after the timer. Retaining the
++// user-set dictionary (even empty) prevents re-enrollment after expiry,
++// recovery, or a browser restart.
++inline constexpr char kExtensionInstallGrace[] =
++    "browseros.extension_install_grace";
++
++// Boolean: Automation-driven tabs never pull the user's attention. A tab counts
++// as automation-driven while a DevTools client is attached to it, which is
++// every tab the claw-server (or any CDP client) acts on. With the pref on such
++// a tab cannot switch the user's active tab or raise the window, and tabs or
++// popups its pages open land in the background. Gates live in
++// Browser::ActivateContents, Browser::AddNewContents and the DevTools
++// BrowserHandler. Default: true for BrowserClaw, false for BrowserOS.
++inline constexpr char kAutomationNeverStealsFocus[] =
++    "browseros.automation_never_steals_focus";
++
++}  // namespace prefs
++
++// Registers BrowserOS profile preferences.
++void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
++
++// Check if LLM Chat should be shown in toolbar.
++bool ShouldShowLLMChat(PrefService* pref_service);
++
++// Check if Assistant should be shown in toolbar.
++bool ShouldShowAssistant(PrefService* pref_service);
++
++// Check if toolbar labels should be shown for BrowserOS actions.
++bool ShouldShowToolbarLabels(PrefService* pref_service);
++
++// Check if vertical tabs should be enabled.
++bool IsVerticalTabsEnabled(PrefService* pref_service);
++
++// Check if saved tab groups should be shown in the bookmark bar.
++bool ShouldShowTabGroupsInBookmarkBar(PrefService* pref_service);
++
++// Syncs the BrowserOS vertical tabs pref to the upstream Chrome pref.
++// Call this early (e.g. during controller init) so the upstream pref
++// reflects BrowserOS's default.
++void SyncVerticalTabsPref(PrefService* pref_service);
++
++// Applies the BrowserOS saved tab groups bookmark bar pref to the upstream
++// Chrome pref.
++void ApplyShowTabGroupsInBookmarkBarPref(PrefService* pref_service);
++
++// Syncs the BrowserOS saved tab groups bookmark bar pref to the upstream Chrome
++// pref only while the upstream pref is still at its default value.
++void SyncShowTabGroupsInBookmarkBarPref(PrefService* pref_service);
++
++// Sets the default BrowserOS theme (blue tonal spot) on first run
++// when the user hasn't customized the theme yet.
++void SyncDefaultTheme(PrefService* pref_service);
++
++// Check if a toolbar action should be shown based on its visibility pref.
++// Returns true if:
++//   - Action has no visibility pref
++//   - Action's visibility pref is true
++// Returns false if action's visibility pref is false.
++bool ShouldShowToolbarAction(actions::ActionId id, PrefService* pref_service);
++
++// Check if a BrowserOS extension should be pinned from its catalog metadata.
++bool ShouldPinBrowserOSExtension(const std::string& extension_id,
++                                 PrefService* pref_service);
++
++// Check if NTP content should receive focus instead of the omnibox.
++bool IsNtpFocusContentEnabled(PrefService* pref_service);
++
++// Check if automation-driven tabs must never steal focus. Callers decide per
++// tab by combining this with content::DevToolsAgentHost::IsDebuggerAttached().
++bool AutomationNeverStealsFocus(PrefService* pref_service);
++
++// Get the visibility pref key for an action, or nullptr if none exists.
++const char* GetVisibilityPrefForAction(actions::ActionId id);
++
++}  // namespace browseros
++
++#endif  // CHROME_BROWSER_BROWSEROS_CORE_BROWSEROS_PREFS_H_

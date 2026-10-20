@@ -1,0 +1,340 @@
+/**
+ * @license
+ * Copyright 2025 BrowserOS
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+import type { AgentSettings } from '@browseros/claw-api'
+import { JevTokenSource } from '@browseros/claw-api'
+import { useQueryClient } from '@tanstack/react-query'
+import { IconArrowRight } from '@tabler/icons-react'
+import { useRef, useState, useSyncExternalStore } from 'react'
+import { useNavigate } from 'react-router'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
+import { AnalyticsEvent, track } from '@/modules/analytics/events'
+import { isFlagEnabled, subscribeToFlags } from '@/modules/analytics/posthog'
+import {
+  useAgentSettings,
+  useRemoveJevToken,
+  useSaveJevToken,
+  useUpdateAgentSettings,
+} from '@/modules/api/agent-settings.hooks'
+
+const HUMAN_HELP_SWITCH_ID = 'human-help-switch'
+const HUMAN_HELP_TITLE_ID = 'human-help-title'
+const HUMAN_HELP_DESCRIPTION_ID = 'human-help-description'
+const CLOSE_TAB_GROUPS_SWITCH_ID = 'close-tab-groups-switch'
+const CLOSE_TAB_GROUPS_TITLE_ID = 'close-tab-groups-title'
+const CLOSE_TAB_GROUPS_DESCRIPTION_ID = 'close-tab-groups-description'
+/**
+ * The flag that reveals the token field.
+ *
+ * Hidden unless PostHog says otherwise for this install, which is also what an
+ * install with analytics turned off gets: no evaluation, so no field.
+ */
+const TOKEN_FIELD_FLAG = 'ultrafast-token-field'
+const JEV_INPUT_ID = 'jev-token-input'
+const JEV_TITLE_ID = 'jev-token-title'
+const JEV_DESCRIPTION_ID = 'jev-token-description'
+
+/** Server-owned preferences for agent tools and task cleanup. */
+export function Settings() {
+  const navigate = useNavigate()
+  const settings = useAgentSettings()
+  // false as the server snapshot, so a static render and a cold open agree:
+  // the field was never there, rather than appearing a beat late.
+  const tokenFieldEnabled = useSyncExternalStore(
+    subscribeToFlags,
+    () => isFlagEnabled(TOKEN_FIELD_FLAG),
+    () => false,
+  )
+  const updateSettings = useUpdateAgentSettings()
+  const queryClient = useQueryClient()
+
+  const handleHumanHelpChange = (humanHelpEnabled: boolean) => {
+    const current = queryClient.getQueryData<AgentSettings>(
+      useAgentSettings.getKey(),
+    )
+    if (!current) {
+      return
+    }
+
+    updateSettings.mutate(
+      {
+        humanHelpEnabled,
+        closeTabGroupsAfterTask: current.closeTabGroupsAfterTask,
+      },
+      {
+        onSuccess: (saved) => {
+          queryClient.setQueryData(useAgentSettings.getKey(), saved)
+          track(AnalyticsEvent.HumanHelpToggled, {
+            enabled: saved.humanHelpEnabled,
+          })
+        },
+      },
+    )
+  }
+
+  const handleCloseTabGroupsChange = (closeTabGroupsAfterTask: boolean) => {
+    const current = queryClient.getQueryData<AgentSettings>(
+      useAgentSettings.getKey(),
+    )
+    if (!current) {
+      return
+    }
+
+    updateSettings.mutate(
+      {
+        humanHelpEnabled: current.humanHelpEnabled,
+        closeTabGroupsAfterTask,
+      },
+      {
+        onSuccess: (saved) => {
+          queryClient.setQueryData(useAgentSettings.getKey(), saved)
+        },
+      },
+    )
+  }
+
+  return (
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-8 px-8 pt-8 pb-16">
+      <header className="flex flex-col gap-1">
+        <h1 className="font-extrabold text-3xl leading-tight tracking-tight md:text-4xl">
+          Settings
+        </h1>
+        <p className="text-ink-2 text-sm">
+          Choose which Pip Dev tools your agents can use.
+        </p>
+      </header>
+
+      {settings.isError ? (
+        <div className="rounded-9 border border-ledger-border bg-card px-6 py-10 text-center text-ink-2 text-sm">
+          Could not load settings. Check that Pip Dev is running and try
+          again.
+        </div>
+      ) : (
+        <div className="rounded-9 border border-ledger-border bg-card">
+          <label
+            htmlFor={HUMAN_HELP_SWITCH_ID}
+            className="flex items-center justify-between gap-6 px-5 py-4"
+          >
+            <span className="flex flex-col gap-1">
+              <span
+                id={HUMAN_HELP_TITLE_ID}
+                className="font-medium text-ink text-sm"
+              >
+                Ask for human help
+              </span>
+              <span
+                id={HUMAN_HELP_DESCRIPTION_ID}
+                className="text-[13px] text-ink-2 leading-snug"
+              >
+                Lets agents pause and ask you to take over the page for a
+                sign-in, a code, or a captcha. When off, agents tell you what
+                they need in their own chat instead.
+              </span>
+            </span>
+            <Switch
+              id={HUMAN_HELP_SWITCH_ID}
+              aria-labelledby={HUMAN_HELP_TITLE_ID}
+              aria-describedby={HUMAN_HELP_DESCRIPTION_ID}
+              // The server's default (on) until it answers, so the switch
+              // does not flip on load unless the user turned it off.
+              checked={settings.data?.humanHelpEnabled ?? true}
+              onCheckedChange={handleHumanHelpChange}
+              disabled={!settings.data || updateSettings.isPending}
+            />
+          </label>
+          <label
+            htmlFor={CLOSE_TAB_GROUPS_SWITCH_ID}
+            className="flex items-center justify-between gap-6 border-ledger-divider border-t px-5 py-4"
+          >
+            <span className="flex flex-col gap-1">
+              <span
+                id={CLOSE_TAB_GROUPS_TITLE_ID}
+                className="font-medium text-ink text-sm"
+              >
+                Close tab groups after the agent finishes a task
+              </span>
+              <span
+                id={CLOSE_TAB_GROUPS_DESCRIPTION_ID}
+                className="text-[13px] text-ink-2 leading-snug"
+              >
+                Asks agents to close their own task groups when finished.
+              </span>
+            </span>
+            <Switch
+              id={CLOSE_TAB_GROUPS_SWITCH_ID}
+              aria-labelledby={CLOSE_TAB_GROUPS_TITLE_ID}
+              aria-describedby={CLOSE_TAB_GROUPS_DESCRIPTION_ID}
+              checked={settings.data?.closeTabGroupsAfterTask ?? false}
+              onCheckedChange={handleCloseTabGroupsChange}
+              disabled={!settings.data || updateSettings.isPending}
+            />
+          </label>
+          {updateSettings.isError && (
+            <p
+              role="alert"
+              className="border-ledger-divider border-t px-5 py-3 text-[13px] text-destructive"
+            >
+              Could not save this setting. Try again.
+            </p>
+          )}
+          {tokenFieldEnabled && (
+            <JevToken
+              source={settings.data?.jevTokenSource ?? JevTokenSource.None}
+            />
+          )}
+        </div>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Import from Pip</CardTitle>
+          <CardDescription>
+            Bring bookmarks, optional history, Pip profile labels, and selected
+            preferences into this browser.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => navigate('/settings/migration')}
+          >
+            Choose a Pip export file
+            <IconArrowRight data-icon="inline-end" />
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+/**
+ * The decision model credential, which is the one thing that decides whether
+ * agents are offered `pursue` at all.
+ *
+ * Three states rather than two: a saved token, a token in the server's
+ * environment, or neither. Naming the environment case is what stops a user
+ * pasting a token they did not need.
+ */
+function JevToken({ source }: { source: JevTokenSource }) {
+  // Uncontrolled on purpose: the credential lives in the field the user typed
+  // it into and is read once on submit, rather than being mirrored into React
+  // state and re-rendered.
+  const field = useRef<HTMLInputElement>(null)
+  const [replacing, setReplacing] = useState(false)
+  const save = useSaveJevToken()
+  const remove = useRemoveJevToken()
+  const queryClient = useQueryClient()
+
+  const publish = (saved: AgentSettings) => {
+    queryClient.setQueryData(useAgentSettings.getKey(), saved)
+    if (field.current) field.current.value = ''
+    setReplacing(false)
+  }
+
+  const saved = source === JevTokenSource.Settings
+  const showField = !saved || replacing
+  const busy = save.isPending || remove.isPending
+
+  return (
+    <div className="border-ledger-divider border-t px-5 py-4">
+      <div className="flex flex-col gap-1">
+        <span id={JEV_TITLE_ID} className="font-medium text-ink text-sm">
+          Ultrafast decision loop
+        </span>
+        <span
+          id={JEV_DESCRIPTION_ID}
+          className="text-[13px] text-ink-2 leading-snug"
+        >
+          {saved
+            ? 'A token is saved, so agents are offered pursue, which decides each step with a typed model instead of a prompt.'
+            : source === JevTokenSource.Environment
+              ? 'Using the token in the server’s environment. A token saved here takes precedence over it.'
+              : 'Paste a token to offer agents pursue, which decides each step with a typed model instead of a prompt. Without one the tool is not offered at all.'}
+        </span>
+      </div>
+
+      {showField ? (
+        <form
+          className="mt-3 flex items-start gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const token = field.current?.value.trim()
+            if (!token) return
+            save.mutate({ token }, { onSuccess: publish })
+          }}
+        >
+          <Input
+            ref={field}
+            id={JEV_INPUT_ID}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            aria-labelledby={JEV_TITLE_ID}
+            aria-describedby={JEV_DESCRIPTION_ID}
+            placeholder="Paste your token"
+            disabled={busy}
+          />
+          <Button type="submit" disabled={busy}>
+            Save
+          </Button>
+          {saved && (
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                if (field.current) field.current.value = ''
+                setReplacing(false)
+              }}
+            >
+              Cancel
+            </Button>
+          )}
+        </form>
+      ) : (
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={busy}
+            onClick={() => setReplacing(true)}
+          >
+            Replace
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => remove.mutate(undefined, { onSuccess: publish })}
+          >
+            Remove
+          </Button>
+        </div>
+      )}
+
+      <p className="mt-2 text-[12px] text-ink-3 leading-snug">
+        Agents pick up the change on their next tool list. An already installed
+        skill follows after Pip Dev restarts.
+      </p>
+
+      {(save.isError || remove.isError) && (
+        <p role="alert" className="mt-2 text-[13px] text-destructive">
+          Could not save that. Try again.
+        </p>
+      )}
+    </div>
+  )
+}

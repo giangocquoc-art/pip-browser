@@ -1,0 +1,179 @@
+/**
+ * @license
+ * Copyright 2025 BrowserOS
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Session audit surface for the cockpit and audit screens.
+ *
+ * useSessions        paginated session history (homepage + audit screen)
+ * useLiveSessions    complete connected-session snapshot for Running now
+ * useSessionDetail   one session's summary + full dispatch list;
+ *                    polls only while the session is live
+ *
+ * The URL helpers let <img src> render binary JPEG routes without
+ * routing those payloads through the JSON client.
+ */
+
+import {
+  type AuditCleanupResult,
+  type AuditRetention,
+  type AuditStorageState,
+  type Dispatch,
+  type SessionDetail,
+  type SessionList,
+  type SessionScreenshotList,
+  SessionStatus,
+  type SessionSummary,
+  type SetAuditRetentionRequest,
+} from '@browseros/claw-api'
+import {
+  buildSessionPreviewUrl,
+  buildSessionScreenshotUrl,
+} from '@browseros/claw-api-client'
+import { useEffect, useState } from 'react'
+import {
+  createInfiniteQuery,
+  createMutation,
+  createQuery,
+} from 'react-query-kit'
+import { apiBaseUrl, apiClient, resolveApiBaseUrl } from './client'
+
+// The screens speak task-*; the contract speaks session-*. Aliased here
+// so call sites keep their vocabulary while the shapes stay canonical.
+export type ToolDispatchRow = Dispatch
+export type TaskStatus = SessionStatus
+export type TaskSummary = SessionSummary
+export type TaskDetail = SessionDetail
+
+export interface UseSessionsVariables {
+  profileId?: string
+  slug?: string
+  status?: SessionStatus
+  site?: string
+  search?: string
+  since?: number
+  limit?: number
+}
+
+export const useSessions = createInfiniteQuery<
+  SessionList,
+  UseSessionsVariables,
+  Error,
+  number | undefined
+>({
+  queryKey: ['api', 'sessions'],
+  fetcher: async (variables, { pageParam }) =>
+    (await apiClient()).listSessions({
+      ...variables,
+      ...(pageParam === undefined ? {} : { cursor: pageParam }),
+    }),
+  initialPageParam: undefined,
+  getNextPageParam: (last) => last.nextCursor,
+  // Keep the prior pages visible while a new filter set loads so the
+  // adjacent filter controls remain mounted and retain keyboard focus.
+  placeholderData: (previous) => previous,
+})
+
+// Polling is opt-in at the call site (see cockpit.data.ts), never a factory
+// default, so consumers that only need a one-off snapshot do not poll.
+export const useLiveSessions = createQuery<SessionList>({
+  queryKey: ['api', 'sessions', 'live'],
+  fetcher: async () =>
+    (await apiClient()).listSessions({ status: SessionStatus.Live }),
+})
+
+export const useSessionDetail = createQuery<
+  SessionDetail,
+  { sessionId: string },
+  Error
+>({
+  queryKey: ['api', 'session'],
+  fetcher: async ({ sessionId }) =>
+    (await apiClient()).getSession({ sessionId }),
+  refetchInterval: (query) =>
+    query.state.data?.session.status === 'live' ? 3000 : false,
+})
+
+// No factory refetchInterval: the audit detail screen opts in only while the
+// session is live (see task-detail.data.ts) so a finished session stops polling.
+export const useSessionScreenshots = createQuery<
+  SessionScreenshotList,
+  { sessionId: string },
+  Error
+>({
+  queryKey: ['api', 'session', 'screenshots'],
+  fetcher: async ({ sessionId }) =>
+    (await apiClient()).listSessionScreenshots({ sessionId }),
+})
+
+/** Absolute URL for one immutable session-owned screenshot. */
+export function taskScreenshotUrl(
+  sessionId: string,
+  screenshotId: number,
+  baseUrl = apiBaseUrl(),
+): string {
+  return buildSessionScreenshotUrl(baseUrl, { sessionId, screenshotId })
+}
+
+/** Absolute URL for a fresh live-session JPEG; `refresh` only busts browser caches. */
+export function sessionPreviewUrl(
+  sessionId: string,
+  refresh: number,
+  baseUrl = apiBaseUrl(),
+  browserTabId?: number,
+): string {
+  return buildSessionPreviewUrl(baseUrl, { sessionId, refresh, browserTabId })
+}
+
+/**
+ * API base that follows the BrowserOS server-port pref. The pref API is
+ * callback-based, so synchronous URL helpers cannot see it directly.
+ */
+function useResolvedApiBaseUrl(): string | null {
+  const [baseUrl, setBaseUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    resolveApiBaseUrl().then((resolved) => {
+      if (active) setBaseUrl(resolved)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  return baseUrl
+}
+
+export function useTaskScreenshotBaseUrl(): string | null {
+  return useResolvedApiBaseUrl()
+}
+
+/** The resolved claw-server API base, or null until the server-port pref loads. */
+export function useApiBaseUrl(): string | null {
+  return useResolvedApiBaseUrl()
+}
+
+/**
+ * Audit storage usage + the active retention policy for the "Manage audit
+ * files" dialog. Polled so the numbers stay fresh while the dialog is open.
+ */
+// Polling is opt-in at the call site (the Manage audit files dialog) so the
+// numbers stay fresh only while that dialog is open.
+export const useAuditStorage = createQuery<AuditStorageState>({
+  queryKey: ['api', 'audit', 'storage'],
+  fetcher: async () => (await apiClient()).getAuditStorage(),
+})
+
+/** Persist the retention policy. Callers invalidate `useAuditStorage`. */
+export const useSetAuditRetention = createMutation<
+  AuditRetention,
+  SetAuditRetentionRequest
+>({
+  mutationFn: async (body) => (await apiClient()).setAuditRetention(body),
+})
+
+/** Apply the current policy immediately and reclaim disk. */
+export const useRunAuditCleanup = createMutation<AuditCleanupResult, void>({
+  mutationFn: async () => (await apiClient()).runAuditCleanup(),
+})

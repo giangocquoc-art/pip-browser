@@ -1,0 +1,72 @@
+**/.DS_Store
+**.auctor/**
+.auctor.json
+.gcs_entries
+**/dmg
+**/env
+**/logs
+**/old-scripts
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/*.egg
+**/.pytest_cache/
+**/dist/
+**/releases/
+**/.wrangler/
+**/node_modules/
+**/.turbo/
+
+# Non-bun lock files (the repo standardizes on bun; only bun.lock is tracked)
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+
+
+
+nxtscape-cli-access.json
+gclient.json
+.env
+.env.production
+.grove/
+AGENTS.md
+**/resources/binaries/
+
+packages/browseros/build/tools/
+packages/browseros/build/extensions/
+
+# Local Chromium source/build workspace used for Windows Pip Dev work.
+packages/browseros/.data/windows-chromium/
+packages/browseros/.data/
+packages/browseros/.venv/
+packages/browseros/.ruff_cache/
+
+# Downloaded SDK/bootstrap packages and npm verification caches are generated
+# locally by the build tooling and should not become part of the source repo.
+packages/browseros/.data/sdk-portable-packages/
+packages/browseros/.data/sdk-portable-tools/
+packages/browseros/.data/windows-sdk-26100-validation/
+packages/browseros/.data/windows-sdk-nuget-stage/
+packages/browseros-agent/.data/verify-npm-cache/
+
+# BrowserOS's internal-docs submodule is private; Pip Dev builds do not use it.
+.internal-docs/
+.gitmodules
+.github/workflows/sync-internal-docs.yml
+.claude/skills/ask-internal/
+.claude/skills/write-internal-docs/
+
+# These Windows checkout placeholders contain symlink target text, not skill
+# documents. The actual public skill sources remain under .claude/skills/.
+.agents/skills/ask-internal
+.agents/skills/write-docs
+.agents/skills/write-internal-docs
+.agents/skills/writing-plans
+
+# AI SDK DevTools traces
+.devtools/
+.omc/
+.llm/

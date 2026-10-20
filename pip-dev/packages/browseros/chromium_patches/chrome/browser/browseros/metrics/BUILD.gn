@@ -1,0 +1,38 @@
+diff --git a/chrome/browser/browseros/metrics/BUILD.gn b/chrome/browser/browseros/metrics/BUILD.gn
+new file mode 100644
+index 0000000000000000000000000000000000000000..0277c93e1e698620e645643af2381dcfc3ca47e6
+--- /dev/null
++++ b/chrome/browser/browseros/metrics/BUILD.gn
+@@ -0,0 +1,32 @@
++# Copyright 2025 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++source_set("metrics") {
++  sources = [
++    "browseros_installation_id.cc",
++    "browseros_installation_id.h",
++    "browseros_metrics.cc",
++    "browseros_metrics_extra_parts.cc",
++    "browseros_metrics_extra_parts.h",
++    "browseros_metrics.h",
++    "browseros_metrics_service.cc",
++    "browseros_metrics_service.h",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/browser:browser_process",
++    "//chrome/browser:chrome_browser_main",
++    "//chrome/browser:main_extra_parts",
++    "//chrome/browser/browseros/core:product",
++    "//components/version_info",
++    "//content/public/browser",
++    "//net",
++    "//services/network/public/cpp",
++    "//services/network/public/mojom",
++    "//url",
++  ]
++
++  public_deps = [ "//base" ]
++}

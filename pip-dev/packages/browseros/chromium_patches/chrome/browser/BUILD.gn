@@ -1,0 +1,68 @@
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index b58905ddb371f96377320c2948fe64bb17257663..52757c6073f53b89413387c3c105da6fa29b9aab 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -13,6 +13,7 @@ import("//build/config/python.gni")
+ import("//build/config/ui.gni")
+ import("//chrome/browser/buildflags.gni")
+ import("//chrome/browser/downgrade/buildflags.gni")
++import("//chrome/browser/sparkle_buildflags.gni")
+ import("//chrome/common/features.gni")
+ import("//chrome/common/request_header_integrity/buildflags.gni")
+ import("//chrome/services/speech/buildflags/buildflags.gni")
+@@ -92,6 +93,8 @@ if (is_win) {
+ buildflag_header("buildflags") {
+   header = "buildflags.h"
+   flags = [
++    "ENABLE_SPARKLE=$enable_sparkle",
++    "ENABLE_WINSPARKLE=$enable_winsparkle",
+     "ENABLE_UPDATER=$enable_updater",
+     "ENABLE_UPDATE_NOTIFICATIONS=$enable_update_notifications",
+     "USE_MINIKIN_HYPHENATION=$use_minikin_hyphenation",
+@@ -933,6 +936,12 @@ source_set("core") {
+     "//chrome/browser/battery",
+     "//chrome/browser/bluetooth",
+     "//chrome/browser/browser_actuator/internals",
++    # These sources include BrowserOS headers directly; the aggregate browser
++    # target's private deps do not provide include access to the split core.
++    "//chrome/browser/browseros/core",
++    "//chrome/browser/browseros/metrics",
++    "//chrome/browser/browseros/onboarding",
++    "//chrome/browser/browseros/server",
+     "//chrome/browser/browsing_data",
+     "//chrome/browser/browsing_data:constants",
+     "//chrome/browser/btm",
+@@ -1578,6 +1587,25 @@ source_set("core") {
+     ]
+   }
+ 
++  if (is_mac && enable_sparkle) {
++    sources += [ "mac/sparkle_glue.mm" ]
++    deps += [ "//chrome/browser/mac:sparkle_glue_headers" ]
++
++    # Headers config for compilation (linking handled by chrome_framework)
++    public_configs = [ "//third_party/sparkle:sparkle_link_framework" ]
++  }
++
++  if (is_win && enable_winsparkle) {
++    sources += [
++      "win/winsparkle_glue.cc",
++      "win/winsparkle_glue.h",
++    ]
++
++    # Link flags (import lib + /DELAYLOAD) propagate to every binary linking
++    # this target via all_dependent_configs on the group.
++    deps += [ "//third_party/winsparkle" ]
++  }
++
+   if (!is_win && !is_android) {
+     sources += [
+       "certificate_viewer_stub.cc",
+@@ -2077,6 +2105,7 @@ source_set("browser") {
+     "//chrome/browser/breadcrumbs",
+     "//chrome/browser/browser_actuator",
+     "//chrome/browser/browser_actuator/internals",
++    "//chrome/browser/browseros",
+     "//chrome/browser/browsing_data:impl",
+     "//chrome/browser/btm",
+     "//chrome/browser/btm:impl",

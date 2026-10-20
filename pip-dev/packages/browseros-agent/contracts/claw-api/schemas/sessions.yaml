@@ -1,0 +1,269 @@
+SessionStatus:
+  type: string
+  enum: [live, done, failed, cancelled]
+LiveSessionActivityState:
+  type: string
+  enum: [active, idle]
+HelpRequestKind:
+  type: string
+  enum: [login, captcha, approval, other]
+HelpRequest:
+  type: object
+  additionalProperties: false
+  required: [requestId, reason, browserTabId, requestedAt]
+  description: >-
+    A pending request for human help from a blocked agent (sign-in, captcha, an approval it
+    should not make). The agent waits until a human takes over the page and hands control back.
+  properties:
+    requestId:
+      type: string
+    reason:
+      type: string
+    details:
+      type: string
+    resumeHint:
+      type: string
+    kind:
+      $ref: '#/HelpRequestKind'
+    browserTabId:
+      type: integer
+      format: int64
+      minimum: 1
+      description: The browser tab the human should take over.
+    url:
+      type: string
+    title:
+      type: string
+    requestedAt:
+      type: integer
+      format: int64
+ResolveHelpRequest:
+  type: object
+  additionalProperties: false
+  description: Hand control back to the waiting agent, optionally with a note for it.
+  properties:
+    note:
+      type: string
+ResolveHelpResponse:
+  type: object
+  additionalProperties: false
+  required: [resolved]
+  properties:
+    resolved:
+      type: boolean
+      description: True when a pending request was found and signalled to resume.
+ToolEvent:
+  type: object
+  additionalProperties: false
+  required: [name, at]
+  properties:
+    name:
+      type: string
+    at:
+      type: integer
+      format: int64
+SessionBrowserTab:
+  type: object
+  additionalProperties: false
+  required: [browserTabId, url, title, toolCount, recentTools]
+  properties:
+    browserTabId:
+      type: integer
+      format: int64
+      minimum: 1
+    url:
+      type: string
+    title:
+      type: string
+    firstActivityAt:
+      type: integer
+      format: int64
+    lastActivityAt:
+      type: integer
+      format: int64
+    lastToolName:
+      type: string
+    toolCount:
+      type: integer
+      format: int64
+      minimum: 0
+    recentTools:
+      type: array
+      items:
+        $ref: '#/ToolEvent'
+LiveSessionState:
+  type: object
+  additionalProperties: false
+  required: [state, browserTabs]
+  properties:
+    state:
+      $ref: '#/LiveSessionActivityState'
+    browserTabs:
+      type: array
+      items:
+        $ref: '#/SessionBrowserTab'
+    helpRequest:
+      allOf:
+        - $ref: '#/HelpRequest'
+      description: Present only while the agent is waiting for human help on this session.
+SessionTokenUsage:
+  type: object
+  additionalProperties: false
+  required: [inputTokenEstimate, outputTokenEstimate, totalTokenEstimate]
+  description: >-
+    Estimated token consumption of a session's MCP tool traffic, summed across
+    every dispatch. Totals are JavaScript-safe integers.
+  properties:
+    inputTokenEstimate:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 9007199254740991
+      description: Estimated tokens for tool inputs (name + compact arguments), summed across dispatches.
+    outputTokenEstimate:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 9007199254740991
+      description: Estimated tokens for tool outputs (result content), summed across dispatches.
+    totalTokenEstimate:
+      type: integer
+      format: int64
+      minimum: 0
+      maximum: 9007199254740991
+      description: inputTokenEstimate + outputTokenEstimate — the session's total estimated token consumption.
+SessionSummary:
+  type: object
+  additionalProperties: false
+  required:
+    - sessionId
+    - slug
+    - label
+    - name
+    - startedAt
+    - durationMs
+    - dispatchCount
+    - toolSequence
+    - status
+    - errorCount
+  properties:
+    sessionId:
+      type: string
+    profileId:
+      type: string
+    harness:
+      type: string
+    color:
+      type: string
+    slug:
+      type: string
+    label:
+      type: string
+    name:
+      type: string
+    site:
+      type: string
+    taskSummary:
+      type: string
+      description: >-
+        Agent-declared, PII-scrubbed one-or-two-line summary of the task, used
+        for audit search. Absent when the session never declared one.
+    startedAt:
+      type: integer
+      format: int64
+    endedAt:
+      type: integer
+      format: int64
+    durationMs:
+      type: integer
+      format: int64
+      minimum: 0
+    dispatchCount:
+      type: integer
+      format: int64
+      minimum: 0
+    toolSequence:
+      type: array
+      items:
+        type: string
+    status:
+      $ref: '#/SessionStatus'
+    errorCount:
+      type: integer
+      format: int64
+      minimum: 0
+    latestScreenshotId:
+      type: integer
+      format: int64
+      minimum: 1
+    tokenUsage:
+      allOf:
+        - $ref: '#/SessionTokenUsage'
+      description: >-
+        Estimated token consumption of this session's tool traffic, summed
+        across all dispatches and refreshed live as they land. Present only when
+        the session has dispatches and every one carries token-estimator v1;
+        absent for legacy or otherwise unmeasured sessions.
+    live:
+      allOf:
+        - $ref: '#/LiveSessionState'
+      description: Present only on summaries returned by an explicit `status=live` list query.
+SessionList:
+  type: object
+  additionalProperties: false
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: '#/SessionSummary'
+    nextCursor:
+      type: integer
+      format: int64
+      minimum: 1
+      description: Cursor for a subsequent historical query. Omitted from complete live snapshots.
+SessionDetail:
+  type: object
+  additionalProperties: false
+  required: [session, dispatches]
+  properties:
+    session:
+      $ref: '#/SessionSummary'
+    dispatches:
+      type: array
+      items:
+        $ref: ./dispatches.yaml#/Dispatch
+SessionScreenshot:
+  type: object
+  additionalProperties: false
+  required: [screenshotId, capturedAt, toolName]
+  properties:
+    screenshotId:
+      type: integer
+      format: int64
+      minimum: 1
+    capturedAt:
+      type: integer
+      format: int64
+    toolName:
+      type: string
+SessionScreenshotList:
+  type: object
+  additionalProperties: false
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: '#/SessionScreenshot'
+CancelSessionResponse:
+  type: object
+  additionalProperties: false
+  required: [status, cancelledDispatches]
+  properties:
+    status:
+      $ref: '#/SessionStatus'
+    cancelledDispatches:
+      type: integer
+      format: int64
+      minimum: 0

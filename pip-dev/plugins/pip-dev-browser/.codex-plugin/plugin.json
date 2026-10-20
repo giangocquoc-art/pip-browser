@@ -1,0 +1,7 @@
+{
+  "name": "pip-dev-browser",
+  "version": "0.1.0",
+  "description": "Connect Codex to Pip Dev's local browser MCP server.",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

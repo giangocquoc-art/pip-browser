@@ -1,0 +1,24 @@
+diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
+index e2dcc5447606a4c0ba556e42654dd978d99eb562..de4d939efe029f58560da7cd2ed213ccfd7b240c 100644
+--- a/chrome/common/BUILD.gn
++++ b/chrome/common/BUILD.gn
+@@ -476,6 +476,7 @@ static_library("non_code_constants") {
+     ":buildflags",
+     ":version_header",
+     "//base",
++    "//chrome/browser/browseros:buildflags",
+     "//content/public/common:buildflags",
+   ]
+ 
+@@ -616,7 +617,10 @@ static_library("constants") {
+   }
+   if (is_linux || is_chromeos) {
+     sources += [ "chrome_paths_linux.cc" ]
+-    deps += [ ":channel_info" ]
++    deps += [
++      ":channel_info",
++      "//chrome/browser/browseros:buildflags",
++    ]
+   }
+   if (is_mac) {
+     sources += [ "chrome_paths_mac.mm" ]

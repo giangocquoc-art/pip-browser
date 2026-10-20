@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>BrowserOS neo</title>
+    <link>https://cdn.browseros.com/appcast-claw.xml</link>
+    <description>Most recent changes with links to updates.</description>
+    <language>en</language>
+
+    <item>
+      <title>BrowserOS neo - 0.51.1.2</title>
+      <description sparkle:format="plain-text">
+      </description>
+      <sparkle:version>10000.0.51.1.2</sparkle:version>
+      <sparkle:shortVersionString>0.51.1.2</sparkle:shortVersionString>
+      <pubDate>Tue, 13 Oct 2026 06:51:20 +0000</pubDate>
+      <link>https://www.browseros.com/</link>
+      <enclosure
+        url="http://cdn.browseros.com/releases/browserclaw/0.51.1.2/macos/BrowserOS_neo_v0.51.1.2_universal.dmg"
+        sparkle:edSignature="NiEw/Fja4fuRV/3ZHZsCE93LG/QYeaEj27y+CUOFWaW6uagXwCy+U1t4uddQ3LgAjyzMOX/egAMH0thTzOM0CA=="
+        length="300732476"
+        type="application/octet-stream" />
+      <sparkle:minimumSystemVersion>10.15</sparkle:minimumSystemVersion>
+    </item>
+
+  </channel>
+</rss>

@@ -1,0 +1,12 @@
+diff --git a/chrome/browser/ui/webui/BUILD.gn b/chrome/browser/ui/webui/BUILD.gn
+index 2a4eae8943e6a1f1ad56a6f9891250ef126632cb..e33d32ea4d4b4d2525f5763da94158b07fbce2fc 100644
+--- a/chrome/browser/ui/webui/BUILD.gn
++++ b/chrome/browser/ui/webui/BUILD.gn
+@@ -54,6 +54,7 @@ source_set("configs") {
+     ":webui",
+     "//chrome/browser/actor/ui:actor_overlay",
+     "//chrome/browser/browser_actuator/internals",
++    "//chrome/browser/browseros/onboarding",
+     "//chrome/browser/contextual_tasks:ui",
+     "//chrome/browser/glic",
+     "//chrome/browser/glic:impl",

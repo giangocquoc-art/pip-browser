@@ -1,0 +1,46 @@
+# Install Pip Dev on Windows
+
+The repository currently contains Pip Dev's source and development launcher, not a finished Windows browser installer. Do not expect a `PipSetup` download until a release appears on the project's GitHub **Releases** page. The planned installer name is versioned, for example `PipSetup_v0.1.0_x64_installer.exe`.
+
+## Install the Codex plugin from GitHub
+
+This installs Pip Dev Browser and its local MCP connection; it does not install the browser executable. From any folder, run:
+
+```powershell
+codex plugin marketplace add giangocquoc-art/pip-browser --sparse .agents/plugins --sparse pip-dev/plugins/pip-dev-browser
+codex plugin add pip-dev-browser --marketplace pip-dev-plugins
+codex plugin list
+```
+
+Start Pip Dev on the same PC before asking Codex to use its browser tools. Its local MCP server listens at `http://127.0.0.1:9200/mcp` by default.
+
+Pip Dev's MCP server name is `pip_dev`. This repository does not provide a Pip Dev Claude Desktop `.mcpb` installer; use the local Streamable HTTP endpoint with a compatible MCP client. See the [agent connection guide](PIP_DEV_AGENT_SETUP.md) for client configuration and the Codex plugin.
+
+## Run the development build
+
+The Windows development launcher requires a Windows Pip Dev/Chromium `.exe`. From the `pip-dev` directory, run:
+
+```powershell
+.\run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\PipDev.exe" -InstallDependencies
+```
+
+The launcher uses the repository's pinned Bun version through npm when Bun is not already installed, builds the Pip Dev MCP/API server, starts it on `127.0.0.1:9200` by default, and launches the browser extension with an isolated development profile. Omit `-InstallDependencies` after the first successful dependency install. To use another MCP port, pass `-ServerPort <port>` and configure the agent to the same port.
+
+This launcher does not build the Chromium browser executable or produce a distributable installer. Those are separate release-build steps. See [Pip Dev implementation status](../PIP_DEV_STATUS.md) for the current Windows build status and [agent connection setup](PIP_DEV_AGENT_SETUP.md) to connect Codex or another MCP client.
+
+## Connect Codex
+
+From the repository root, add the repo marketplace and install **Pip Dev Browser**:
+
+```powershell
+codex plugin marketplace add .
+codex plugin add pip-dev-browser --marketplace pip-dev-plugins
+codex plugin list
+```
+
+For a direct MCP connection without the plugin:
+
+```powershell
+codex mcp add pip_dev --url http://127.0.0.1:9200/mcp
+codex mcp list
+```

@@ -1,0 +1,136 @@
+diff --git a/chrome/browser/devtools/protocol/browser_handler_android.h b/chrome/browser/devtools/protocol/browser_handler_android.h
+index 83bec7125e1fb966a61450bf93fc3aca6f46d438..4b28161eaf7de76a82aa032f21a2a01ceb6af383 100644
+--- a/chrome/browser/devtools/protocol/browser_handler_android.h
++++ b/chrome/browser/devtools/protocol/browser_handler_android.h
+@@ -58,6 +58,14 @@ class BrowserHandlerAndroid : public protocol::Browser::Backend {
+       std::optional<std::string> target_id,
+       int* out_window_id,
+       std::unique_ptr<protocol::Browser::Bounds>* out_bounds) override;
++  protocol::Response GetTabForTarget(
++      std::optional<std::string> target_id,
++      int* out_tab_id,
++      int* out_window_id) override;
++  protocol::Response GetTargetForTab(
++      int tab_id,
++      std::string* out_target_id,
++      int* out_window_id) override;
+   protocol::Response GetWindowBounds(
+       int window_id,
+       std::unique_ptr<protocol::Browser::Bounds>* out_bounds) override;
+@@ -76,6 +84,116 @@ class BrowserHandlerAndroid : public protocol::Browser::Backend {
+   protocol::Response AddPrivacySandboxEnrollmentOverride(
+       const std::string& in_url) override;
+ 
++  // Keep generated Browser backend signatures complete on Android; saved
++  // profile automation remains a desktop operation.
++  protocol::Response GetProfiles(
++      std::unique_ptr<protocol::Array<protocol::Browser::BrowserProfileInfo>>*
++          out_profiles) override;
++  void LoadProfile(const std::string& browser_profile_id,
++                   std::unique_ptr<LoadProfileCallback> callback) override;
++
++  // Window management
++  protocol::Response GetWindows(
++      std::unique_ptr<protocol::Array<protocol::Browser::WindowInfo>>*
++          out_windows) override;
++  protocol::Response GetActiveWindow(
++      std::unique_ptr<protocol::Browser::WindowInfo>* out_window) override;
++  protocol::Response CreateWindow(
++      std::optional<std::string> url,
++      std::unique_ptr<protocol::Browser::Bounds> bounds,
++      std::optional<std::string> window_type,
++      std::optional<bool> hidden,
++      std::optional<std::string> browser_context_id,
++      std::unique_ptr<protocol::Browser::WindowInfo>* out_window) override;
++  protocol::Response CloseWindow(int window_id) override;
++  protocol::Response ActivateWindow(int window_id) override;
++  protocol::Response SetWindowVisibility(
++      int window_id,
++      bool visible,
++      std::optional<bool> activate,
++      std::unique_ptr<protocol::Browser::WindowInfo>* out_window,
++      bool* out_replaced,
++      int* out_previous_window_id) override;
++
++  // Tab management
++  protocol::Response GetTabs(
++      std::optional<int> window_id,
++      std::optional<bool> include_hidden,
++      std::unique_ptr<protocol::Array<protocol::Browser::TabInfo>>* out_tabs)
++      override;
++  protocol::Response GetActiveTab(
++      std::optional<int> window_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response GetTabInfo(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response CreateTab(
++      std::optional<std::string> url,
++      std::optional<int> window_id,
++      std::optional<int> index,
++      std::optional<bool> background,
++      std::optional<bool> pinned,
++      std::optional<std::string> browser_context_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response CloseTab(std::optional<std::string> target_id,
++                              std::optional<int> tab_id) override;
++  protocol::Response ActivateTab(std::optional<std::string> target_id,
++                                 std::optional<int> tab_id) override;
++  protocol::Response MoveTab(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::optional<int> window_id,
++      std::optional<int> index,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response DuplicateTab(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response PinTab(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response UnpinTab(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++  protocol::Response ShowTab(
++      std::optional<std::string> target_id,
++      std::optional<int> tab_id,
++      std::optional<int> window_id,
++      std::optional<int> index,
++      std::optional<bool> activate,
++      std::unique_ptr<protocol::Browser::TabInfo>* out_tab) override;
++
++  // Tab group management
++  protocol::Response GetTabGroups(
++      std::optional<int> window_id,
++      std::unique_ptr<protocol::Array<protocol::Browser::TabGroupInfo>>*
++          out_groups) override;
++  protocol::Response CreateTabGroup(
++      std::unique_ptr<protocol::Array<int>> tab_ids,
++      std::optional<std::string> title,
++      std::unique_ptr<protocol::Browser::TabGroupInfo>* out_group) override;
++  protocol::Response UpdateTabGroup(
++      const std::string& group_id,
++      std::optional<std::string> title,
++      std::optional<std::string> color,
++      std::optional<bool> collapsed,
++      std::unique_ptr<protocol::Browser::TabGroupInfo>* out_group) override;
++  protocol::Response CloseTabGroup(const std::string& group_id) override;
++  protocol::Response AddTabsToGroup(
++      const std::string& group_id,
++      std::unique_ptr<protocol::Array<int>> tab_ids,
++      std::unique_ptr<protocol::Browser::TabGroupInfo>* out_group) override;
++  protocol::Response RemoveTabsFromGroup(
++      std::unique_ptr<protocol::Array<int>> tab_ids) override;
++  protocol::Response MoveTabGroup(
++      const std::string& group_id,
++      std::optional<int> window_id,
++      std::optional<int> index,
++      std::unique_ptr<protocol::Browser::TabGroupInfo>* out_group) override;
++
+  private:
+   struct WindowLookupResult {
+     raw_ptr<ui::BaseWindow> window;
