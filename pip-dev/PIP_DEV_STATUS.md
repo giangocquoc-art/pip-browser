@@ -77,12 +77,10 @@ launcher from a future packaged release.
   to the current profile. Recognized Pip preferences are saved locally for reference but are
   not yet applied to Chromium settings. Website sessions are not transferred; users sign in
   again.
-- Build and package Chromium on Windows. The BrowserOS import includes product and patch
-  metadata but not the full pinned Chromium 155 source checkout or a finished browser executable.
-  Getting a native input lease right requires that source first, then depot_tools, Visual Studio
-  C++ build tools and a substantial Windows build.
-- Verify Windows MCP/browser operation, DevTools, source maps, Network and Performance panels,
-  DOM and canvas flows, tab lifecycle failures and lock release before Pip Dev can replace Pip.
+- After the browser target finishes, verify Windows MCP/browser operation, DevTools, source maps,
+  Network and Performance panels, DOM and canvas flows, tab lifecycle failures and lock release.
+  The launcher is still development-only; package a Windows build only after those runtime checks
+  pass.
 - BrowserOS neo's upstream Go development supervisor depends on Unix process groups, `flock`,
   `lsof` and shell commands; use the PowerShell launcher on Windows.
 
