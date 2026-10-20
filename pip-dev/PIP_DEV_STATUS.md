@@ -27,13 +27,16 @@ launcher from a future packaged release.
   state after every action. It does not claim universal OCR or game-state understanding.
 - Canvas support currently exposes an on-demand image crop to the calling agent; no local OCR,
   board-state recognizer, or accuracy/latency benchmark has been added yet.
-- A tab present in a live agent session shows a Pip Dev bar describing that the session has
-  access to the tab. The stop uses the sender tab identity, fetches fresh live sessions and
-  cancels sessions that include that tab. A human-help request and stop control can appear
-  together when both apply. Resolving help is checked against the sender tab. The UI states
-  that this is not a native mouse/keyboard lock and that cancellation may take time. When the
-  session service is unreachable, it keeps the last known status visible and warns that stop
-  has not been confirmed, instead of implying the session ended.
+- A tab present in a live agent session shows a Pip Dev status bar. Its stop action is scoped
+  to the content-script sender tab, fetches fresh live sessions, and cancels sessions that
+  include that tab. Because the Chromium native lock suppresses page input, the in-page stop
+  cannot be clicked while that lock is active. The extension toolbar now opens a separate
+  stop popup that remains reachable from browser chrome; it captures the active tab/window,
+  and the background accepts commands only from the extension popup URL and revalidates that
+  the same tab is active before polling or stopping. The popup uses the same fresh-session
+  cancellation path, reports partial/failing stops, and only releases the lock when every
+  matching session is canceled or no live session remains. A human-help request and status bar
+  can appear together when both apply. Resolving help is checked against the sender tab.
 - Idle visible tabs poll session state every 15 seconds, active agent tabs every 3 seconds, and
   hidden tabs stop polling until they become visible. The help timer runs only while a help
   request is displayed.
@@ -51,10 +54,18 @@ launcher from a future packaged release.
 
 ## Important limits and remaining work
 
-- As of 2026-10-21, the full Windows `chrome` target is compiling from the D-only Chromium checkout. Its generated GN graph contains 51,326 actions; the Pip Dev browser executable has not been produced yet. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-21, the full Windows `chrome` target is compiling from the D-only Chromium checkout. Its generated GN graph contains 48,959 actions; the Pip Dev browser executable has not been produced yet. The checkout, portable sysroot and build output remain local on D.
 
+- Windows MCP smoke check on 2026-10-21 used the existing Rust server binary with official
+  Chrome for Testing 155 headless: `/system/health` returned 200 and `tools/list` exposed
+  22 tools, but `tabs(action=list)` failed with `CDP error: 'Browser.getTabs' wasn't found`.
+  This confirms generic Chrome lacks the BrowserOS tab API; Pip Dev needs its patched
+  Chromium build for browser operations.
 - Windows validation on 2026-10-20: the Chromium 155 source sync completed and all 402 BrowserOS patches applied. Microsoft SDK 10.0.28000.2270, MSVC 14.44, and the matching ATL headers/libraries were assembled into a D-contained portable sysroot. GN generated the 35,573-target graph, and `autoninja -C out\PipDevPortableSDK base` completed all 2,175 build steps and produced `base.dll.lib`. This verifies Chromium core can compile against the staged Windows toolchain. The full browser target, Pip Dev executable, installer, and runtime flows are still unbuilt/unverified. The Chromium checkout, portable sysroot, and GN output are local files on D and are not included in the GitHub repository.
-- The extension side of the native lock and a Chromium patch series are present. The native
+- The toolbar emergency-stop popup and extension routing are implemented. Unit tests cover
+  trusted sender validation, active-tab revalidation, cancellation outcomes, and lock release.
+  The WXT popup build and browser runtime behavior remain unverified while the full Windows
+  browser target is being built. The native
   command and input gate still need a complete Windows Chromium build and runtime verification;
   until then the bar must show that the tab is unlocked. BrowserOS's cancel API stops the whole
   agent session, which may be using other tabs too.

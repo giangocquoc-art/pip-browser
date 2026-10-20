@@ -1,0 +1,146 @@
+/**
+ * @license
+ * Copyright 2025 BrowserOS
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Routes the browser-toolbar emergency stop to the popup's captured active tab.
+ * This control remains reachable when Chromium suppresses page input for an agent.
+ */
+
+import type { TakeoverPollResponse } from './takeover.types'
+
+export interface TakeoverActionRequest {
+  type: 'takeover-action-poll' | 'takeover-action-stop'
+  tabId: number
+  windowId: number
+}
+
+export interface TakeoverActionSender {
+  id?: string
+  url?: string
+}
+
+export interface TakeoverActionDependencies {
+  extensionId: string
+  popupUrl: string
+  getActiveTab: (
+    windowId: number,
+  ) => Promise<{ id?: number; windowId?: number } | undefined>
+  pollForTab: (tabId: number) => Promise<TakeoverPollResponse>
+  stopForTab: (tabId: number) => Promise<{ stopped: number; total: number }>
+  beginStop: (tabId: number) => void
+  finishStop: (tabId: number) => void
+  releaseLock: (tabId: number) => Promise<void>
+}
+
+export type TakeoverActionResponse =
+  | { ok: true; action: 'poll'; response: TakeoverPollResponse }
+  | { ok: true; action: 'stop'; stopped: number; total: number }
+  | {
+      ok: false
+      action?: 'poll' | 'stop'
+      reason:
+        | 'untrusted-sender'
+        | 'invalid-request'
+        | 'inactive-tab'
+        | 'unavailable'
+        | 'partial-stop'
+      stopped?: number
+      total?: number
+    }
+
+export function isTakeoverActionRequest(
+  value: unknown,
+): value is TakeoverActionRequest {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Partial<TakeoverActionRequest>
+  return (
+    (request.type === 'takeover-action-poll' ||
+      request.type === 'takeover-action-stop') &&
+    Number.isSafeInteger(request.tabId) &&
+    Number(request.tabId) >= 0 &&
+    Number.isSafeInteger(request.windowId) &&
+    Number(request.windowId) >= 0
+  )
+}
+
+export async function handleTakeoverAction(
+  message: unknown,
+  sender: TakeoverActionSender,
+  dependencies: TakeoverActionDependencies,
+): Promise<TakeoverActionResponse | null> {
+  if (
+    !message ||
+    typeof message !== 'object' ||
+    !('type' in message) ||
+    ((message as { type?: unknown }).type !== 'takeover-action-poll' &&
+      (message as { type?: unknown }).type !== 'takeover-action-stop')
+  ) {
+    return null
+  }
+
+  if (
+    sender.id !== dependencies.extensionId ||
+    sender.url !== dependencies.popupUrl
+  ) {
+    return { ok: false, reason: 'untrusted-sender' }
+  }
+  if (!isTakeoverActionRequest(message)) {
+    return { ok: false, reason: 'invalid-request' }
+  }
+
+  const { type, tabId, windowId } = message
+  const targetIsActive = async () => {
+    const activeTab = await dependencies.getActiveTab(windowId)
+    return activeTab?.id === tabId && activeTab.windowId === windowId
+  }
+
+  try {
+    if (!(await targetIsActive())) {
+      return {
+        ok: false,
+        action: type === 'takeover-action-poll' ? 'poll' : 'stop',
+        reason: 'inactive-tab',
+      }
+    }
+
+    if (type === 'takeover-action-poll') {
+      return {
+        ok: true,
+        action: 'poll',
+        response: await dependencies.pollForTab(tabId),
+      }
+    }
+
+    dependencies.beginStop(tabId)
+    try {
+      // Revalidate after entering the stop gate so a stale popup cannot cancel
+      // sessions for a tab the user has already switched away from.
+      if (!(await targetIsActive())) {
+        return { ok: false, action: 'stop', reason: 'inactive-tab' }
+      }
+      const { stopped, total } = await dependencies.stopForTab(tabId)
+      if (total === 0 || stopped === total) {
+        await dependencies.releaseLock(tabId)
+      }
+      if (total > 0 && stopped !== total) {
+        return {
+          ok: false,
+          action: 'stop',
+          reason: 'partial-stop',
+          stopped,
+          total,
+        }
+      }
+      return { ok: true, action: 'stop', stopped, total }
+    } finally {
+      dependencies.finishStop(tabId)
+    }
+  } catch {
+    return {
+      ok: false,
+      action: type === 'takeover-action-poll' ? 'poll' : 'stop',
+      reason: 'unavailable',
+    }
+  }
+}

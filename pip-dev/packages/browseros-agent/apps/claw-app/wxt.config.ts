@@ -47,6 +47,7 @@ export default defineConfig({
         48: 'icon/48.png',
         128: 'icon/128.png',
       },
+      default_popup: 'popup.html',
       default_title: 'Pip Dev',
     },
   },

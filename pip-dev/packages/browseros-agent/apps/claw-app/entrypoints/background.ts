@@ -14,6 +14,7 @@ import type {
 import { createTakeoverBridge } from '@/modules/takeover/takeover-bridge'
 import { NativeInputLockManager } from '@/modules/takeover/native-input-lock'
 import { TakeoverInputLockGate } from '@/modules/takeover/takeover-input-lock-gate'
+import { handleTakeoverAction } from '@/modules/takeover/takeover-action'
 import { registerExtensionUpdates } from '@/modules/updates/register'
 
 /** Supplies Chrome's trusted tab/document identity to the durable recorder relay. */
@@ -57,6 +58,44 @@ export default defineBackground(() => {
     void nativeInputLocks.release(tabId)
   })
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const messageType = (message as { type?: unknown } | null)?.type
+    if (
+      messageType === 'takeover-action-poll' ||
+      messageType === 'takeover-action-stop'
+    ) {
+      void handleTakeoverAction(message, sender, {
+        extensionId: chrome.runtime.id,
+        popupUrl: chrome.runtime.getURL('popup.html'),
+        getActiveTab: async (windowId) => {
+          const [activeTab] = await chrome.tabs.query({ active: true, windowId })
+          return activeTab
+        },
+        pollForTab: async (tabId) => {
+          const response = await takeover.pollForTab(tabId)
+          if (response.active && response.context.mode === 'agent-control') {
+            return {
+              ...response,
+              context: {
+                ...response.context,
+                nativeInputLock: nativeInputLocks.status(tabId),
+              },
+            }
+          }
+          return response
+        },
+        stopForTab: (tabId) => takeover.stopForTab(tabId),
+        beginStop: (tabId) => inputLockGate.beginStop(tabId),
+        finishStop: (tabId) => inputLockGate.finishStop(tabId),
+        releaseLock: (tabId) => nativeInputLocks.release(tabId),
+      })
+        .then((response) => {
+          sendResponse(response ?? { ok: false, reason: 'invalid-request' })
+        })
+        .catch(() => {
+          sendResponse({ ok: false, reason: 'unavailable' })
+        })
+      return true
+    }
     const takeoverMessage = message as { type?: unknown }
     if (takeoverMessage.type === 'takeover-poll') {
       const tabId = sender.tab?.id
