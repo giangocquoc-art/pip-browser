@@ -206,6 +206,9 @@ describe('takeover bar', () => {
       'AI đang chờ bạn xử lý',
     )
     expect(root.querySelector('.nt-reason')?.textContent).toBe('Please sign in')
+    expect(root.querySelector('.nt-control-note')?.textContent).toContain(
+      'tab đã mở khóa',
+    )
     expect((root.querySelector('.nt-note') as HTMLInputElement).hidden).toBe(
       false,
     )
@@ -217,6 +220,23 @@ describe('takeover bar', () => {
     )
     expect(root.querySelector('.nt-warning')?.textContent).toContain(
       'hủy 2 phiên agent',
+    )
+  })
+
+  it('explains when another agent still locks the tab during a help request', () => {
+    bar = createTakeoverBar(root, { onHandBack: () => {} })
+    bar.update({
+      mode: 'agent-control',
+      sessionIds: ['session-active', 'session-help'],
+      agentLabels: ['Codex', 'Claude'],
+      sites: ['example.com'],
+      since: Date.now(),
+      helpRequest: context({ sessionId: 'session-help', reason: 'Please sign in' }),
+      nativeInputLock: 'locked',
+    })
+
+    expect(root.querySelector('.nt-control-note')?.textContent).toContain(
+      'Phiên agent khác vẫn đang điều khiển',
     )
   })
 

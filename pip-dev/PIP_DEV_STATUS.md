@@ -39,7 +39,10 @@ launcher from a future packaged release.
   the same tab is active before polling or stopping. The popup uses the same fresh-session
   cancellation path, reports partial/failing stops, and only releases the lock when every
   matching session is canceled or no live session remains. A human-help request and status bar
-  can appear together when both apply. Resolving help is checked against the sender tab.
+  can appear together when both apply. While one session is paused for human help, its lock is
+  released so the user can respond; another live session can keep the tab locked. Before the
+  agent resumes, Pip Dev refreshes live owners and reacquires the lock. Resolving help is checked
+  against the sender tab.
 - Idle visible tabs poll session state every 15 seconds, active agent tabs every 3 seconds, and
   hidden tabs stop polling until they become visible. The help timer runs only while a help
   request is displayed.
@@ -57,7 +60,13 @@ launcher from a future packaged release.
 
 ## Important limits and remaining work
 
-- As of 2026-10-21, the full Windows `chrome` target is compiling from the D-only Chromium checkout. Its generated GN graph contains 48,959 actions; the Pip Dev browser executable has not been produced yet. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-22 02:38 (Asia/Bangkok), the full Windows `chrome` target is resuming from the D-only Chromium checkout. Ninja previously completed 666 of 29,458 build steps; the resumed process is still loading the existing build graph, and `chrome.exe` has not been produced. The checkout, portable sysroot and build output remain local on D.
+
+- The Rust canvas/crop regression subset passed all 6 tests on D. The repository Cargo config places its shared `build-dir` under Cargo's home by default; to keep this Windows build on D, use:
+
+  ```powershell
+  cargo --config 'build.build-dir="D:/pip-browser-work/pip-dev/packages/browseros-agent/.cargo-target"' test -p browseros-mcp visual
+  ```
 
 - Windows MCP smoke check on 2026-10-21 used the existing Rust server binary with official
   Chrome for Testing 155 headless: `/system/health` returned 200 and `tools/list` exposed
@@ -65,18 +74,18 @@ launcher from a future packaged release.
   This confirms generic Chrome lacks the BrowserOS tab API; Pip Dev needs its patched
   Chromium build for browser operations.
 - Windows validation on 2026-10-20: the Chromium 155 source sync completed and all 402 BrowserOS patches applied. Microsoft SDK 10.0.28000.2270, MSVC 14.44, and the matching ATL headers/libraries were assembled into a D-contained portable sysroot. GN generated the 35,573-target graph, and `autoninja -C out\PipDevPortableSDK base` completed all 2,175 build steps and produced `base.dll.lib`. This verifies Chromium core can compile against the staged Windows toolchain. The full browser target, Pip Dev executable, installer, and runtime flows are still unbuilt/unverified. The Chromium checkout, portable sysroot, and GN output are local files on D and are not included in the GitHub repository.
-- The toolbar emergency-stop popup and extension routing are implemented. Unit tests cover
-  trusted sender validation, active-tab revalidation, cancellation outcomes, and lock release.
-  The WXT popup build and browser runtime behavior remain unverified while the full Windows
-  browser target is being built. The native
-  command and input gate still need a complete Windows Chromium build and runtime verification;
-  until then the bar must show that the tab is unlocked. BrowserOS's cancel API stops the whole
-  agent session, which may be using other tabs too.
+- The toolbar emergency-stop popup and extension routing are implemented. The production WXT
+  extension build and TypeScript check pass; 34 focused takeover tests pass. Browser runtime
+  behavior remains unverified until the full Windows browser target is built. The native command
+  and input gate still need Windows runtime verification; until then the bar must show that the
+  tab is unlocked. BrowserOS's cancel API stops the whole agent session, which may be using other
+  tabs too.
 - Chromium's extension APIs cannot create or switch browser profiles or restore original
   history timestamps. Imported bookmarks are separated by Pip profile folders; history is added
-  to the current profile. Recognized Pip preferences are saved locally for reference but are
-  not yet applied to Chromium settings. Website sessions are not transferred; users sign in
-  again.
+  to the current profile. A valid Pip `settings.appearance.theme` value (`light`, `dark`, or
+  `system`) is applied to the Pip Dev cockpit. Other recognized preferences remain local
+  reference data and do not change Chromium browser settings. Website sessions are not
+  transferred; users sign in again.
 - After the browser target finishes, verify Windows MCP/browser operation, DevTools, source maps,
   Network and Performance panels, DOM and canvas flows, tab lifecycle failures and lock release.
   The launcher is still development-only; package a Windows build only after those runtime checks

@@ -70,7 +70,7 @@ export function ManualSetupDialog({
                   <CommandBlock command={endpointUrl} />
                 )}
 
-                {step.command !== undefined && (
+                {'command' in step && typeof step.command === 'string' && (
                   <CommandBlock
                     command={step.command}
                     onCopied={() =>
@@ -79,7 +79,7 @@ export function ManualSetupDialog({
                   />
                 )}
 
-                {step.note !== undefined && (
+                {'note' in step && step.note !== undefined && (
                   <p className="text-[12px] text-ink-3 leading-relaxed">
                     {step.note}
                   </p>

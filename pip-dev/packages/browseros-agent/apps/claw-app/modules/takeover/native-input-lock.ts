@@ -9,6 +9,8 @@
  * surfaced to the UI and never reported as a successful lock.
  */
 
+import type { AgentControlContext } from './takeover.types'
+
 export interface NativeInputDebugger {
   attach(target: { tabId: number }, version: string): Promise<void>
   sendCommand(
@@ -20,6 +22,18 @@ export interface NativeInputDebugger {
   onDetach: {
     addListener(listener: (source: { tabId?: number }, reason: string) => void): void
   }
+}
+
+/**
+ * A session waiting for a human-help response is paused and must give the
+ * browser tab back to that human. Keep locks held by any other live sessions
+ * that still control the same tab.
+ */
+export function nativeInputLockSessionIds(
+  context: AgentControlContext,
+): string[] {
+  const waitingSessionId = context.helpRequest?.sessionId
+  return context.sessionIds.filter((sessionId) => sessionId !== waitingSessionId)
 }
 
 export type NativeInputLockStatus = 'locked' | 'unavailable' | 'unlocked'

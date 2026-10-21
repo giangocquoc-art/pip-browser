@@ -25,9 +25,15 @@ function fixture(options?: {
       calls.push(`stop:${tabId}`)
       return { stopped: options?.stopped ?? 1, total: options?.total ?? 1 }
     },
-    beginStop: (tabId) => calls.push(`begin:${tabId}`),
-    finishStop: (tabId) => calls.push(`finish:${tabId}`),
-    releaseLock: async (tabId) => calls.push(`release:${tabId}`),
+    beginStop: (tabId) => {
+      calls.push(`begin:${tabId}`)
+    },
+    finishStop: (tabId) => {
+      calls.push(`finish:${tabId}`)
+    },
+    releaseLock: async (tabId) => {
+      calls.push(`release:${tabId}`)
+    },
   }
   return { calls, dependencies }
 }

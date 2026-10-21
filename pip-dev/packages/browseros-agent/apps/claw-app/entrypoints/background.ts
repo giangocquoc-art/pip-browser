@@ -12,7 +12,10 @@ import type {
   TakeoverResolveMessage,
 } from '@/modules/takeover/takeover.types'
 import { createTakeoverBridge } from '@/modules/takeover/takeover-bridge'
-import { NativeInputLockManager } from '@/modules/takeover/native-input-lock'
+import {
+  NativeInputLockManager,
+  nativeInputLockSessionIds,
+} from '@/modules/takeover/native-input-lock'
 import { TakeoverInputLockGate } from '@/modules/takeover/takeover-input-lock-gate'
 import { handleTakeoverAction } from '@/modules/takeover/takeover-action'
 import { registerExtensionUpdates } from '@/modules/updates/register'
@@ -120,7 +123,7 @@ export default defineBackground(() => {
             }
             const nativeInputLock = await nativeInputLocks.sync(
               tabId,
-              response.context.sessionIds,
+              nativeInputLockSessionIds(response.context),
             )
             sendResponse({
               ...response,
@@ -156,10 +159,38 @@ export default defineBackground(() => {
         sendResponse({ ok: false })
         return false
       }
+      inputLockGate.beginStop(tabId)
+      const refreshInputLock = async () => {
+        try {
+          const response = await takeover.refreshForTab(tabId)
+          if (response.active && response.context.mode === 'agent-control') {
+            await nativeInputLocks.sync(
+              tabId,
+              nativeInputLockSessionIds(response.context),
+            )
+          } else {
+            await nativeInputLocks.release(tabId)
+          }
+        } catch {
+          await nativeInputLocks.release(tabId)
+        }
+      }
       void takeover
-        .resolve(tabId, sessionId, note)
-        .then((resolved) => sendResponse({ ok: resolved }))
-        .catch(() => sendResponse({ ok: false }))
+        .resolve(tabId, sessionId, note, async (context) => {
+          if (context) {
+            // Restore the lock before waking the help-requesting agent.
+            await nativeInputLocks.sync(tabId, context.sessionIds)
+          }
+        })
+        .then(async (resolved) => {
+          if (!resolved) await refreshInputLock()
+          sendResponse({ ok: resolved })
+        })
+        .catch(async () => {
+          await refreshInputLock()
+          sendResponse({ ok: false })
+        })
+        .finally(() => inputLockGate.finishStop(tabId))
       return true
     }
     if (takeoverMessage.type === 'takeover-stop') {

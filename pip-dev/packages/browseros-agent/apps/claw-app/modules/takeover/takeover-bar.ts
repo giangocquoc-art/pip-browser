@@ -243,8 +243,11 @@ export function createTakeoverBar(
       ? help.reason
       : 'Phiên agent có thể thao tác trong tab này.'
     controlNote.hidden = !hasControl
-    controlNote.textContent =
-      control?.nativeInputLock === 'locked'
+    controlNote.textContent = control?.helpRequest
+      ? control.nativeInputLock === 'locked'
+        ? 'Phiên agent khác vẫn đang điều khiển tab này. Hãy dùng nút Pip Dev trên thanh công cụ để dừng agent trước khi thao tác.'
+        : 'Agent đang chờ bạn thao tác; tab đã mở khóa. Khi xong, chọn “Trả quyền cho AI”.'
+      : control?.nativeInputLock === 'locked'
         ? 'Tab này đã khóa chuột và bàn phím thật; agent vẫn thao tác qua CDP.'
         : control
           ? 'Chưa khóa được chuột/bàn phím thật. Hãy dừng agent trước khi thao tác trong tab này.'

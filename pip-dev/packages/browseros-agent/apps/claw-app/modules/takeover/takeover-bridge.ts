@@ -12,7 +12,10 @@
 import { SessionStatus, type SessionSummary } from '@browseros/claw-api'
 import { ClawApiClient } from '@browseros/claw-api-client'
 import { agentControlForTab, takeoverForTab } from './live-help'
-import type { TakeoverPollResponse } from './takeover.types'
+import type {
+  AgentControlContext,
+  TakeoverPollResponse,
+} from './takeover.types'
 
 const CACHE_TTL_MS = 1200
 
@@ -23,7 +26,13 @@ export interface TakeoverBridgeOptions {
 
 export interface TakeoverBridge {
   pollForTab: (tabId: number) => Promise<TakeoverPollResponse>
-  resolve: (tabId: number, sessionId: string, note?: string) => Promise<boolean>
+  refreshForTab: (tabId: number) => Promise<TakeoverPollResponse>
+  resolve: (
+    tabId: number,
+    sessionId: string,
+    note?: string,
+    beforeResume?: (context: AgentControlContext | null) => Promise<void>,
+  ) => Promise<boolean>
   stopForTab: (tabId: number) => Promise<{ stopped: number; total: number }>
 }
 
@@ -65,22 +74,38 @@ export function createTakeoverBridge(
     return list.items
   }
 
+  const contextForTab = (
+    sessions: SessionSummary[],
+    tabId: number,
+  ): TakeoverPollResponse => {
+    const helpRequest = takeoverForTab(sessions, tabId)
+    const agentControl = agentControlForTab(sessions, tabId)
+    const context = agentControl
+      ? { ...agentControl, helpRequest: helpRequest ?? undefined }
+      : helpRequest
+    return context ? { active: true, context } : { active: false }
+  }
+
   return {
     async pollForTab(tabId) {
       const sessions = await liveSessions()
       if (!sessions) return { active: false, unavailable: true }
-      const helpRequest = takeoverForTab(sessions, tabId)
-      const agentControl = agentControlForTab(sessions, tabId)
-      const context = agentControl
-        ? { ...agentControl, helpRequest: helpRequest ?? undefined }
-        : helpRequest
-      return context ? { active: true, context } : { active: false }
+      return contextForTab(sessions, tabId)
     },
-    async resolve(tabId, sessionId, note) {
-      const context = takeoverForTab(await freshLiveSessions(), tabId)
-      if (!context || context.sessionId !== sessionId) return false
-      await (await client()).resolveHelp({ sessionId, note })
-      // Drop the cache so the next poll reflects the resolve and the bar clears.
+    async refreshForTab(tabId) {
+      return contextForTab(await freshLiveSessions(), tabId)
+    },
+    async resolve(tabId, sessionId, note, beforeResume) {
+      const sessions = await freshLiveSessions()
+      const helpRequest = takeoverForTab(sessions, tabId)
+      if (!helpRequest || helpRequest.sessionId !== sessionId) return false
+
+      // Lock the tab before waking the agent. The caller can therefore make
+      // the hand-back atomic with respect to the human's page interaction.
+      await beforeResume?.(agentControlForTab(sessions, tabId))
+      const result = await (await client()).resolveHelp({ sessionId, note })
+      if (!result.resolved) return false
+      // Drop the cache so the next poll reflects the resolve and clears the bar.
       cache = null
       return true
     },

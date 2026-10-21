@@ -35,11 +35,15 @@ if (targetLabel && statusLabel && stopButton) {
         type: 'takeover-action-poll',
         ...target,
       })
-      if (!result.ok) {
+      if ('reason' in result) {
         statusLabel.textContent =
           result.reason === 'inactive-tab'
             ? 'Tab đã đổi. Đóng popup rồi mở lại trên tab cần dừng.'
             : 'Không thể kiểm tra quyền điều khiển tab.'
+        return
+      }
+      if (result.action !== 'poll') {
+        showUnavailable('Không nhận được trạng thái tab cần dừng.')
         return
       }
 
@@ -77,11 +81,11 @@ if (targetLabel && statusLabel && stopButton) {
         statusLabel.textContent = result.total === 0
           ? 'Không còn phiên agent trên tab này; đã trả quyền thao tác.'
           : `Đã dừng ${result.stopped}/${result.total} phiên agent trên tab này.`
-      } else if (result.reason === 'partial-stop') {
+      } else if ('reason' in result && result.reason === 'partial-stop') {
         statusLabel.textContent =
           `Đã dừng ${result.stopped ?? 0}/${result.total ?? 0} phiên. Tab vẫn khóa khi còn agent.`
         stopButton.disabled = false
-      } else if (result.reason === 'inactive-tab') {
+      } else if ('reason' in result && result.reason === 'inactive-tab') {
         statusLabel.textContent = 'Tab đã đổi. Mở lại popup trên tab cần dừng.'
       } else {
         statusLabel.textContent = 'Chưa xác nhận được lệnh dừng. Kiểm tra kết nối rồi thử lại.'

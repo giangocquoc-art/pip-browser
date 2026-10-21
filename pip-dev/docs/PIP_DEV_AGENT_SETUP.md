@@ -2,6 +2,8 @@
 
 Pip Dev is the browser application. **MCP is the connection protocol** that lets Codex or another compatible agent read and control its tabs. The Codex plugin in this repository packages that MCP connection and a reusable browser workflow; installing the plugin does not install or start Pip Dev.
 
+> **Windows status:** This checkout does not yet contain a built Pip Dev/BrowserOS browser executable or a Windows installer. The development launcher requires that custom `.exe`; installed Chrome or Edge cannot replace it because browser operations use BrowserOS-specific APIs. See [Windows implementation status](../PIP_DEV_STATUS.md) before starting the browser.
+
 ## Start Pip Dev
 
 Install or build Pip Dev for Windows, then start it and open the pages the agent should use. The MCP service must be running. Its default development address is:
@@ -56,7 +58,14 @@ To remove the manual connection later, run `codex mcp remove pip_dev`.
 
 ### Direct MCP connection
 
-For Codex CLI, Codex IDE, or another MCP client, connect its Streamable HTTP transport to `http://127.0.0.1:9200/mcp`. Codex CLI can add it with `codex mcp add` as above. For a client that uses a JSON config, the equivalent entry is:
+For Codex CLI or Codex IDE, the direct command above writes the MCP server to Codex's shared user configuration. On Windows, the file is `%USERPROFILE%\.codex\config.toml`. If you prefer to edit it by hand, merge this table into the existing file:
+
+```toml
+[mcp_servers.pip_dev]
+url = "http://127.0.0.1:9200/mcp"
+```
+
+For another MCP client, connect its Streamable HTTP transport to `http://127.0.0.1:9200/mcp` using that client's configuration format. For example, clients that use a JSON `mcpServers` object can use:
 
 ```json
 {
@@ -83,7 +92,7 @@ The agent should identify the tab, read its structured state, and use fresh elem
 
 This repository includes a **GitHub repo marketplace** for Codex CLI. It is not a listing in the public Codex/ChatGPT plugin directory.
 
-Public-directory submission is separate. OpenAI's [desktop-only submission process](https://developers.openai.com/plugins/deploy/desktop-only) requires submission access, a packaged local `stdio` launcher with its dependencies, and review. Pip Dev currently uses loopback Streamable HTTP, so it is not ready for that listing. Use this GitHub repo marketplace for Codex or connect the local MCP endpoint directly.
+Public-directory submission is separate. Pip Dev controls a user's local browser, so a hosted public MCP endpoint would not fit its local-only design. OpenAI's [desktop-only submission process](https://developers.openai.com/plugins/deploy/desktop-only) requires verified submission access and limits local MCP submissions to approved, allowlisted partners; it also requires a packaged local `stdio` server and review. Pip Dev currently uses loopback Streamable HTTP and has no finished Windows browser executable or installer, so it is not ready for that listing. Use this GitHub repo marketplace for Codex or connect the local MCP endpoint directly.
 
 ## Privacy
 

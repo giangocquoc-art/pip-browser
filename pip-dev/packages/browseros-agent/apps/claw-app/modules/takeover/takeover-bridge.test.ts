@@ -9,6 +9,8 @@ let sessions: SessionSummary[] = []
 let sessionsUnavailable = false
 let listCalls = 0
 const resolveCalls: Array<{ sessionId: string; note?: string }> = []
+const resolveOrder: string[] = []
+let resolveResult = true
 const cancelCalls: Array<{ sessionId: string }> = []
 
 mock.module('@browseros/claw-api-client', () => ({
@@ -20,7 +22,8 @@ mock.module('@browseros/claw-api-client', () => ({
     }
     async resolveHelp(request: { sessionId: string; note?: string }) {
       resolveCalls.push(request)
-      return { resolved: true }
+      resolveOrder.push('server-resolve')
+      return { resolved: resolveResult }
     }
     async cancelSession(request: { sessionId: string }) {
       cancelCalls.push(request)
@@ -62,6 +65,8 @@ beforeEach(() => {
   sessionsUnavailable = false
   listCalls = 0
   resolveCalls.length = 0
+  resolveOrder.length = 0
+  resolveResult = true
   cancelCalls.length = 0
 })
 
@@ -191,6 +196,49 @@ describe('takeover bridge', () => {
     await bridge.pollForTab(77)
     // Poll, fresh tab validation for resolve, then another read after the cache drops.
     expect(listCalls).toBe(3)
+  })
+
+  it('locks the controlled tab before resuming a human-help session', async () => {
+    const live = session(77).live!
+    sessions = [
+      {
+        ...session(77),
+        live: {
+          ...live,
+          browserTabs: [
+            {
+              browserTabId: 77,
+              url: 'https://example.com/login',
+              title: 'Example login',
+              toolCount: 1,
+              recentTools: [],
+            },
+          ],
+        },
+      },
+    ]
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+
+    await expect(
+      bridge.resolve(77, 'session-1', 'signed in', async (control) => {
+        expect(control?.sessionIds).toEqual(['session-1'])
+        resolveOrder.push('native-lock')
+      }),
+    ).resolves.toBe(true)
+
+    expect(resolveOrder).toEqual(['native-lock', 'server-resolve'])
+  })
+
+  it('does not report a hand-back when the server says the help request is gone', async () => {
+    sessions = [session(77)]
+    resolveResult = false
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+
+    await expect(bridge.resolve(77, 'session-1')).resolves.toBe(false)
   })
 
   it('does not resolve a help request from a different tab', async () => {
