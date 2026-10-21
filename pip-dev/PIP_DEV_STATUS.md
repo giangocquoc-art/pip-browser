@@ -60,7 +60,7 @@ launcher from a future packaged release.
 
 ## Important limits and remaining work
 
-- As of 2026-10-22 02:38 (Asia/Bangkok), the full Windows `chrome` target is resuming from the D-only Chromium checkout. Ninja previously completed 666 of 29,458 build steps; the resumed process is still loading the existing build graph, and `chrome.exe` has not been produced. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-22 02:42 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 14 of its 28,792 remaining actions (680 of 29,458 overall); `chrome.exe` has not been produced yet. The checkout, portable sysroot and build output remain local on D.
 
 - The Rust canvas/crop regression subset passed all 6 tests on D. The repository Cargo config places its shared `build-dir` under Cargo's home by default; to keep this Windows build on D, use:
 
