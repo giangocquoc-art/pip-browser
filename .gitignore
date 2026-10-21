@@ -12,6 +12,7 @@ browser-source/dist/
 browser-source/dist-pip/
 browser-source/store/out/
 .data/
+.cargo-home/
 __pycache__/
 
 # Local website QA artifacts; keep these out of public releases.

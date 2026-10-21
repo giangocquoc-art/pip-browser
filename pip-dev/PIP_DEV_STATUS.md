@@ -54,13 +54,16 @@ launcher from a future packaged release.
   The Pip Dev Settings migration screen previews a versioned JSON export, validates URLs and
   folder trees, requires explicit selection/confirmation, imports bookmarks into named folders,
   and makes history import opt-in. Cookies, credentials and passwords are excluded.
-- The Windows PowerShell launcher checks prerequisites, builds and starts the neo MCP/API
-  server, waits for its health endpoint, then loads the WXT extension in an existing Windows
-  Chromium exe using an isolated dev profile.
+- The Windows PowerShell launcher keeps Cargo's registry/cache in the ignored project-level
+  `.cargo-home`, build output in `packages/browseros-agent/.cargo-target`, and temporary files
+  in `.data/windows-dev/temp`; it restores the caller's `CARGO_HOME`, `TEMP`, and `TMP` after
+  exiting. Custom Cargo registry configuration must be provisioned in that D-only home. It then
+  builds and starts the neo MCP/API server, waits for its health endpoint, and loads the WXT
+  extension in a Windows Chromium exe with an isolated dev profile.
 
 ## Important limits and remaining work
 
-- As of 2026-10-22 02:42 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 14 of its 28,792 remaining actions (680 of 29,458 overall); `chrome.exe` has not been produced yet. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-22 03:12 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 811 of its 28,792 actions (about 1,477 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. The checkout, portable sysroot and build output remain local on D.
 
 - The Rust canvas/crop regression subset passed all 6 tests on D. The repository Cargo config places its shared `build-dir` under Cargo's home by default; to keep this Windows build on D, use:
 

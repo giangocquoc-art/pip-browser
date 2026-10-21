@@ -12,15 +12,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
+$projectRoot = Split-Path -Parent $repoRoot
 $agentRoot = Join-Path $repoRoot 'packages/browseros-agent'
 $clawAppRoot = Join-Path $agentRoot 'apps/claw-app'
 $serverExe = Join-Path $agentRoot 'target/debug/browseros-claw-server-rs.exe'
+$cargoHome = Join-Path $projectRoot '.cargo-home'
+$cargoBuildDir = Join-Path $agentRoot '.cargo-target'
 $stateRoot = Join-Path $agentRoot '.data/windows-dev'
+$buildTempDir = Join-Path $stateRoot 'temp'
 $profileDir = Join-Path $stateRoot 'profile'
 $browserClawDir = Join-Path $stateRoot 'browserclaw'
 $configPath = Join-Path $stateRoot 'claw-server.json'
 $resourcesDir = Join-Path $agentRoot 'resources'
 $serverProcess = $null
+$buildEnvironmentConfigured = $false
+$originalBuildEnvironment = @{
+  CARGO_HOME = $env:CARGO_HOME
+  TEMP = $env:TEMP
+  TMP = $env:TMP
+}
 
 function Test-LocalTcpPortInUse([int] $Port) {
   $client = [System.Net.Sockets.TcpClient]::new()
@@ -109,7 +119,13 @@ try {
     }
   }
 
-  New-Item -ItemType Directory -Path $stateRoot, $profileDir, $browserClawDir -Force | Out-Null
+  New-Item -ItemType Directory -Path @(
+    $stateRoot, $profileDir, $browserClawDir, $cargoHome, $cargoBuildDir, $buildTempDir
+  ) -Force | Out-Null
+  $buildEnvironmentConfigured = $true
+  $env:CARGO_HOME = $cargoHome
+  $env:TEMP = $buildTempDir
+  $env:TMP = $buildTempDir
 
   Push-Location $agentRoot
   try {
@@ -119,8 +135,10 @@ try {
       if ($LASTEXITCODE -ne 0) { throw "bun install failed with exit code $LASTEXITCODE" }
     }
 
-    Write-Host 'Building the BrowserOS neo Rust MCP/API server for Windows...'
-    & $cargo.Source build --locked -p claw-server
+    New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
+    $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\', '/')
+    Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows (Cargo cache: $cargoBuildDir)..."
+    & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
     if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
   }
   finally {
@@ -216,6 +234,17 @@ finally {
       }
       catch {
         Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+  if ($buildEnvironmentConfigured) {
+    foreach ($name in @('CARGO_HOME', 'TEMP', 'TMP')) {
+      $value = $originalBuildEnvironment[$name]
+      if ($null -eq $value) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+      }
+      else {
+        Set-Item "Env:$name" $value
       }
     }
   }
