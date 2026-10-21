@@ -70,7 +70,7 @@ launcher from a future packaged release.
 
 ## Important limits and remaining work
 
-- As of 2026-10-22 03:59 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 1,578 of its 28,792 actions (about 2,244 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. The live build log is `D:\src\pipdev-chrome-build-resume.log`; its stderr log is currently empty. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-22 05:49 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 2,827 of its 28,792 actions (about 3,493 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. Ninja is responsive and the live stderr log is empty, with no failure markers. The live build log is `D:\src\pipdev-chrome-build-resume.log`; the checkout, portable sysroot and build output remain local on D.
 
 - The current `out/PipDevPortableSDK/args.gn` disables both `enable_updater` and `enable_winsparkle`; it only builds the `chrome` target and is not a distributable package configuration. BrowserOS's Windows package step requires `mini_installer.exe` and `WinSparkle.dll`. After runtime checks pass, regenerate with the Pip Dev Windows release configuration and build the package targets. Pip Dev's artifact prefix is now `PipDevSetup`, matching the Windows install guide; descriptor and context tests verify the installer and DMG names.
 
