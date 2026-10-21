@@ -82,12 +82,14 @@ impl ApplicationHandler<String> for Smoke {
                     .unwrap_or_default();
                 let mut user_initiated = windows::core::BOOL(0);
                 let user_initiated_read = unsafe { args.IsUserInitiated(&mut user_initiated) };
-                let blocked = popup_blocker.borrow().should_block_popup_with_popup_context(
-                    &target,
-                    &source,
-                    None,
-                    user_initiated.as_bool(),
-                );
+                let blocked = popup_blocker
+                    .borrow()
+                    .should_block_popup_with_popup_context(
+                        &target,
+                        &source,
+                        None,
+                        user_initiated.as_bool(),
+                    );
                 // The harness owns this event and never creates an unmanaged popup.
                 // The production handler likewise handles every event before creating
                 // a Pip tab for an allowed target.

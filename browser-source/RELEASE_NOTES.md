@@ -1,3 +1,7 @@
+# Pip 0.1.14
+
+Fixed a production gap in popup filtering: the bundled popup-domain list is now applied to matching popup, redirect, and frame destinations, including subdomains. This affects newly opened destinations only; ordinary navigation and addresses entered by the user remain available. Ad and popup filtering remains best-effort.
+
 # Pip 0.1.13
 
 Fixed Google DNS routing for WebView2 by forcing web traffic through Pip's local DNS-over-HTTPS proxy and preventing direct system-DNS lookups. Tightened proxy URL and DNS-answer parsing, respected DNS record TTLs, and verified that YouTube loads through the proxy without showing its offline page.

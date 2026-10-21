@@ -158,7 +158,8 @@ test("unreleased feature claims identify their required public release", async (
   assert.match(features, /id="feature-release-status"/);
   assert.equal((features.match(/data-release-version="0\.1\.11"/g) || []).length, 2);
   assert.equal((features.match(/data-release-version="0\.1\.13"/g) || []).length, 2);
-  assert.equal((features.match(/data-release-version="[^"]+" hidden/g) || []).length, 4);
+  assert.equal((features.match(/data-release-version="0\.1\.14"/g) || []).length, 1);
+  assert.equal((features.match(/data-release-version="[^"]+" hidden/g) || []).length, 5);
   assert.match(features, /fetch\('\/version\.json'/);
   assert.doesNotMatch(features, /Pip không có kho mật khẩu riêng/);
   assert.match(features, /kho mật khẩu riêng được bảo vệ bằng Windows DPAPI/);
@@ -171,7 +172,7 @@ test("feature page only reveals features included in the public version", async 
 
   async function evaluate(version) {
     const status = { hidden: false, textContent: "" };
-    const sections = ["0.1.11", "0.1.13"].map((releaseVersion) => ({
+    const sections = ["0.1.11", "0.1.13", "0.1.14"].map((releaseVersion) => ({
       dataset: { releaseVersion }, hidden: true,
     }));
     const document = {
@@ -185,9 +186,12 @@ test("feature page only reveals features included in the public version", async 
   }
 
   const oldRelease = await evaluate("0.1.9");
-  assert.deepEqual(oldRelease.sections.map(({ hidden }) => hidden), [true, true]);
-  assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.13/);
+  assert.deepEqual(oldRelease.sections.map(({ hidden }) => hidden), [true, true, true]);
+  assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.13 hoặc 0\.1\.14/);
   const currentRelease = await evaluate("0.1.13");
-  assert.deepEqual(currentRelease.sections.map(({ hidden }) => hidden), [false, false]);
-  assert.equal(currentRelease.status.hidden, true);
+  assert.deepEqual(currentRelease.sections.map(({ hidden }) => hidden), [false, false, true]);
+  assert.match(currentRelease.status.textContent, /0\.1\.14/);
+  const nextRelease = await evaluate("0.1.14");
+  assert.deepEqual(nextRelease.sections.map(({ hidden }) => hidden), [false, false, false]);
+  assert.equal(nextRelease.status.hidden, true);
 });
