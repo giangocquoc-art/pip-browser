@@ -133,9 +133,10 @@ test("mobile layout keeps navigation and hero copy within the viewport", async (
 test("privacy and help pages describe only released sync and DNS behavior", async () => {
   const privacy = await readFile(path.join(root, "quyen-rieng-tu/index.html"), "utf8");
   const faq = await readFile(path.join(root, "cau-hoi/index.html"), "utf8");
-  assert.match(privacy, /Phiên bản Pip tải công khai hiện tại chưa có Pip Sync/);
-  assert.match(privacy, /Bản công khai hiện tại chưa có đồng bộ đám mây/);
-  assert.doesNotMatch(privacy, /Nếu bạn chủ động bật Pip Sync/);
+  assert.match(privacy, /Pip Sync có sẵn nhưng mặc định tắt/);
+  assert.match(privacy, /mã hóa trên thiết bị trước khi gửi tới dịch vụ lưu trữ trên Cloudflare/);
+  assert.match(privacy, /lịch sử chỉ nằm trong gói đồng bộ đã mã hóa nếu bạn chủ động bật mục này/);
+  assert.doesNotMatch(privacy, /chưa có Pip Sync|chưa có đồng bộ đám mây/);
   assert.match(faq, /khởi động lại Pip để áp dụng/);
 });
 
@@ -146,8 +147,9 @@ test("feature page documents the available UX features and their limits", async 
   assert.match(features, /Dùng Microsoft Edge WebView2/);
   assert.doesNotMatch(features, /WebView2 có sẵn trên Windows/);
   assert.match(features, /Đồng bộ Pip tùy chọn/);
-  assert.match(features, /dấu trang, lịch sử, tab thường và một số cài đặt/);
-  assert.match(features, /mật khẩu do WebView2 lưu không được đồng bộ/);
+  assert.match(features, /bạn có thể bật riêng lịch sử, tab đang mở, một số cài đặt và mật khẩu trong kho Pip/);
+  assert.match(features, /Lịch sử, tab, cài đặt và mật khẩu mặc định tắt/);
+  assert.match(features, /mật khẩu do WebView2 lưu và thông tin thanh toán không được đồng bộ/);
   assert.match(features, /kho mật khẩu riêng được bảo vệ bằng Windows DPAPI/);
 });
 
@@ -155,7 +157,7 @@ test("unreleased feature claims identify their required public release", async (
   const features = await readFile(path.join(root, "tinh-nang/index.html"), "utf8");
   assert.match(features, /id="feature-release-status"/);
   assert.equal((features.match(/data-release-version="0\.1\.11"/g) || []).length, 2);
-  assert.equal((features.match(/data-release-version="0\.1\.12"/g) || []).length, 2);
+  assert.equal((features.match(/data-release-version="0\.1\.13"/g) || []).length, 2);
   assert.equal((features.match(/data-release-version="[^"]+" hidden/g) || []).length, 4);
   assert.match(features, /fetch\('\/version\.json'/);
   assert.doesNotMatch(features, /Pip không có kho mật khẩu riêng/);
@@ -169,7 +171,7 @@ test("feature page only reveals features included in the public version", async 
 
   async function evaluate(version) {
     const status = { hidden: false, textContent: "" };
-    const sections = ["0.1.11", "0.1.12"].map((releaseVersion) => ({
+    const sections = ["0.1.11", "0.1.13"].map((releaseVersion) => ({
       dataset: { releaseVersion }, hidden: true,
     }));
     const document = {
@@ -184,7 +186,7 @@ test("feature page only reveals features included in the public version", async 
 
   const oldRelease = await evaluate("0.1.9");
   assert.deepEqual(oldRelease.sections.map(({ hidden }) => hidden), [true, true]);
-  assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.12/);
+  assert.match(oldRelease.status.textContent, /0\.1\.11 hoặc 0\.1\.13/);
   const currentRelease = await evaluate("0.1.13");
   assert.deepEqual(currentRelease.sections.map(({ hidden }) => hidden), [false, false]);
   assert.equal(currentRelease.status.hidden, true);
