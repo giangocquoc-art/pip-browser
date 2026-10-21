@@ -1,6 +1,6 @@
 # Install Pip Dev on Windows
 
-The repository currently contains Pip Dev's source and development launcher, not a finished Windows browser installer. Do not expect a `PipSetup` download until a release appears on the project's GitHub **Releases** page. The planned installer name is versioned, for example `PipSetup_v0.1.0_x64_installer.exe`.
+The repository currently contains Pip Dev's source and development launcher, not a finished Windows browser installer. Pip Dev does not have a public installer yet. Its planned versioned installer name is `PipDevSetup_v0.1.0_x64_installer.exe`; this is separate from the existing Pip browser installer, named `PipSetup`.
 
 ## Install the Codex plugin from GitHub
 

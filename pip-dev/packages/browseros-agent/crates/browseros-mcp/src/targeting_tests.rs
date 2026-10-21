@@ -14,6 +14,7 @@ use browseros_core::{
 };
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -37,6 +38,8 @@ struct NativeFixture {
     tabs: Vec<Value>,
     groups: Vec<Value>,
     calls: Vec<Call>,
+    /// Scripted visual observations let tests model navigation/layout changes between MCP calls.
+    visual_observations: VecDeque<Value>,
     /// Applied under the reply lock once metrics are answered, so the change lands between
     /// a screenshot's viewport measurement and its capture without timing-dependent sleeps.
     after_layout_metrics: Option<FixtureChange>,
@@ -110,6 +113,7 @@ impl FixtureConnection {
                     json!({ "groupId": "group-sales", "windowId": 90, "title": "sales", "color": "red", "collapsed": false, "tabIds": [201] }),
                 ],
                 calls: Vec::new(),
+                visual_observations: VecDeque::new(),
                 after_layout_metrics: None,
             }),
         })
@@ -143,6 +147,10 @@ impl FixtureConnection {
             .unwrap_or_else(|err| panic!("fixture poisoned: {err}"))
             .calls
             .clone()
+    }
+
+    fn set_visual_observations(&self, observations: impl IntoIterator<Item = Value>) {
+        self.change(|state| state.visual_observations = observations.into_iter().collect());
     }
 
     fn reply(
@@ -323,19 +331,21 @@ impl FixtureConnection {
                     .is_some_and(|expression| {
                         expression.contains("const selectors = 'canvas,img,video,svg")
                     }) {
-                    json!({
-                        "observationId": "v1:12:89abcdef",
-                        "regions": [{
-                            "index": 0,
-                            "type": "canvas",
-                            "label": "test board",
-                            "x": 20,
-                            "y": 30,
-                            "width": 640,
-                            "height": 480,
-                            "contentWidth": 640,
-                            "contentHeight": 480
-                        }]
+                    state.visual_observations.pop_front().unwrap_or_else(|| {
+                        json!({
+                            "observationId": "v1:12:89abcdef",
+                            "regions": [{
+                                "index": 0,
+                                "type": "canvas",
+                                "label": "test board",
+                                "x": 20,
+                                "y": 30,
+                                "width": 640,
+                                "height": 480,
+                                "contentWidth": 640,
+                                "contentHeight": 480
+                            }]
+                        })
                     })
                 } else if session.contains("sw-eng-bad") {
                     json!({ "error": "downloads unavailable" })
@@ -778,6 +788,172 @@ async fn visual_targets_exposes_crop_token_as_structured_mcp_output() -> anyhow:
             .iter()
             .any(|content| matches!(content, rmcp::model::ContentBlock::Image(_))),
         "crop did not return an inline image: {crop:?}"
+    );
+    Ok(())
+}
+
+fn visual_observation(observation_id: &str) -> Value {
+    json!({
+        "observationId": observation_id,
+        "regions": [{
+            "index": 0,
+            "type": "canvas",
+            "label": "test board",
+            "x": 20,
+            "y": 30,
+            "width": 640,
+            "height": 480,
+            "contentWidth": 640,
+            "contentHeight": 480
+        }]
+    })
+}
+
+#[tokio::test]
+async fn stale_visual_observation_token_is_rejected_before_capture() -> anyhow::Result<()> {
+    // URL, viewport, scroll, and target-bound changes produce a different token in the page
+    // snapshot; the fixture scripts that changed token between observation and crop request.
+    for changed_id in ["v1:12:00000002", "v1:12:00000003", "v1:12:00000004"] {
+        let connection = FixtureConnection::new().with_default_profile();
+        connection.set_visual_observations([
+            visual_observation("v1:12:00000001"),
+            visual_observation(changed_id),
+        ]);
+        let session = BrowserSession::new_with_native(
+            connection.clone(),
+            BrowserSessionHooks::default(),
+            crate::tests::current_native(),
+        );
+        let page_id = session
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .find(|page| {
+                page.browser_profile_id
+                    .as_ref()
+                    .is_some_and(|profile| profile.0 == "original")
+            })
+            .map(|page| page.page_id.0)
+            .ok_or_else(|| anyhow::anyhow!("fixture Default page missing"))?;
+        let service = BrowserMcpService::new(super::tests::service_options(session));
+        let targets = service
+            .call_tool_for_testing(
+                "visual_targets",
+                json!({ "page": page_id }),
+                CancellationToken::new(),
+            )
+            .await?;
+        let target = &targets.structured_content.as_ref().unwrap()["regions"][0];
+        let observation_id = targets.structured_content.as_ref().unwrap()["observationId"]
+            .as_str()
+            .unwrap();
+
+        let stale = service
+            .call_tool_for_testing(
+                "screenshot",
+                json!({
+                    "page": page_id,
+                    "region": {
+                        "x": target["x"],
+                        "y": target["y"],
+                        "width": target["width"],
+                        "height": target["height"],
+                        "observationId": observation_id
+                    }
+                }),
+                CancellationToken::new(),
+            )
+            .await?;
+
+        assert_eq!(stale.is_error, Some(true), "{stale:?}");
+        assert!(
+            connection
+                .calls()
+                .iter()
+                .all(|call| call.method != "Page.captureScreenshot"),
+            "a stale observation token reached screenshot capture"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn visual_crop_changed_during_capture_is_discarded() -> anyhow::Result<()> {
+    let connection = FixtureConnection::new().with_default_profile();
+    connection.set_visual_observations([
+        visual_observation("v1:12:00000001"),
+        visual_observation("v1:12:00000001"),
+        visual_observation("v1:12:00000002"),
+    ]);
+    let session = BrowserSession::new_with_native(
+        connection.clone(),
+        BrowserSessionHooks::default(),
+        crate::tests::current_native(),
+    );
+    let page_id = session
+        .pages
+        .list()
+        .await?
+        .into_iter()
+        .find(|page| {
+            page.browser_profile_id
+                .as_ref()
+                .is_some_and(|profile| profile.0 == "original")
+        })
+        .map(|page| page.page_id.0)
+        .ok_or_else(|| anyhow::anyhow!("fixture Default page missing"))?;
+    let service = BrowserMcpService::new(super::tests::service_options(session));
+    let targets = service
+        .call_tool_for_testing(
+            "visual_targets",
+            json!({ "page": page_id }),
+            CancellationToken::new(),
+        )
+        .await?;
+    let target = &targets.structured_content.as_ref().unwrap()["regions"][0];
+    let observation_id = targets.structured_content.as_ref().unwrap()["observationId"]
+        .as_str()
+        .unwrap();
+    let crop = service
+        .call_tool_for_testing(
+            "screenshot",
+            json!({
+                "page": page_id,
+                "region": {
+                    "x": target["x"],
+                    "y": target["y"],
+                    "width": target["width"],
+                    "height": target["height"],
+                    "observationId": observation_id
+                }
+            }),
+            CancellationToken::new(),
+        )
+        .await?;
+
+    assert_eq!(crop.is_error, Some(true), "{crop:?}");
+    let crop_text = crop
+        .content
+        .iter()
+        .find_map(|content| content.as_text())
+        .map(|content| content.text.to_string())
+        .unwrap_or_default();
+    assert!(
+        crop_text.contains("page layout changed during crop"),
+        "{crop:?}"
+    );
+    assert!(
+        connection
+            .calls()
+            .iter()
+            .any(|call| call.method == "Page.captureScreenshot")
+    );
+    assert!(
+        !crop
+            .content
+            .iter()
+            .any(|content| matches!(content, rmcp::model::ContentBlock::Image(_)))
     );
     Ok(())
 }
