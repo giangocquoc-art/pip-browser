@@ -1,3 +1,7 @@
+# Pip 0.1.15
+
+Updated TLS certificate verification and bundled root certificates to patched versions after new RustSec advisories. This release also includes the popup-filtering improvements from the unpublished 0.1.14 candidate.
+
 # Pip 0.1.14
 
 Fixed a production gap in popup filtering: the bundled popup-domain list is now applied to matching popup, redirect, and frame destinations, including subdomains. This affects newly opened destinations only; ordinary navigation and addresses entered by the user remain available. Ad and popup filtering remains best-effort.
