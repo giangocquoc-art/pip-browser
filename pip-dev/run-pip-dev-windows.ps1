@@ -152,7 +152,7 @@ try {
   $sidecar = @{
     ports = @{ server = $ServerPort; cdp = $CdpPort; proxy = $ServerPort }
     directories = @{ resources = $resourcesDir; execution = $stateRoot }
-    flags = @{ devMode = $true; allowRemoteInMcp = $false }
+    flags = @{ devMode = $true; allow_remote_in_mcp = $false }
   } | ConvertTo-Json -Depth 5
   [IO.File]::WriteAllText(
     $configPath,

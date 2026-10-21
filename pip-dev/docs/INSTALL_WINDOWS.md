@@ -28,6 +28,15 @@ The launcher keeps Cargo's registry/cache in the project-level `.cargo-home`, pu
 
 This launcher does not build the Chromium browser executable or produce a distributable installer. Those are separate release-build steps. See [Pip Dev implementation status](../PIP_DEV_STATUS.md) for the current Windows build status and [agent connection setup](PIP_DEV_AGENT_SETUP.md) to connect Codex or another MCP client.
 
+When using a custom `-ServerPort`, update the MCP URL after installing the Codex plugin so it matches the running server. For example, if the launcher uses `-ServerPort 9201`, run:
+
+```powershell
+codex mcp add pip_dev --url http://127.0.0.1:9201/mcp
+codex mcp list
+```
+
+This sets Codex's `pip_dev` endpoint to the custom port. For another MCP client, replace `9200` in its configured URL with the selected port.
+
 ## Connect Codex
 
 From the repository root, add the repo marketplace and install **Pip Dev Browser**:

@@ -14,7 +14,7 @@ http://127.0.0.1:9200/mcp
 
 If Pip Dev displays a different MCP address, use that address in the steps below. Keep the endpoint on loopback; it is a local browser-control interface, not a public service.
 
-If you start the Windows launcher with a custom `-ServerPort`, update the port in the plugin's `mcp.json` before installing it, or use the direct Codex MCP command below with that port.
+If you start the Windows launcher with a custom `-ServerPort`, point the agent to that port. For Codex, run `codex mcp add pip_dev --url http://127.0.0.1:<port>/mcp` after installing the plugin; for example, use `http://127.0.0.1:9201/mcp` with `-ServerPort 9201`. For other MCP clients, replace `9200` in their configured endpoint with the selected port. The listener binds to loopback, so keep this endpoint local to the machine running Pip Dev.
 
 For manual client configuration, use the MCP server name **`pip_dev`** and the
 Streamable HTTP endpoint shown by Pip Dev. The default development endpoint is
