@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import {
@@ -12,6 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import {
   countBookmarks,
   countHistoryEvents,
+  applyPipMigrationTheme,
   importPipMigration,
   parsePipMigration,
   type ImportProgress,
@@ -19,11 +21,13 @@ import {
   type ImportSelection,
   type PipMigrationBundle,
 } from '@/modules/migration/pip-migration'
+import { useTheme } from '@/components/theme-provider'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 
 export function PipMigrationImport() {
   const navigate = useNavigate()
+  const { setTheme } = useTheme()
   const fileInput = useRef<HTMLInputElement>(null)
   const [bundle, setBundle] = useState<PipMigrationBundle | null>(null)
   const [fileName, setFileName] = useState('')
@@ -78,6 +82,9 @@ export function PipMigrationImport() {
     setProgress(null)
     try {
       const imported = await importPipMigration(bundle, selection, setProgress)
+      if (imported.settingsSaved) {
+        applyPipMigrationTheme(bundle.settings, setTheme)
+      }
       setResult(imported)
       try {
         const stored = await chrome.storage.local.get('pipMigration')
@@ -200,7 +207,16 @@ export function PipMigrationImport() {
                     setSelection((current) => ({ ...current, settings: checked }))
                   }
                   title="Pip preferences"
-                  description="Stores the recognized, non-secret preference values locally for reference. They are not applied to Chromium browser settings yet."
+                  description={(
+                    <>
+                      Applies a recognized light, dark, or system theme to the Pip Dev cockpit.
+                      Other recognized preferences are stored locally for reference; Chromium browser
+                      settings are unchanged.
+                      <span lang="vi" className="mt-1 block">
+                        Áp dụng giao diện sáng, tối hoặc theo hệ thống cho Pip Dev. Các tùy chọn được nhận diện khác chỉ lưu cục bộ để tham khảo; cài đặt trình duyệt Chromium không bị thay đổi.
+                      </span>
+                    </>
+                  )}
                 />
               </div>
 
@@ -284,7 +300,14 @@ export function PipMigrationImport() {
             <CardDescription>
               Added {result.bookmarks} bookmark(s) and {result.historyEvents}{' '}
               history event(s).
-              {result.settingsSaved ? ' Pip preferences were saved locally.' : ''}
+              {result.settingsSaved
+                ? ' A valid Pip Dev cockpit theme was applied if present; other preferences were saved locally for reference.'
+                : ''}
+              {result.settingsSaved && (
+                <span lang="vi" className="mt-1 block">
+                  Đã áp dụng giao diện Pip Dev hợp lệ nếu có; các tùy chọn khác được lưu cục bộ để tham khảo.
+                </span>
+              )}
               {' '}Sign back in to websites; sessions were not transferred.
             </CardDescription>
           </CardHeader>
@@ -296,7 +319,12 @@ export function PipMigrationImport() {
           <CardHeader>
             <CardTitle>Saved Pip migration data on this device</CardTitle>
             <CardDescription>
-              Profile labels and any selected safe preferences stay in this extension's local storage. This is a local reference; Chromium settings are not changed.
+              Profile labels and selected preference values stay in this extension's local storage. A
+              recognized appearance theme is applied to the Pip Dev cockpit; other values remain local
+              reference data and Chromium browser settings are unchanged.
+              <span lang="vi" className="mt-1 block">
+                Tên hồ sơ và các tùy chọn đã chọn được lưu trong bộ nhớ cục bộ của tiện ích. Giao diện hợp lệ được áp dụng cho Pip Dev; các giá trị khác chỉ để tham khảo và không đổi cài đặt Chromium.
+              </span>
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -330,7 +358,7 @@ function ImportOption({
   disabled: boolean
   onCheckedChange: (checked: boolean) => void
   title: string
-  description: string
+  description: ReactNode
 }) {
   return (
     <label htmlFor={id} className="flex cursor-pointer items-start gap-3">

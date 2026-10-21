@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  applyPipMigrationTheme,
   countBookmarks,
   countHistoryEvents,
   parsePipMigration,
@@ -30,6 +31,41 @@ function exportText(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('Pip migration parser', () => {
+  it('maps each supported appearance theme for the Pip Dev cockpit', () => {
+    for (const theme of ['light', 'dark', 'system'] as const) {
+      const bundle = parsePipMigration(
+        exportText({ settings: { appearance: { theme } } }),
+      )
+      const applied: string[] = []
+      expect(
+        applyPipMigrationTheme(bundle.settings, (value) => applied.push(value)),
+      ).toBe(theme)
+      expect(applied).toEqual([theme])
+    }
+  })
+
+  it('ignores invalid or misplaced theme values', () => {
+    for (const theme of ['auto', 'DARK', '', null, 1]) {
+      const bundle = parsePipMigration(
+        exportText({ settings: { appearance: { theme } } }),
+      )
+      const applied: string[] = []
+      expect(
+        applyPipMigrationTheme(bundle.settings, (value) => applied.push(value)),
+      ).toBeNull()
+      expect(applied).toEqual([])
+    }
+    const applied: string[] = []
+    expect(
+      applyPipMigrationTheme({ theme: 'dark' }, (value) => applied.push(value)),
+    ).toBeNull()
+    expect(
+      applyPipMigrationTheme({ appearance: 'dark' }, (value) => applied.push(value)),
+    ).toBeNull()
+    expect(applyPipMigrationTheme({}, (value) => applied.push(value))).toBeNull()
+    expect(applied).toEqual([])
+  })
+
   it('validates profile data and counts bookmark and visit records', () => {
     const migration = parsePipMigration(exportText())
 

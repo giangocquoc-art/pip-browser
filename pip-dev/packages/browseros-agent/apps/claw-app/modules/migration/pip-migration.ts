@@ -3,6 +3,8 @@
  * Cookies, credentials, and arbitrary executable content are never imported.
  */
 
+import type { Theme } from '../../lib/theme/theme-storage'
+
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_PROFILES = 50
 const MAX_BOOKMARKS = 5_000
@@ -182,6 +184,22 @@ export function countHistoryEvents(bundle: PipMigrationBundle): number {
     (count, profile) => count + (profile.history_visits.length || profile.history.length),
     0,
   )
+}
+
+/**
+ * Applies the Pip cockpit theme when the export contains a supported value.
+ * Browser/Chromium preferences are intentionally left as local reference data.
+ */
+export function applyPipMigrationTheme(
+  settings: Record<string, unknown>,
+  setTheme: (theme: Theme) => void,
+): Theme | null {
+  const appearance = settings.appearance
+  if (!isRecord(appearance)) return null
+  const theme = appearance.theme
+  if (theme !== 'light' && theme !== 'dark' && theme !== 'system') return null
+  setTheme(theme)
+  return theme
 }
 
 /** Applies selected data through the browser's local extension APIs only. */
