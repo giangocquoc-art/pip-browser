@@ -554,10 +554,10 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
           <span class="action-shortcut">Ctrl+J</span>
         </button>
         <div class="action-divider"></div>
-        <button type="button" class="action-item" title="Mở công cụ dành cho người phát triển website (F12)." onclick="sendAction('OpenDevTools')">
+        <button type="button" class="action-item" title="Mở công cụ dành cho người phát triển website (F12 hoặc Ctrl+Shift+C/I/J)." onclick="sendAction('OpenDevTools')">
           <svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           <span class="action-label">Công cụ nhà phát triển</span>
-          <span class="action-shortcut">F12 · Ctrl+Shift+I/J</span>
+          <span class="action-shortcut">F12 · Ctrl+Shift+C/I/J</span>
         </button>
         <button type="button" class="action-item" title="Mở cài đặt và hướng dẫn về hồ sơ, DNS, quyền riêng tư và tài nguyên." onclick="sendAction('OpenSettings')">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -687,7 +687,7 @@ pub const SIDEBAR_TEMPLATE: &str = r#"<!DOCTYPE html>
         <div class="prop-row"><span class="prop-label">Mở menu hồ sơ và chuyển tài khoản</span><kbd>Ctrl+Shift+M</kbd></div>
         <div class="prop-row"><span class="prop-label">Bật / tắt chặn quảng cáo cho trang</span><kbd>Ctrl+Shift+A</kbd></div>
         <div class="prop-row"><span class="prop-label">Điền mật khẩu đã lưu khi chỉ có một tài khoản khớp</span><kbd>Alt+Shift+P</kbd></div>
-        <div class="prop-row"><span class="prop-label">Công cụ nhà phát triển</span><kbd>F12</kbd> <kbd>Ctrl+Shift+I</kbd> <kbd>Ctrl+Shift+J</kbd></div>
+        <div class="prop-row"><span class="prop-label">Công cụ nhà phát triển</span><kbd>F12</kbd> <kbd>Ctrl+Shift+C</kbd> <kbd>Ctrl+Shift+I</kbd> <kbd>Ctrl+Shift+J</kbd></div>
         <p class="status-desc">Phím tắt áp dụng khi cửa sổ Pip đang hoạt động. Khi đang nhập trong ô văn bản, Pip giữ nguyên các tổ hợp chỉnh sửa thông dụng của trang.</p>
       </div>
     </div>

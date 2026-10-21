@@ -7374,7 +7374,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         win.handle_escape();
                     }
                 }
-                "F12" | "Ctrl+Shift+I" | "Ctrl+Shift+J" => {
+                "F12" | "Ctrl+Shift+C" | "Ctrl+Shift+I" | "Ctrl+Shift+J" => {
                     if let Some(win) = self.windows.get(&win_id) {
                         if let Some(active) = win.tab_manager.active_tab() {
                             if let Some(wv) = win.tabs.get(&active.id) {

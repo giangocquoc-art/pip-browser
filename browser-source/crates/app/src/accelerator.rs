@@ -33,6 +33,7 @@ fn devtools_shortcut(ctrl: bool, shift: bool, alt: bool, virtual_key: u32) -> Op
         return None;
     }
     match virtual_key {
+        0x43 => Some("Ctrl+Shift+C"),
         0x49 => Some("Ctrl+Shift+I"),
         0x4A => Some("Ctrl+Shift+J"),
         _ => None,
@@ -1209,7 +1210,11 @@ mod find_navigation_shortcut_tests {
     }
 
     #[test]
-    fn chrome_devtools_shortcuts_include_control_shift_i_and_j() {
+    fn devtools_shortcuts_include_control_shift_c_i_and_j() {
+        assert_eq!(
+            devtools_shortcut(true, true, false, 0x43),
+            Some("Ctrl+Shift+C")
+        );
         assert_eq!(
             devtools_shortcut(true, true, false, 0x49),
             Some("Ctrl+Shift+I")
@@ -1218,6 +1223,8 @@ mod find_navigation_shortcut_tests {
             devtools_shortcut(true, true, false, 0x4A),
             Some("Ctrl+Shift+J")
         );
+        assert_eq!(devtools_shortcut(true, false, false, 0x43), None);
+        assert_eq!(devtools_shortcut(true, true, true, 0x43), None);
         assert_eq!(devtools_shortcut(true, false, false, 0x49), None);
         assert_eq!(devtools_shortcut(true, true, true, 0x49), None);
     }
