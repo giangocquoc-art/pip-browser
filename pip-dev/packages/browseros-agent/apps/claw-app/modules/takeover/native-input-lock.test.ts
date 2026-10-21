@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
+  releaseAndGetNativeInputLockStatus,
   type NativeInputDebugger,
 } from './native-input-lock'
 
@@ -129,6 +130,47 @@ describe('NativeInputLockManager', () => {
       ['Input.setAgentInputLock', 7],
       ['detach', 7],
     ])
+  })
+
+  it('keeps an unavailable lease after detach failures and clears it after a successful retry', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    let detachFailures = 2
+    api.detach = async ({ tabId }) => {
+      calls.push(['detach', tabId])
+      if (detachFailures > 0) {
+        detachFailures -= 1
+        throw new Error('debugger detach failed')
+      }
+    }
+
+    await locks.sync(7, ['session-a'])
+    await locks.release(7)
+    expect(locks.status(7)).toBe('unavailable')
+
+    // The unavailable-lease cleanup path must also preserve the connection
+    // when detach still fails so that a later poll can retry it.
+    await locks.release(7)
+    expect(locks.status(7)).toBe('unavailable')
+
+    await locks.release(7)
+    expect(locks.status(7)).toBe('unlocked')
+    expect(calls.filter(([method]) => method === 'detach')).toHaveLength(3)
+  })
+
+  it('reports the observed lock state when best-effort release throws', async () => {
+    const manager = {
+      async release() {
+        throw new Error('could not restore lock')
+      },
+      status() {
+        return 'unavailable' as const
+      },
+    }
+
+    await expect(releaseAndGetNativeInputLockStatus(manager, 7)).resolves.toBe(
+      'unavailable',
+    )
   })
 
   it('restores a lock when a newer stop starts during the CDP unlock', async () => {

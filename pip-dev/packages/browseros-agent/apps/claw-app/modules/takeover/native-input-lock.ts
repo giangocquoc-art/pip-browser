@@ -153,13 +153,17 @@ export class NativeInputLockManager {
         await this.debuggerApi.detach(debuggee(tabId))
         lease.attached = false
       } catch {
+        // A failed detach does not prove Chromium dropped the native lease.
+        // Keep the unavailable record so later reconciliations can retry.
         lease.status = 'unavailable'
       }
       if (!mayRelease()) {
         await this.restoreAfterSupersededDetach(tabId, lease)
         return
       }
-      if (this.leases.get(tabId) === lease) this.leases.delete(tabId)
+      if (!lease.attached && this.leases.get(tabId) === lease) {
+        this.leases.delete(tabId)
+      }
     })
   }
 
@@ -178,13 +182,16 @@ export class NativeInputLockManager {
       await this.debuggerApi.detach(debuggee(tabId))
       lease.attached = false
     } catch {
+      // Preserve the lease when its final attachment state is uncertain.
       lease.status = 'unavailable'
     }
     if (!mayRelease()) {
       await this.restoreAfterSupersededDetach(tabId, lease)
       return
     }
-    if (this.leases.get(tabId) === lease) this.leases.delete(tabId)
+    if (!lease.attached && this.leases.get(tabId) === lease) {
+      this.leases.delete(tabId)
+    }
   }
 
   private async restoreAfterSupersededRelease(
@@ -250,4 +257,22 @@ export class NativeInputLockManager {
       if (this.queues.get(tabId) === settled) this.queues.delete(tabId)
     }
   }
+}
+
+/**
+ * Release a tab lease when its controlling session disappears and report the
+ * manager's observed state even if CDP cleanup fails. Callers must not infer
+ * that an attempted release succeeded merely because the session is offline.
+ */
+export async function releaseAndGetNativeInputLockStatus(
+  manager: Pick<NativeInputLockManager, 'release' | 'status'>,
+  tabId: number,
+): Promise<NativeInputLockStatus> {
+  try {
+    await manager.release(tabId)
+  } catch {
+    // status() preserves unavailable when the native lock could not be safely
+    // released or restored. Keep responding to the extension caller.
+  }
+  return manager.status(tabId)
 }

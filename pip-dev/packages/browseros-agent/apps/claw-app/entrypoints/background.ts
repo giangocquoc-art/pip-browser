@@ -15,6 +15,7 @@ import { createTakeoverBridge } from '@/modules/takeover/takeover-bridge'
 import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
+  releaseAndGetNativeInputLockStatus,
 } from '@/modules/takeover/native-input-lock'
 import { TakeoverInputLockGate } from '@/modules/takeover/takeover-input-lock-gate'
 import { handleTakeoverAction } from '@/modules/takeover/takeover-action'
@@ -181,23 +182,33 @@ export default defineBackground(() => {
             })
             return
           }
-          await nativeInputLocks.release(tabId)
+          const nativeInputLock = await releaseAndGetNativeInputLockStatus(
+            nativeInputLocks,
+            tabId,
+          )
           if (
             !response.active &&
             'unavailable' in response &&
             response.unavailable
           ) {
-            sendResponse({ ...response, nativeInputLock: 'unlocked' })
+            sendResponse({ ...response, nativeInputLock })
+            return
+          }
+          if (nativeInputLock !== 'unlocked') {
+            sendResponse({ ...response, nativeInputLock })
             return
           }
           sendResponse(response)
         })
         .catch(async () => {
-          await nativeInputLocks.release(tabId)
+          const nativeInputLock = await releaseAndGetNativeInputLockStatus(
+            nativeInputLocks,
+            tabId,
+          )
           sendResponse({
             active: false,
             unavailable: true,
-            nativeInputLock: 'unlocked',
+            nativeInputLock,
           })
         })
       return true
