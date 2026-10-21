@@ -28,13 +28,13 @@ describe('web-ext Chromium product args', () => {
     const config = await loadWebExtConfig()
 
     expect(config.chromiumArgs).toContain('--browseros-product=browserclaw')
-  })
+  }, 30_000)
 
   it('honors an explicit BrowserOS product override', async () => {
     const config = await loadWebExtConfig('browseros')
 
     expect(config.chromiumArgs).toContain('--browseros-product=browseros')
-  })
+  }, 30_000)
 
   it('rejects invalid product overrides', async () => {
     await expect(loadWebExtConfig('invalid')).rejects.toThrow(

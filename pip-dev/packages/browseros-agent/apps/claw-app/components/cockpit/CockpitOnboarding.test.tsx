@@ -39,7 +39,7 @@ describe('CockpitOnboarding', () => {
     expect(html).toContain('Manage agents')
     expect(html).toContain('Paste this prompt into your agent.')
     expect(html).toContain(
-      'Using BrowserOS neo, search for the current monthly prices',
+      'Using Pip Dev, search for the current monthly prices of streaming services such as Netflix, Disney plus, Hulu, Max and Apple TV',
     )
   })
 
@@ -86,14 +86,16 @@ describe('CockpitOnboarding', () => {
   it('waiting: retains the starter prompt tile so the reader can still copy', () => {
     const html = render('waiting', ['Claude Code'])
     expect(html).toContain(
-      'Using BrowserOS neo, search for the current monthly prices',
+      'Using Pip Dev, search for the current monthly prices of streaming services such as Netflix, Disney plus, Hulu, Max and Apple TV',
     )
   })
 
   it('renders the docs link in both states with no refresh affordance', () => {
     for (const state of ['first-run', 'waiting'] as const) {
       const html = render(state)
-      expect(html).toContain('https://docs.browseros.com/')
+      expect(html).toContain(
+        'https://github.com/giangocquoc-art/pip-browser/blob/main/pip-dev/docs/PIP_DEV_AGENT_SETUP.md',
+      )
       expect(html).not.toContain('Refresh the page.')
       expect(html).not.toContain('Already set up?')
     }

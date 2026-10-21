@@ -22,6 +22,7 @@ import { JevTokenSource } from '@browseros/claw-api'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { parseHTML } from 'linkedom'
 import { act, type ComponentProps } from 'react'
+import { MemoryRouter } from 'react-router'
 import type { Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as posthog from '@/modules/analytics/posthog'
@@ -122,7 +123,9 @@ function renderPage(settings?: AgentSettings): Document {
   if (settings) client.setQueryData(useAgentSettings.getKey(), settings)
   const html = renderToStaticMarkup(
     <QueryClientProvider client={client}>
-      <Settings />
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
   const page = parseHTML(`<!doctype html><html><body>${html}</body></html>`)
@@ -280,7 +283,9 @@ describe('Settings screen interactions', () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          <Settings />
+          <MemoryRouter>
+            <Settings />
+          </MemoryRouter>
         </QueryClientProvider>,
       )
     })
@@ -705,7 +710,9 @@ describe('Settings screen interactions', () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          <Settings />
+          <MemoryRouter>
+            <Settings />
+          </MemoryRouter>
         </QueryClientProvider>,
       )
     })
