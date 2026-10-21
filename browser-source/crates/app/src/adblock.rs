@@ -12,6 +12,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     rc::{Rc, Weak},
+    sync::OnceLock,
 };
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler, DOMContentLoadedEventHandler,
@@ -315,6 +316,51 @@ fn matches_gambling_domain(host: &str, domains: &GamblingDomains) -> bool {
         if domains
             .offsets
             .binary_search_by(|offset| domain_at(*offset).cmp(&host[start..]))
+            .is_ok()
+        {
+            return true;
+        }
+        let Some(dot) = host[start..].find('.') else {
+            return false;
+        };
+        start += dot + 1;
+    }
+}
+
+/// HaGeZi's popup list is a domain-only list (`||host^`), not a list of
+/// `$popup` rules. Keep it as a lazily parsed sorted slice so it stays cheap
+/// for normal page loads and avoids compiling 47k domain rules into another
+/// adblock engine at startup.
+fn matches_hagezi_popup_domain(host: &str) -> bool {
+    static DOMAINS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    let domains = DOMAINS.get_or_init(|| {
+        let mut domains = include_str!("../filters/popupads-hagezi.txt")
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("||")?
+                    .strip_suffix('^')
+                    .filter(|domain| {
+                        !domain.is_empty()
+                            && domain.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')
+                            })
+                    })
+            })
+            .collect::<Vec<_>>();
+        domains.sort_unstable();
+        domains.dedup();
+        domains
+    });
+
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    loop {
+        if domains
+            .binary_search_by(|domain| (*domain).cmp(&host[start..]))
             .is_ok()
         {
             return true;
@@ -709,6 +755,7 @@ impl Blocker {
         if site(url).is_some_and(|host| {
             looks_like_gambling_host(&host)
                 || matches_gambling_domain(&host, &self.gambling_domains)
+                || matches_hagezi_popup_domain(&host)
         }) {
             return true;
         }
@@ -758,6 +805,7 @@ impl Blocker {
         }
         if looks_like_gambling_host(&destination)
             || matches_gambling_domain(&destination, &self.gambling_domains)
+            || matches_hagezi_popup_domain(&destination)
             || looks_like_gambling_popup_url(url)
         {
             return true;
@@ -803,6 +851,7 @@ impl Blocker {
         }
         if looks_like_gambling_host(&destination)
             || matches_gambling_domain(&destination, &self.gambling_domains)
+            || matches_hagezi_popup_domain(&destination)
             || looks_like_gambling_popup_url(url)
         {
             return true;
@@ -2194,6 +2243,51 @@ mod tests {
             "document",
             "GET"
         ));
+    }
+
+    #[test]
+    fn production_blocker_uses_bundled_popup_domains_for_popup_redirect_and_frame_paths() {
+        // This randomized domain is present only in the bundled HaGeZi popup
+        // list, so this exercises the production Blocker::load wiring rather
+        // than a hand-built adblock engine containing a duplicate rule.
+        let blocker = Blocker::load(
+            PathBuf::from("target/adblock-test-hagezi-popup"),
+            AdblockMode::Balanced,
+        );
+        let source = "https://news.example/article";
+        let destination = "https://fd01ce9a02.0012e30263.com/landing";
+        let unrelated = "https://accounts.google.com/";
+
+        assert!(matches_hagezi_popup_domain("fd01ce9a02.0012e30263.com"));
+        assert!(blocker.should_block_popup(destination, source, true));
+        assert!(blocker.should_block_navigation(destination, source));
+        assert!(blocker.should_block_frame_navigation(destination, source));
+
+        let popup_context = PopupNavigationContext::from_opener(Some(source.to_owned()));
+        let inherited_opener = popup_context.opener_for_source("about:blank");
+        assert!(blocker.should_block_popup_with_popup_context(
+            destination,
+            "about:blank",
+            inherited_opener.as_deref(),
+            true,
+        ));
+        assert!(blocker.should_block_navigation_with_popup_context(
+            destination,
+            "about:blank",
+            inherited_opener.as_deref(),
+        ));
+        assert!(blocker.should_block_frame_navigation_with_popup_context(
+            destination,
+            "about:blank",
+            inherited_opener.as_deref(),
+        ));
+
+        assert!(!matches_hagezi_popup_domain(
+            "evilfd01ce9a02.0012e30263.com"
+        ));
+        assert!(!blocker.should_block_popup(unrelated, source, true));
+        assert!(!blocker.should_block_navigation(unrelated, source));
+        assert!(!blocker.should_block_frame_navigation(unrelated, source));
     }
 
     #[test]
