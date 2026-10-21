@@ -75,7 +75,7 @@ EXPECTED_BROWSERCLAW = ProductDescriptor(
     installer_full_name="Pip Dev Installer",
     dev_installer_full_name="Pip Dev Dev Installer",
     app_base_name="Pip Dev",
-    artifact_prefix="PipSetup",
+    artifact_prefix="PipDevSetup",
     release_prefix="browserclaw",
     homepage_url="https://pip.psharehub.com/",
     support_url="https://pip.psharehub.com/huong-dan/",
@@ -125,7 +125,7 @@ class DefineGoldenTest(unittest.TestCase):
         product = get_product_descriptor("browserclaw")
         self.assertEqual(
             product.artifact_filename("installer", "0.1.0", "x64"),
-            "PipSetup_v0.1.0_x64_installer.exe",
+            "PipDevSetup_v0.1.0_x64_installer.exe",
         )
 
 

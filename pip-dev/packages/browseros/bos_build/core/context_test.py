@@ -108,7 +108,7 @@ class GetAppPathTest(unittest.TestCase):
             self.assertEqual(ctx.out_dir, "out/Default_browserclaw_arm64")
             self.assertEqual(
                 ctx.get_artifact_name("dmg"),
-                f"PipSetup_v{ctx.semantic_version}_arm64.dmg",
+                f"PipDevSetup_v{ctx.semantic_version}_arm64.dmg",
             )
             self.assertEqual(
                 ctx.get_release_path("macos"),

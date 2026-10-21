@@ -26,7 +26,7 @@ BROWSERCLAW_PRODUCT = ProductDescriptor.define(
         (BROWSEROS_BUG_REPORTER_EXTENSION_ID, "Pip Dev bug reporter"),
     ),
     server_bundle_ids=("browserclaw-server",),
-    artifact_prefix="PipSetup",
+    artifact_prefix="PipDevSetup",
     mac=MacProductIdentity(
         bundle_id="com.browseros.BrowserClaw",
         dev_bundle_id="com.browseros.dev.BrowserClaw",
