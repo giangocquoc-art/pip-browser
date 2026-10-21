@@ -5,6 +5,14 @@ import {
   type NativeInputDebugger,
 } from './native-input-lock'
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((complete) => {
+    resolve = complete
+  })
+  return { promise, resolve }
+}
+
 function makeDebugger() {
   const calls: Array<[string, number, string?]> = []
   let onDetach: ((source: { tabId?: number }, reason: string) => void) | undefined
@@ -121,6 +129,137 @@ describe('NativeInputLockManager', () => {
       ['Input.setAgentInputLock', 7],
       ['detach', 7],
     ])
+  })
+
+  it('restores a lock when a newer stop starts during the CDP unlock', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const unlockStarted = deferred<void>()
+    const finishUnlock = deferred<void>()
+    let canRelease = true
+    let delayUnlock = true
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      const locked = (params as { locked?: boolean } | undefined)?.locked
+      if (method === 'Input.setAgentInputLock' && locked === false && delayUnlock) {
+        delayUnlock = false
+        unlockStarted.resolve(undefined)
+        await finishUnlock.promise
+      }
+    }
+
+    await locks.sync(7, ['session-a'])
+    const releasing = locks.release(7, () => canRelease)
+    await unlockStarted.promise
+    canRelease = false
+    finishUnlock.resolve(undefined)
+    await releasing
+
+    expect(calls.slice(-2)).toEqual([
+      ['Input.setAgentInputLock', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(locks.status(7)).toBe('locked')
+
+    canRelease = true
+    await locks.release(7, () => canRelease)
+    expect(locks.status(7)).toBe('unlocked')
+    expect(calls.slice(-2)).toEqual([
+      ['Input.setAgentInputLock', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('reacquires a native lock when a newer stop starts during CDP detach', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const detachStarted = deferred<void>()
+    const finishDetach = deferred<void>()
+    let canRelease = true
+    api.detach = async ({ tabId }) => {
+      calls.push(['detach', tabId])
+      detachStarted.resolve(undefined)
+      await finishDetach.promise
+    }
+
+    await locks.sync(7, ['session-a'])
+    const releasing = locks.release(7, () => canRelease)
+    await detachStarted.promise
+    canRelease = false
+    finishDetach.resolve(undefined)
+    await releasing
+
+    expect(calls.slice(-3)).toEqual([
+      ['detach', 7],
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(locks.status(7)).toBe('locked')
+  })
+
+  it('retains the debugger lease and reports unavailable if stale unlock cannot be reversed', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const unlockStarted = deferred<void>()
+    const finishUnlock = deferred<void>()
+    let canRelease = true
+    let delayUnlock = true
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      const locked = (params as { locked?: boolean } | undefined)?.locked
+      if (method !== 'Input.setAgentInputLock') return
+      if (locked === false && delayUnlock) {
+        delayUnlock = false
+        unlockStarted.resolve(undefined)
+        await finishUnlock.promise
+        return
+      }
+      if (locked === true && delayUnlock === false && !canRelease) {
+        throw new Error('relock failed')
+      }
+    }
+
+    await locks.sync(7, ['session-a'])
+    const releasing = locks.release(7, () => canRelease)
+    await unlockStarted.promise
+    canRelease = false
+    finishUnlock.resolve(undefined)
+    await expect(releasing).rejects.toThrow('could not restore the agent input lock')
+
+    expect(locks.status(7)).toBe('unavailable')
+    expect(calls).not.toContainEqual(['detach', 7])
+
+    // Even the later cleanup detach must recover if another owner starts while
+    // CDP is detaching the retained connection.
+    canRelease = true
+    const detachStarted = deferred<void>()
+    const finishDetach = deferred<void>()
+    let canCleanup = true
+    let delayDetach = true
+    api.detach = async ({ tabId }) => {
+      calls.push(['detach', tabId])
+      if (!delayDetach) return
+      delayDetach = false
+      detachStarted.resolve(undefined)
+      await finishDetach.promise
+    }
+    const cleanup = locks.release(7, () => canCleanup)
+    await detachStarted.promise
+    canCleanup = false
+    finishDetach.resolve(undefined)
+    await cleanup
+
+    expect(calls.slice(-3)).toEqual([
+      ['detach', 7],
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(locks.status(7)).toBe('locked')
+
+    // A final reconciliation can then detach and clear the retained connection.
+    await locks.release(7, () => canRelease)
+    expect(locks.status(7)).toBe('unlocked')
+    expect(calls.at(-1)).toEqual(['detach', 7])
   })
 
   it('never reports a lock when Chromium lacks the native command', async () => {

@@ -31,8 +31,8 @@ function fixture(options?: {
     finishStop: (tabId) => {
       calls.push(`finish:${tabId}`)
     },
-    releaseLock: async (tabId) => {
-      calls.push(`release:${tabId}`)
+    reconcileLock: async (tabId) => {
+      calls.push(`reconcile:${tabId}`)
     },
   }
   return { calls, dependencies }
@@ -88,10 +88,16 @@ describe('takeover toolbar action', () => {
     await expect(
       handleTakeoverAction(stopRequest, trustedPopup, dependencies),
     ).resolves.toMatchObject({ ok: false, action: 'stop', reason: 'inactive-tab' })
-    expect(calls).toEqual(['active:4', 'begin:17', 'active:4', 'finish:17'])
+    expect(calls).toEqual([
+      'active:4',
+      'begin:17',
+      'active:4',
+      'reconcile:17',
+      'finish:17',
+    ])
   })
 
-  it('cancels only the validated tab sessions and releases its lock on success', async () => {
+  it('cancels only the validated tab sessions and reconciles the lock on success', async () => {
     const { calls, dependencies } = fixture()
     await expect(
       handleTakeoverAction(stopRequest, trustedPopup, dependencies),
@@ -101,12 +107,12 @@ describe('takeover toolbar action', () => {
       'begin:17',
       'active:4',
       'stop:17',
-      'release:17',
+      'reconcile:17',
       'finish:17',
     ])
   })
 
-  it('keeps the input lock when cancellation is partial', async () => {
+  it('reconciles current ownership after partial cancellation', async () => {
     const { calls, dependencies } = fixture({ stopped: 1, total: 2 })
     await expect(
       handleTakeoverAction(stopRequest, trustedPopup, dependencies),
@@ -117,15 +123,28 @@ describe('takeover toolbar action', () => {
       stopped: 1,
       total: 2,
     })
-    expect(calls).not.toContain('release:17')
+    expect(calls).toContain('reconcile:17')
     expect(calls.at(-1)).toBe('finish:17')
   })
 
-  it('releases a stale lock when no live session still owns the tab', async () => {
+  it('reconciles stale locks when no live session still owns the tab', async () => {
     const { calls, dependencies } = fixture({ stopped: 0, total: 0 })
     await expect(
       handleTakeoverAction(stopRequest, trustedPopup, dependencies),
     ).resolves.toEqual({ ok: true, action: 'stop', stopped: 0, total: 0 })
-    expect(calls).toContain('release:17')
+    expect(calls).toContain('reconcile:17')
+  })
+
+  it('reconciles ownership after a cancellation error before reopening the gate', async () => {
+    const { calls, dependencies } = fixture()
+    dependencies.stopForTab = async (tabId) => {
+      calls.push(`stop-error:${tabId}`)
+      throw new Error('cancel failed')
+    }
+
+    await expect(
+      handleTakeoverAction(stopRequest, trustedPopup, dependencies),
+    ).resolves.toMatchObject({ ok: false, reason: 'unavailable' })
+    expect(calls.slice(-2)).toEqual(['reconcile:17', 'finish:17'])
   })
 })

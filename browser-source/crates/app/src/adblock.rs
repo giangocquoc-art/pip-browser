@@ -674,8 +674,27 @@ impl Blocker {
         self.filter_action(url, top, source, kind, method).is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn should_block_popup(&self, url: &str, source: &str, user_initiated: bool) -> bool {
-        let Some(source_host) = site(source) else {
+        self.should_block_popup_with_popup_context(url, source, None, user_initiated)
+    }
+
+    /// A nested window opened from a popup's initial about:blank document keeps
+    /// the original web opener as its first-party context until that popup
+    /// commits its first HTTP(S) document.
+    pub(crate) fn should_block_popup_with_popup_context(
+        &self,
+        url: &str,
+        source: &str,
+        popup_opener: Option<&str>,
+        user_initiated: bool,
+    ) -> bool {
+        let source_url = if source == "about:blank" {
+            popup_opener.unwrap_or(source)
+        } else {
+            source
+        };
+        let Some(source_host) = site(source_url) else {
             return !user_initiated;
         };
         if self.disabled.contains(&source_host) {
@@ -701,7 +720,7 @@ impl Blocker {
         // This engine is consulted only for NewWindowRequested destinations.
         // Use `other` so generic network rules apply; adblock-rust separates
         // document navigations from ordinary filterable resources.
-        Request::new(url, source, "other", "GET")
+        Request::new(url, source_url, "other", "GET")
             .ok()
             .is_some_and(|request| {
                 self.popup_engine
@@ -1811,6 +1830,45 @@ mod tests {
         assert!(blocker.should_block_popup(
             "https://ad88vip6.com/home/register?id=940814853",
             "https://news.example/article",
+            true,
+        ));
+    }
+
+    #[test]
+    fn nested_popup_from_about_blank_keeps_opener_filter_context() {
+        let blocker = Blocker {
+            engine: engine(""),
+            popup_engine: engine(&popup_rules("||tracker.example^$popup,third-party")),
+            gambling_domains: GamblingDomains::empty(),
+            mode: AdblockMode::Balanced,
+            disabled: HashSet::new(),
+            exceptions_path: PathBuf::new(),
+            blocked: 0,
+            redirected: 0,
+            bootstraps: HashMap::new(),
+            explicit_navigation_tickets: HashMap::new(),
+        };
+        let opener = "https://news.example/article";
+        let popup_context = PopupNavigationContext::from_opener(Some(opener.into()));
+        let inherited_opener = popup_context.opener_for_source("about:blank");
+
+        assert!(blocker.should_block_popup_with_popup_context(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "about:blank",
+            inherited_opener.as_deref(),
+            true,
+        ));
+        assert!(blocker.should_block_popup_with_popup_context(
+            "https://tracker.example/ad",
+            "about:blank",
+            inherited_opener.as_deref(),
+            true,
+        ));
+        // A normal user-clicked link from the same blank popup remains available.
+        assert!(!blocker.should_block_popup_with_popup_context(
+            "https://accounts.google.com/",
+            "about:blank",
+            inherited_opener.as_deref(),
             true,
         ));
     }

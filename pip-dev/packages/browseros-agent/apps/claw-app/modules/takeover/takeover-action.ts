@@ -30,7 +30,8 @@ export interface TakeoverActionDependencies {
   stopForTab: (tabId: number) => Promise<{ stopped: number; total: number }>
   beginStop: (tabId: number) => void
   finishStop: (tabId: number) => void
-  releaseLock: (tabId: number) => Promise<void>
+  /** Re-read live ownership and keep/release the lock to match the latest state. */
+  reconcileLock: (tabId: number) => Promise<void>
 }
 
 export type TakeoverActionResponse =
@@ -120,9 +121,6 @@ export async function handleTakeoverAction(
         return { ok: false, action: 'stop', reason: 'inactive-tab' }
       }
       const { stopped, total } = await dependencies.stopForTab(tabId)
-      if (total === 0 || stopped === total) {
-        await dependencies.releaseLock(tabId)
-      }
       if (total > 0 && stopped !== total) {
         return {
           ok: false,
@@ -134,7 +132,11 @@ export async function handleTakeoverAction(
       }
       return { ok: true, action: 'stop', stopped, total }
     } finally {
-      dependencies.finishStop(tabId)
+      try {
+        await dependencies.reconcileLock(tabId)
+      } finally {
+        dependencies.finishStop(tabId)
+      }
     }
   } catch {
     return {

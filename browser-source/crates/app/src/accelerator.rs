@@ -909,6 +909,7 @@ pub fn attach_navigation_events(
         // 4. New Window Requested (target="_blank" link clicks, e.g. Garry Tan YC profile)
         let proxy_new_win = proxy.clone();
         let popup_blocker = blocker.clone();
+        let popup_context_for_new_window = popup_navigation_context.clone();
         let new_window_handler =
             webview2_com::NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
@@ -935,13 +936,19 @@ pub fn attach_navigation_events(
                             (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
                         })
                         .unwrap_or_default();
+                    let popup_opener_url = popup_context_for_new_window
+                        .borrow()
+                        .opener_for_source(&source);
                     let mut user_initiated = windows::core::BOOL(0);
                     let _ = unsafe { args.IsUserInitiated(&mut user_initiated) };
-                    let blocked = popup_blocker.borrow().should_block_popup(
-                        &uri_str,
-                        &source,
-                        user_initiated.as_bool(),
-                    );
+                    let blocked = popup_blocker
+                        .borrow()
+                        .should_block_popup_with_popup_context(
+                            &uri_str,
+                            &source,
+                            popup_opener_url.as_deref(),
+                            user_initiated.as_bool(),
+                        );
                     if blocked {
                         let _ = unsafe { args.SetHandled(true) };
                         popup_blocker.borrow_mut().blocked += 1;

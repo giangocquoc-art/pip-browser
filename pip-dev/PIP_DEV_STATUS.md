@@ -50,6 +50,13 @@ launcher from a future packaged release.
   controls that tab, and releases it when control ends, the user stops the session, or the tab
   closes. It reports `locked` only after Chromium confirms the custom CDP command; older or
   unpatched builds show an unlocked warning instead of claiming exclusive control.
+- Overlapping stop/help hand-back operations keep that tab gated until the final operation has
+  reconciled live ownership. A revision check after CDP work triggers a fresh snapshot when an
+  overlapping stop changed the gate mid-operation. Server ownership creation is not atomic with
+  the browser snapshot and CDP update: a newly created owner can exist briefly before the next
+  poll acquires the native lock. If a stop starts while CDP is detaching, Pip reattaches and
+  relocks immediately, but Chromium drops its lease before that recovery can run. Removing these
+  brief arrival windows requires a server-side ownership reservation.
 - The existing Pip data directory can be exported with `tools/export-pip-dev-migration.py`.
   The Pip Dev Settings migration screen previews a versioned JSON export, validates URLs and
   folder trees, requires explicit selection/confirmation, imports bookmarks into named folders,
@@ -63,7 +70,7 @@ launcher from a future packaged release.
 
 ## Important limits and remaining work
 
-- As of 2026-10-22 03:33 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 1,161 of its 28,792 actions (about 1,827 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. The live build log is `D:\src\pipdev-chrome-build-resume.log`; its stderr log is currently empty. The checkout, portable sysroot and build output remain local on D.
+- As of 2026-10-22 03:59 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 1,578 of its 28,792 actions (about 2,244 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. The live build log is `D:\src\pipdev-chrome-build-resume.log`; its stderr log is currently empty. The checkout, portable sysroot and build output remain local on D.
 
 - The current `out/PipDevPortableSDK/args.gn` disables both `enable_updater` and `enable_winsparkle`; it only builds the `chrome` target and is not a distributable package configuration. BrowserOS's Windows package step requires `mini_installer.exe` and `WinSparkle.dll`. After runtime checks pass, regenerate with the Pip Dev Windows release configuration and build the package targets. Pip Dev's artifact prefix is now `PipDevSetup`, matching the Windows install guide; descriptor and context tests verify the installer and DMG names.
 

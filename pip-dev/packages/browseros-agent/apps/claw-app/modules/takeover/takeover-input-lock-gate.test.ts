@@ -23,6 +23,24 @@ describe('TakeoverInputLockGate', () => {
     expect(gate.mayAcquire(7, freshPoll)).toBe(true)
   })
 
+  it('keeps a tab gated until every overlapping stop-like operation finishes', () => {
+    const gate = new TakeoverInputLockGate()
+    const stalePoll = gate.beginPoll(7)
+
+    gate.beginStop(7)
+    gate.beginStop(7)
+    gate.finishStop(7)
+
+    expect(gate.isOnlyStop(7)).toBe(true)
+    expect(gate.mayAcquire(7, stalePoll)).toBe(false)
+    const stillGatedPoll = gate.beginPoll(7)
+    expect(gate.mayAcquire(7, stillGatedPoll)).toBe(false)
+
+    gate.finishStop(7)
+    const freshPoll = gate.beginPoll(7)
+    expect(gate.mayAcquire(7, freshPoll)).toBe(true)
+  })
+
   it('keeps stops and polls independent across tabs', () => {
     const gate = new TakeoverInputLockGate()
     const firstTabPoll = gate.beginPoll(7)
