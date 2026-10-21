@@ -40,6 +40,25 @@ pub fn with_optional_proxy(
     Ok(builder.proxy(proxy))
 }
 
+/// Configure a background HTTP client consistently with the persisted Google
+/// DNS setting. When enabled, a missing local proxy is an error: silently
+/// returning an unproxied client would send its hostname lookups to Windows DNS.
+pub fn with_google_dns_proxy(
+    builder: reqwest::blocking::ClientBuilder,
+    enabled: bool,
+    proxy_port: Option<u16>,
+) -> Result<reqwest::blocking::ClientBuilder, String> {
+    if !enabled {
+        // Keep explicit optional-proxy callers working even when Google DNS is
+        // disabled; production strict callers pass this flag from the setting.
+        return with_optional_proxy(builder, proxy_port);
+    }
+    let port = proxy_port.ok_or_else(|| {
+        "Google DNS is enabled, but Pip's local DNS proxy is unavailable. Restart Pip or turn Google DNS off.".to_string()
+    })?;
+    with_optional_proxy(builder, Some(port))
+}
+
 pub struct DohProxy {
     port: u16,
     running: Arc<AtomicBool>,
@@ -54,6 +73,73 @@ pub struct DohProxy {
     #[cfg(test)]
     active_handlers: Arc<ActiveHandlerLimit>,
     listener_thread: Option<JoinHandle<()>>,
+}
+
+/// A loopback HTTP proxy used only when Google DNS is enabled but the DoH proxy
+/// cannot start. Returning an explicit 503 keeps WebView2 from attempting a
+/// direct connection while avoiding a fixed sentinel port in normal failures.
+pub struct RejectingProxy {
+    port: u16,
+    running: Arc<AtomicBool>,
+    listener_thread: Option<JoinHandle<()>>,
+}
+
+impl RejectingProxy {
+    pub fn start() -> Result<Self, String> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("cannot bind DNS failure proxy: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("cannot read DNS failure proxy port: {error}"))?
+            .port();
+        let running = Arc::new(AtomicBool::new(true));
+        let thread_running = running.clone();
+        let listener_thread = thread::Builder::new()
+            .name("pip-google-dns-fail-closed".into())
+            .spawn(move || {
+                while thread_running.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            if !thread_running.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+                            if read_request_head(&mut stream).is_ok() {
+                                respond_error(&mut stream, "503 Service Unavailable");
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("Pip Google DNS failure proxy listener: {error}");
+                            if !thread_running.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                    }
+                }
+            })
+            .map_err(|error| format!("cannot start DNS failure proxy: {error}"))?;
+        Ok(Self {
+            port,
+            running,
+            listener_thread: Some(listener_thread),
+        })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for RejectingProxy {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.listener_thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 struct ActiveHandlerLimit {
@@ -909,8 +995,9 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 .unwrap();
         });
-        let client = with_optional_proxy(
+        let client = with_google_dns_proxy(
             Client::builder().timeout(Duration::from_secs(3)),
+            false,
             Some(proxy_port),
         )
         .unwrap()
@@ -947,6 +1034,31 @@ mod tests {
     }
 
     #[test]
+    fn enabled_google_dns_never_builds_an_unproxied_background_client() {
+        let result = with_google_dns_proxy(Client::builder(), true, None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("local DNS proxy is unavailable"));
+
+        // DNS off preserves the existing direct-network behavior.
+        assert!(with_google_dns_proxy(Client::builder(), false, None).is_ok());
+    }
+
+    #[test]
+    fn rejecting_proxy_returns_a_local_error_for_webview_requests() {
+        let proxy = RejectingProxy::start().expect("start local rejection proxy");
+        let mut client = TcpStream::connect(("127.0.0.1", proxy.port())).unwrap();
+        client
+            .write_all(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(response.contains("Pip DNS proxy: 503 Service Unavailable"));
+    }
+
+    #[test]
     fn reqwest_optional_proxy_routes_https_through_connect_tunnel() {
         let proxy_listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy_port = proxy_listener.local_addr().unwrap().port();
@@ -963,8 +1075,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = with_optional_proxy(
+        let client = with_google_dns_proxy(
             Client::builder().timeout(Duration::from_secs(3)),
+            true,
             Some(proxy_port),
         )
         .unwrap()
@@ -976,6 +1089,40 @@ mod tests {
             "the test proxy deliberately rejects CONNECT"
         );
         proxy_thread.join().unwrap();
+    }
+
+    #[test]
+    fn enabled_google_dns_with_unavailable_proxy_never_connects_to_origin_directly() {
+        let dead_proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let dead_proxy_port = dead_proxy.local_addr().unwrap().port();
+        drop(dead_proxy);
+
+        let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        let client = with_google_dns_proxy(
+            Client::builder().timeout(Duration::from_secs(2)),
+            true,
+            Some(dead_proxy_port),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        let result = client
+            .get(format!("http://127.0.0.1:{origin_port}/must-not-bypass"))
+            .send();
+        assert!(
+            result.is_err(),
+            "unavailable local proxy must fail the request"
+        );
+        assert!(
+            matches!(
+                origin.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "the request must not reach the origin directly when Google DNS is enabled"
+        );
     }
 
     #[test]

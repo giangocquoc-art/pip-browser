@@ -885,12 +885,14 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     function savePasswordFromForm(){const tabId=Number(document.getElementById('passwordSaveTargetTab').value);const username=document.getElementById('passwordUsername').value.trim();const password=document.getElementById('passwordValue').value;if(!Number.isSafeInteger(tabId)||tabId<=0||!username||!password){showStatus('Chọn tab website rồi nhập tên đăng nhập và mật khẩu.');return}const target=[...document.getElementById('passwordSaveTargetTab').selectedOptions][0];const origin=target?.dataset.origin||target?.textContent?.split(' — ').at(-1);const exists=[...savedPasswordsList.querySelectorAll('.password-item')].some(row=>row.querySelector('strong')?.textContent===origin&&row.querySelector('.password-detail span')?.textContent===username);if(exists&&!confirm('Mật khẩu cùng website và tên đăng nhập sẽ được cập nhật. Tiếp tục?'))return;profileAction('SavePasswordForTab',{tab_id:tabId,username,password});document.getElementById('passwordValue').value=''}
     window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null) => {
       document.getElementById('googleDnsToggle').checked=enabled;
-      document.getElementById('googleDnsRestartRow').hidden=enabled===active;
-      const status=failed&&enabled&&!active
-        ? 'Pip không khởi động được proxy DNS riêng; hiện tab vẫn dùng DNS Windows. Kiểm tra kết nối rồi thử khởi động lại Pip.'
-        : enabled!==active
+      const applied=active||failed;
+      const pending=enabled!==applied;
+      document.getElementById('googleDnsRestartRow').hidden=!pending;
+      const status=pending
           ? 'Đã lưu lựa chọn nhưng proxy chưa được áp dụng. Nhấn “Khởi động lại Pip” để áp dụng, sau đó kiểm tra lại.'
-          : active&&routeOk===false
+          : failed&&applied
+            ? 'Pip không khởi động được proxy DNS riêng; các trang theo tên miền đang bị chặn để tránh dùng DNS Windows. Mở Cài đặt > Kết nối, tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows.'
+            : active&&routeOk===false
             ? 'Proxy Google DNS đã chạy nhưng yêu cầu HTTPS nền không tải được qua proxy. Website có thể không mở được; kiểm tra mạng hoặc tường lửa rồi bấm “Kiểm tra proxy DoH”. DNS Windows không đổi.'
             : active&&routeOk===null
               ? 'Proxy Google DNS đang chạy. Pip đang kiểm tra một yêu cầu HTTPS nền qua proxy. Chưa xác minh xong thì trạng thái này chưa khẳng định tuyến đang hoạt động.'
@@ -1419,5 +1421,13 @@ mod tests {
             .contains("Kiểm tra proxy DoH thành công: yêu cầu HTTPS nền đã tải qua proxy Google"));
         assert!(html.contains("WebView2 được cấu hình dùng cùng proxy và chặn tra cứu trước cục bộ, trừ localhost/proxy; kiểm tra này không chạy từ tab WebView2"));
         assert!(!html.contains("Google DNS đã được xác minh:"));
+    }
+
+    #[test]
+    fn google_dns_startup_failure_explains_that_web_traffic_is_blocked_until_disabled() {
+        let html = get_settings_html("155.0", &Settings::default(), false, true, None);
+        assert!(html.contains("các trang theo tên miền đang bị chặn để tránh dùng DNS Windows"));
+        assert!(html.contains("tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows"));
+        assert!(!html.contains("hiện tab vẫn dùng DNS Windows"));
     }
 }

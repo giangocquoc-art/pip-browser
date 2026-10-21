@@ -476,6 +476,7 @@ struct WindowContext {
     profile_id: String,
     session_slot: usize,
     dns_proxy_port: Option<u16>,
+    dns_proxy_required: bool,
     private: bool,
     id: WindowId,
     window: Arc<Window>,
@@ -815,7 +816,10 @@ impl WindowContext {
             let proxy_ipc = proxy.clone();
             let win_id = self.id;
             let builder = WebViewBuilder::new()
-                .with_additional_browser_args(webview_browser_args(self.dns_proxy_port))
+                .with_additional_browser_args(webview_browser_args(
+                    self.dns_proxy_required,
+                    self.dns_proxy_port,
+                ))
                 .with_bounds(sidebar_bounds)
                 .with_browser_extensions_enabled(true);
             let wv = builder
@@ -1144,23 +1148,29 @@ fn syncable_tab_url(url: &str) -> bool {
     !authority.is_empty() && !authority.contains('@') && !authority.chars().any(char::is_whitespace)
 }
 
-fn dns_proxy_browser_args(port: Option<u16>) -> String {
+fn dns_proxy_browser_args(enabled: bool, port: Option<u16>) -> String {
     // Wry 0.57 replaces its default flags when custom args are supplied. Keep the two
     // flags Wry uses to suppress Edge's selection mini-menu; recheck on Wry upgrades.
     let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI");
-    if let Some(port) = port {
+    if enabled {
         // URL requests use Pip's loopback proxy, while Chromium DNS prefetch can
         // resolve names outside the URL proxy. Fail those speculative lookups
         // locally; the proxy uses numeric loopback and resolves destinations via DoH.
-        args.push_str(&format!(
-            " --proxy-server=http://127.0.0.1:{port} --disable-quic --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1\""
-        ));
+        args.push_str(" --disable-quic");
+        if let Some(port) = port {
+            args.push_str(&format!(" --proxy-server=http://127.0.0.1:{port}"));
+        }
+        // If neither the DoH proxy nor its local rejection listener could bind,
+        // still deny hostname lookups locally. Numeric IP URLs do not use DNS.
+        args.push_str(
+            " --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE localhost , EXCLUDE 127.0.0.1\"",
+        );
     }
     args
 }
 
-fn webview_browser_args(port: Option<u16>) -> String {
-    let mut args = dns_proxy_browser_args(port);
+fn webview_browser_args(enabled: bool, port: Option<u16>) -> String {
+    let mut args = dns_proxy_browser_args(enabled, port);
     if std::env::args().any(|arg| arg == "--verify-native-ui") {
         // Wry creates a separate WebView2 environment per WebView. Keep environment options
         // identical for all views that share WebView2's user data folder.
@@ -1455,11 +1465,14 @@ struct BrowserApp {
     runtime_version: String,
     modifiers: ModifiersState,
     settings: evergreen_core::settings::Settings,
+    /// Google DNS mode applied at process startup; saved changes require restart.
+    google_dns_applied: bool,
     active_google_dns: bool,
     google_dns_start_failed: bool,
     google_dns_health_check_started: bool,
     google_dns_route_ok: Option<bool>,
     doh_proxy: Option<doh_proxy::DohProxy>,
+    failed_closed_dns_proxy: Option<doh_proxy::RejectingProxy>,
     restart_requested: bool,
     startup_profiles: Vec<String>,
     restoring_startup_windows: bool,
@@ -1478,6 +1491,17 @@ struct BrowserApp {
 }
 
 impl BrowserApp {
+    fn dns_proxy_browser_port(&self) -> Option<u16> {
+        self.doh_proxy
+            .as_ref()
+            .map(doh_proxy::DohProxy::port)
+            .or_else(|| {
+                self.failed_closed_dns_proxy
+                    .as_ref()
+                    .map(doh_proxy::RejectingProxy::port)
+            })
+    }
+
     fn sync_settings(&self) {
         for win in self.windows.values() {
             let effective = self.settings.for_profile(&win.profile_id);
@@ -2260,18 +2284,26 @@ impl BrowserApp {
                 .profiles
                 .extend(evergreen_core::settings::default_profiles());
         }
-        let doh_proxy = if settings.google_dns {
+        let google_dns_applied = settings.google_dns;
+        let mut failed_closed_dns_proxy = None;
+        let doh_proxy = if google_dns_applied {
             match doh_proxy::DohProxy::start() {
                 Ok(proxy) => Some(proxy),
                 Err(error) => {
                     eprintln!("Pip Google DNS proxy failed to start: {error}");
+                    match doh_proxy::RejectingProxy::start() {
+                        Ok(proxy) => failed_closed_dns_proxy = Some(proxy),
+                        Err(error) => eprintln!(
+                            "Pip Google DNS rejection proxy failed to start; WebView2 will block hostname resolution locally, but numeric IP URLs can still connect directly: {error}"
+                        ),
+                    }
                     None
                 }
             }
         } else {
             None
         };
-        let google_dns_start_failed = settings.google_dns && doh_proxy.is_none();
+        let google_dns_start_failed = google_dns_applied && doh_proxy.is_none();
         let startup_profiles = std::fs::read(startup_profiles_path())
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
@@ -2291,11 +2323,13 @@ impl BrowserApp {
             modifiers: ModifiersState::default(),
             background_check: std::env::args().any(|a| a == "--background-check")
                 && std::env::args().any(|a| a == "--portable"),
+            google_dns_applied,
             active_google_dns: doh_proxy.is_some(),
             google_dns_start_failed,
             google_dns_health_check_started: false,
             google_dns_route_ok: None,
             doh_proxy,
+            failed_closed_dns_proxy,
             restart_requested: false,
             startup_profiles,
             restoring_startup_windows: false,
@@ -2604,8 +2638,9 @@ impl BrowserApp {
             proxy: self.proxy.clone(),
             profile_id: profile_id.clone(),
             session_slot,
+            dns_proxy_port: self.dns_proxy_browser_port(),
+            dns_proxy_required: self.google_dns_applied,
             private,
-            dns_proxy_port: self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port),
             id: win_id,
             window: window.clone(),
             tab_manager: TabManager::new(),
@@ -2645,7 +2680,10 @@ impl BrowserApp {
         .replace("{{PRIVATE_LABEL}}", if private { " · Ẩn danh" } else { "" });
 
         let chrome_builder = WebViewBuilder::new()
-            .with_additional_browser_args(webview_browser_args(win_ctx.dns_proxy_port))
+            .with_additional_browser_args(webview_browser_args(
+                win_ctx.dns_proxy_required,
+                win_ctx.dns_proxy_port,
+            ))
             .with_bounds(chrome_bounds)
             .with_browser_extensions_enabled(true);
         match chrome_builder
@@ -2760,7 +2798,7 @@ impl BrowserApp {
         let google_dns_failed = self.google_dns_start_failed;
         let google_dns_route_ok = self.google_dns_route_ok;
 
-        let browser_args = webview_browser_args(context.dns_proxy_port);
+        let browser_args = webview_browser_args(context.dns_proxy_required, context.dns_proxy_port);
         let mut builder = WebViewBuilder::new()
             .with_additional_browser_args(browser_args)
             .with_bounds(bounds)
@@ -3603,13 +3641,19 @@ impl BrowserApp {
             }
         }
         let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+        let google_dns_enabled = self.google_dns_applied;
         let proxy = self.proxy.clone();
         self.syncing_profiles.insert(profile_id.clone());
         let event_profile_id = profile_id.clone();
         if std::thread::Builder::new()
             .name("pip-bookmark-sync".into())
             .spawn(move || {
-                let result = sync::sync_payload(&credentials, snapshot, dns_proxy_port);
+                let result = sync::sync_payload_with_google_dns(
+                    &credentials,
+                    snapshot,
+                    google_dns_enabled,
+                    dns_proxy_port,
+                );
                 let _ = proxy.send_event(BrowserEvent::SyncBookmarksDone(
                     win_id,
                     event_profile_id,
@@ -4798,13 +4842,18 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     };
                     let vault_id = credentials.vault_id.clone();
                     let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    let google_dns_enabled = self.google_dns_applied;
                     let proxy = self.proxy.clone();
                     let event_profile_id = profile_id.clone();
                     self.syncing_profiles.insert(profile_id.clone());
                     if std::thread::Builder::new()
                         .name("pip-bookmark-sync-delete".into())
                         .spawn(move || {
-                            let result = sync::delete_vault(&credentials, dns_proxy_port);
+                            let result = sync::delete_vault_with_google_dns(
+                                &credentials,
+                                google_dns_enabled,
+                                dns_proxy_port,
+                            );
                             let _ = proxy.send_event(BrowserEvent::SyncDisabled(
                                 win_id,
                                 event_profile_id,
@@ -5839,22 +5888,28 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
                 UiToHostMessage::CheckAppUpdates => {
                     let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    let google_dns_enabled = self.google_dns_applied;
                     let proxy = self.proxy.clone();
                     std::thread::spawn(move || {
                         let _ = proxy.send_event(BrowserEvent::AppUpdateCheckDone(
                             win_id,
-                            app_updates::check(dns_proxy_port),
+                            app_updates::check_with_google_dns(google_dns_enabled, dns_proxy_port),
                         ));
                     });
                 }
                 UiToHostMessage::UpdateAdblockFilters => {
                     let dns_proxy_port = self.doh_proxy.as_ref().map(doh_proxy::DohProxy::port);
+                    let google_dns_enabled = self.google_dns_applied;
                     let proxy = self.proxy.clone();
                     let directory = get_data_directory();
                     std::thread::spawn(move || {
                         let _ = proxy.send_event(BrowserEvent::AdblockFilterUpdateDone(
                             win_id,
-                            adblock_updates::fetch_and_store(directory, dns_proxy_port),
+                            adblock_updates::fetch_and_store_with_google_dns(
+                                directory,
+                                google_dns_enabled,
+                                dns_proxy_port,
+                            ),
                         ));
                     });
                 }
@@ -8213,12 +8268,12 @@ mod google_dns_preferences_tests {
 
     #[test]
     fn dns_proxy_browser_args_preserve_wry_defaults_and_only_proxy_when_enabled() {
-        let defaults = dns_proxy_browser_args(None);
+        let defaults = dns_proxy_browser_args(false, None);
         assert!(defaults.contains("--disable-features=msWebOOUI,msPdfOOUI"));
         assert!(!defaults.contains("msSmartScreenProtection"));
         assert!(!defaults.contains("--proxy-server="));
 
-        let enabled = dns_proxy_browser_args(Some(43210));
+        let enabled = dns_proxy_browser_args(true, Some(43210));
         assert!(enabled.contains("--proxy-server=http://127.0.0.1:43210"));
         assert!(enabled.contains("--disable-quic"));
         assert!(enabled.contains(
@@ -8226,6 +8281,11 @@ mod google_dns_preferences_tests {
         ));
         assert!(enabled.contains("--disable-features=msWebOOUI,msPdfOOUI"));
         assert!(!enabled.contains("msSmartScreenProtection"));
+
+        let failed_closed = dns_proxy_browser_args(true, None);
+        assert!(!failed_closed.contains("--proxy-server="));
+        assert!(failed_closed.contains("--disable-quic"));
+        assert!(failed_closed.contains("--host-resolver-rules=\"MAP * ~NOTFOUND"));
     }
 
     #[test]

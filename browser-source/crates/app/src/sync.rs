@@ -583,8 +583,21 @@ pub fn sync_payload(
     local: sync_v2::SyncPayloadV2,
     proxy_port: Option<u16>,
 ) -> Result<SyncOutcome, String> {
-    let builder =
-        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    sync_payload_with_google_dns(credentials, local, false, proxy_port)
+}
+
+#[cfg(windows)]
+pub fn sync_payload_with_google_dns(
+    credentials: &SyncCredentials,
+    local: sync_v2::SyncPayloadV2,
+    google_dns_enabled: bool,
+    proxy_port: Option<u16>,
+) -> Result<SyncOutcome, String> {
+    let builder = crate::doh_proxy::with_google_dns_proxy(
+        reqwest::blocking::Client::builder(),
+        google_dns_enabled,
+        proxy_port,
+    )?;
     let client = builder
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -702,8 +715,20 @@ fn sync_payload_with_client(
 
 #[cfg(windows)]
 pub fn delete_vault(credentials: &SyncCredentials, proxy_port: Option<u16>) -> Result<(), String> {
-    let builder =
-        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    delete_vault_with_google_dns(credentials, false, proxy_port)
+}
+
+#[cfg(windows)]
+pub fn delete_vault_with_google_dns(
+    credentials: &SyncCredentials,
+    google_dns_enabled: bool,
+    proxy_port: Option<u16>,
+) -> Result<(), String> {
+    let builder = crate::doh_proxy::with_google_dns_proxy(
+        reqwest::blocking::Client::builder(),
+        google_dns_enabled,
+        proxy_port,
+    )?;
     let client = builder
         .timeout(std::time::Duration::from_secs(20))
         .build()

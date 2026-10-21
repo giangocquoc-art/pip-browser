@@ -130,8 +130,19 @@ pub fn fetch_and_store(
     directory: PathBuf,
     proxy_port: Option<u16>,
 ) -> Result<UpdateSummary, String> {
-    let builder =
-        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    fetch_and_store_with_google_dns(directory, false, proxy_port)
+}
+
+pub fn fetch_and_store_with_google_dns(
+    directory: PathBuf,
+    google_dns_enabled: bool,
+    proxy_port: Option<u16>,
+) -> Result<UpdateSummary, String> {
+    let builder = crate::doh_proxy::with_google_dns_proxy(
+        reqwest::blocking::Client::builder(),
+        google_dns_enabled,
+        proxy_port,
+    )?;
     let client = builder
         .timeout(std::time::Duration::from_secs(25))
         .user_agent(concat!("Pip-Browser/", env!("CARGO_PKG_VERSION")))

@@ -58,8 +58,18 @@ fn parse_release(
 }
 
 pub fn check(proxy_port: Option<u16>) -> Result<AppUpdateInfo, String> {
-    let builder =
-        crate::doh_proxy::with_optional_proxy(reqwest::blocking::Client::builder(), proxy_port)?;
+    check_with_google_dns(false, proxy_port)
+}
+
+pub fn check_with_google_dns(
+    google_dns_enabled: bool,
+    proxy_port: Option<u16>,
+) -> Result<AppUpdateInfo, String> {
+    let builder = crate::doh_proxy::with_google_dns_proxy(
+        reqwest::blocking::Client::builder(),
+        google_dns_enabled,
+        proxy_port,
+    )?;
     let client = builder
         .timeout(std::time::Duration::from_secs(12))
         .user_agent(concat!("Pip-Browser/", env!("CARGO_PKG_VERSION")))

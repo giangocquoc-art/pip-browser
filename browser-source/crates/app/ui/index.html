@@ -1643,16 +1643,17 @@
     let googleDnsEnabled = false;
     let googleDnsActive = false;
     let googleDnsFailed = false;
+    let googleDnsApplied = false;
     function toggleGoogleDns() {
-      if (googleDnsEnabled !== googleDnsActive) {
-        if (googleDnsFailed && googleDnsEnabled) {
-          postIpc('OpenSettings');
-          return;
-        }
+      if (googleDnsEnabled !== googleDnsApplied) {
         if (confirm('Khởi động lại Pip để áp dụng Google DNS? Tab thường sẽ được lưu và khôi phục; cửa sổ ẩn danh sẽ đóng.')) {
           postIpc('RestartBrowser');
         }
         return;
+      }
+      if (googleDnsFailed && googleDnsApplied) {
+          postIpc('OpenSettings');
+          return;
       }
       document.getElementById('googleDnsButton').disabled = true;
       postIpc('SetGoogleDns', {enabled: !googleDnsEnabled});
@@ -1661,26 +1662,27 @@
       googleDnsEnabled = enabled;
       googleDnsActive = active;
       googleDnsFailed = failed;
+      googleDnsApplied = active || failed;
       const button = document.getElementById('googleDnsButton');
       button.disabled = false;
       button.setAttribute('aria-pressed', String(enabled));
       const routeFailed = active && routeOk === false;
       button.dataset.failed = String(enabled && (failed || routeFailed));
-      button.dataset.pending = String(!failed && enabled !== active);
-      button.querySelector('span').textContent = failed && enabled && !active
+      button.dataset.pending = String(enabled !== googleDnsApplied);
+      button.querySelector('span').textContent = failed && googleDnsApplied && !active && enabled === googleDnsApplied
         ? 'Cài đặt'
-        : enabled !== active ? 'Áp dụng' : 'G DNS';
-      button.title = failed && enabled
-        ? 'Google DNS không khởi động được: Pip hiện đang dùng DNS Windows. Bấm để mở Cài đặt > Kết nối.'
-        : enabled !== active
-          ? 'Google DNS: đã lưu lựa chọn bật/tắt nhưng chưa áp dụng. Bấm để khởi động lại Pip và áp dụng.'
-          : routeFailed
-            ? 'Google DNS chưa kết nối được: proxy đang chạy nhưng tuyến HTTPS chưa qua kiểm tra. Mở Cài đặt > Kết nối để thử lại.'
-            : active && routeOk === null
-              ? 'Google DNS: proxy đang chạy; Pip đang kiểm tra khả năng phân giải tên miền và tải trang.'
-              : active && routeOk === true
-                ? 'Google DNS: đã xác minh phân giải tên miền và tải trang qua proxy HTTPS của Pip.'
-                : 'Google DNS: ' + (active ? 'đã cấu hình cho phiên Pip này' : 'đang tắt') + '. Vào Cài đặt > Kết nối để kiểm tra tuyến DNS.';
+        : enabled !== googleDnsApplied ? 'Áp dụng' : 'G DNS';
+      button.title = enabled !== googleDnsApplied
+        ? 'Google DNS: đã lưu lựa chọn bật/tắt nhưng chưa áp dụng. Bấm để khởi động lại Pip và áp dụng.'
+        : failed && googleDnsApplied
+        ? 'Google DNS không khởi động được: Pip đang chặn các trang theo tên miền để tránh dùng DNS Windows. Mở Cài đặt > Kết nối, tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows.'
+        : routeFailed
+          ? 'Google DNS chưa kết nối được: proxy đang chạy nhưng tuyến HTTPS chưa qua kiểm tra. Mở Cài đặt > Kết nối để thử lại.'
+          : active && routeOk === null
+            ? 'Google DNS: proxy đang chạy; Pip đang kiểm tra khả năng phân giải tên miền và tải trang.'
+            : active && routeOk === true
+              ? 'Google DNS: đã xác minh phân giải tên miền và tải trang qua proxy HTTPS của Pip.'
+              : 'Google DNS: ' + (googleDnsApplied ? 'đã cấu hình cho phiên Pip này' : 'đang tắt') + '. Vào Cài đặt > Kết nối để kiểm tra tuyến DNS.';
       button.setAttribute('aria-label', button.title);
     };
 
