@@ -152,12 +152,14 @@ test("mobile layout keeps navigation and hero copy within the viewport", async (
   assert.match(styles, /\.brand span\{display:none\}/);
 });
 
-test("privacy and help pages describe only released sync and DNS behavior", async () => {
+test("privacy and help pages disclose optional sync and Google DNS fallback behavior", async () => {
   const privacy = await readFile(path.join(root, "quyen-rieng-tu/index.html"), "utf8");
   const faq = await readFile(path.join(root, "cau-hoi/index.html"), "utf8");
   assert.match(privacy, /Pip Sync có sẵn nhưng mặc định tắt/);
   assert.match(privacy, /mã hóa trên thiết bị trước khi gửi tới dịch vụ lưu trữ trên Cloudflare/);
   assert.match(privacy, /lịch sử chỉ nằm trong gói đồng bộ đã mã hóa nếu bạn chủ động bật mục này/);
+  assert.match(privacy, /cả truy vấn A và AAAA.*lỗi tạm thời/);
+  assert.match(privacy, /mạng Windows có thể thấy hostname/);
   assert.doesNotMatch(privacy, /chưa có Pip Sync|chưa có đồng bộ đám mây/);
   assert.match(faq, /khởi động lại Pip để áp dụng/);
 });
