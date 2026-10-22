@@ -1,3 +1,7 @@
+# Pip 0.1.16
+
+Google DNS now falls back to Windows DNS only when both Google A and AAAA lookups fail transiently. Pip reports when this fallback is used; NXDOMAIN, NODATA, invalid DNS responses, and proxy or HTTPS failures do not trigger an unannounced direct route. Updated the privacy notice and Google DNS guide to explain that Windows DNS may see a hostname during fallback. Fixed the proxy HTTP request-line terminator and kept background requests on the configured proxy when Google DNS is enabled.
+
 # Pip 0.1.15
 
 Updated TLS certificate verification and bundled root certificates to patched versions after new RustSec advisories. This release also includes the popup-filtering improvements from the unpublished 0.1.14 candidate.

@@ -21,6 +21,8 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string] $PipExe,
 
+    [bool] $GoogleDnsEnabled = $true,
+
     [string] $VideoUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
 
     [ValidateRange(30, 180)]
@@ -53,7 +55,7 @@ $report = [ordered]@{
     pipExeSha256 = $null
     isolatedExe = $isolatedExe
     isolatedProfile = $dataRoot
-    googleDnsEnabled = $true
+    googleDnsEnabled = $GoogleDnsEnabled
     devtoolsAddress = '127.0.0.1'
     devtoolsPort = $null
     devtoolsListenerAddresses = @()
@@ -83,14 +85,24 @@ function Add-Assertion {
 }
 
 function Receive-CdpMessage {
-    param([System.Net.WebSockets.ClientWebSocket] $WebSocket)
+    param(
+        [System.Net.WebSockets.ClientWebSocket] $WebSocket,
+        [int] $TimeoutMilliseconds = 1000
+    )
 
     $stream = New-Object System.IO.MemoryStream
+    $cancellation = New-Object System.Threading.CancellationTokenSource
+    $cancellation.CancelAfter($TimeoutMilliseconds)
     try {
         do {
             $buffer = New-Object byte[] 65536
             $segment = New-Object 'System.ArraySegment[byte]' -ArgumentList (,$buffer)
-            $result = $WebSocket.ReceiveAsync($segment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            try {
+                $result = $WebSocket.ReceiveAsync($segment, $cancellation.Token).GetAwaiter().GetResult()
+            }
+            catch [System.OperationCanceledException] {
+                throw [System.TimeoutException]::new('Timed out waiting for a DevTools WebSocket message.')
+            }
             if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
                 throw 'The local DevTools WebSocket closed unexpectedly.'
             }
@@ -101,6 +113,7 @@ function Receive-CdpMessage {
         return ConvertFrom-Json -InputObject $json
     }
     finally {
+        $cancellation.Dispose()
         $stream.Dispose()
     }
 }
@@ -158,7 +171,13 @@ function Invoke-CdpCommand {
 
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $message = Receive-CdpMessage -WebSocket $WebSocket
+        $remainingMilliseconds = [int] [Math]::Max(1000, [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds))
+        try {
+            $message = Receive-CdpMessage -WebSocket $WebSocket -TimeoutMilliseconds $remainingMilliseconds
+        }
+        catch [System.TimeoutException] {
+            throw [System.TimeoutException]::new("Timed out waiting for local DevTools command: $Method")
+        }
         Save-CdpEvent -Message $message
         if ($message.PSObject.Properties.Name -contains 'id' -and [int] $message.id -eq $id) {
             if ($message.error) {
@@ -252,7 +271,8 @@ try {
     New-Item -ItemType Directory -Path $dataRoot, $tempRoot -ErrorAction Stop | Out-Null
     Copy-Item -LiteralPath $sourcePath -Destination $isolatedExe -ErrorAction Stop
     Set-Content -LiteralPath (Join-Path $runRoot 'portable.ini') -Value 'portable_mode=true' -Encoding ascii
-    Set-Content -LiteralPath (Join-Path $dataRoot 'settings.json') -Value '{"google_dns":true}' -Encoding ascii
+    $dnsSettings = @{ google_dns = $GoogleDnsEnabled } | ConvertTo-Json -Compress
+    Set-Content -LiteralPath (Join-Path $dataRoot 'settings.json') -Value $dnsSettings -Encoding ascii
 
     $report.pipExe = $sourcePath
     $report.pipExeSha256 = (Get-FileHash -LiteralPath $isolatedExe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -289,7 +309,7 @@ try {
         try {
             $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$port/json/list" -TimeoutSec 2 -UseBasicParsing
             $target = @($targets) | Where-Object {
-                $_.type -eq 'page' -and $_.url -like 'https://www.youtube.com/watch*'
+                $_.type -eq 'page' -and $_.url -match '^https://(?:www\.|m\.)?youtube\.com/'
             } | Select-Object -First 1
         }
         catch {
@@ -324,6 +344,7 @@ try {
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Runtime.enable')
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Network.enable')
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Page.enable')
+    [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Page.navigate' -Parameters @{ url = $VideoUrl })
 
     $loadDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $before = $null
@@ -464,17 +485,28 @@ finally {
                     $eventNames[[string] $_.type] -eq 'PROXY_CONFIG_CHANGED'
                 }).Count
                 $report.directDnsTransactions = $dnsCount
-                $proxyDetails = 'WebView2 NetLog did not show a loopback proxy.'
-                if ($proxyConfigured) {
-                    $proxyDetails = 'WebView2 NetLog shows a loopback proxy in the isolated browser run.'
+                $dnsRouteMatchesSetting = $proxyConfigured -eq $GoogleDnsEnabled
+                if ($GoogleDnsEnabled) {
+                    $proxyDetails = 'Google DNS is enabled and WebView2 NetLog shows a loopback proxy.'
                 }
-                Add-Assertion -Name 'google_dns_proxy_configured' -Passed $proxyConfigured `
+                else {
+                    $proxyDetails = 'Google DNS is disabled and WebView2 NetLog shows no loopback proxy.'
+                }
+                Add-Assertion -Name 'dns_route_matches_setting' -Passed $dnsRouteMatchesSetting `
                     -Details $proxyDetails
-                Add-Assertion -Name 'no_direct_dns_transactions' -Passed ($dnsCount -eq 0) `
-                    -Details ("Observed {0} direct DNS_TRANSACTION event(s)." -f $dnsCount)
+                if ($GoogleDnsEnabled) {
+                    Add-Assertion -Name 'no_direct_dns_transactions' -Passed ($dnsCount -eq 0) `
+                        -Details ("Observed {0} direct DNS_TRANSACTION event(s)." -f $dnsCount)
+                }
+                else {
+                    Add-Assertion -Name 'system_dns_route_used' -Passed ($dnsCount -gt 0) `
+                        -Details ("Observed {0} Windows DNS_TRANSACTION event(s) with Google DNS disabled." -f $dnsCount)
+                }
             }
             catch {
-                $report.googleDnsEvidenceError = $_.Exception.Message
+                # ConvertFrom-Json can include the entire NetLog text in its exception.
+                # Retain only the exception class; this artifact must never duplicate raw logs.
+                $report.googleDnsEvidenceError = "WebView2 NetLog parse failed ({0}); raw log discarded." -f $_.Exception.GetType().Name
                 Add-Assertion -Name 'google_dns_netlog_evidence' -Passed $false `
                     -Details $report.googleDnsEvidenceError
             }

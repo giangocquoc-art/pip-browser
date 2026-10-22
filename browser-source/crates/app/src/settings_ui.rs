@@ -694,7 +694,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Khi bật, Pip cấu hình WebView2 và tác vụ HTTPS nền dùng proxy DNS qua HTTPS của Google. Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy. Nút kiểm tra chỉ gửi một yêu cầu HTTPS nền qua proxy, không kiểm tra trực tiếp từ tab WebView2; chưa có đo bắt gói để xác minh mọi truy vấn DNS. Cập nhật WebView2 bằng PowerShell vẫn dùng DNS Windows. Sau khi đổi, hãy khởi động lại để áp dụng.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra proxy DoH</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Khi bật, Pip cấu hình WebView2 và tác vụ HTTPS nền dùng proxy DNS qua HTTPS của Google. Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy. Nếu cả truy vấn A và AAAA đều gặp lỗi tạm thời, Pip dùng DNS Windows dự phòng và mạng đó có thể thấy tên miền; phản hồi NXDOMAIN/NODATA hoặc không hợp lệ sẽ không fallback. Nút kiểm tra chỉ gửi một yêu cầu HTTPS nền qua proxy, không kiểm tra trực tiếp từ tab WebView2; chưa có đo bắt gói để xác minh mọi truy vấn DNS. Cập nhật WebView2 bằng PowerShell vẫn dùng DNS Windows. Sau khi đổi, hãy khởi động lại để áp dụng.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra proxy DoH</button></div>
       <div class="row" id="googleDnsRestartRow" hidden><div class="row-info"><span class="row-label">Cần khởi động lại</span><span class="row-desc">Tab thường được lưu và khôi phục. Cửa sổ ẩn danh sẽ đóng để bảo vệ riêng tư.</span></div><button type="button" class="btn btn-secondary" onclick="if(confirm('Khởi động lại Pip để áp dụng Google DNS? Tab thường sẽ được lưu và khôi phục; cửa sổ ẩn danh sẽ đóng.')) sendAction('RestartBrowser')">Khởi động lại Pip</button></div>
     </div>
 
@@ -883,7 +883,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
     window.__showSavedPassword=function(id,password){const row=[...savedPasswordsList.querySelectorAll('.password-item')].find(item=>item.dataset.passwordId===String(id));if(row){const field=row.querySelector('input');field.value=password;field.hidden=false;const button=row.querySelector('.password-actions button');button.textContent='Ẩn';button.setAttribute('aria-label',`Ẩn mật khẩu ${id}`)}};
     if(isPrivateProfile){document.getElementById('passwordVaultHint').textContent='Kho mật khẩu bị tắt trong cửa sổ ẩn danh.';savedPasswordsList.replaceChildren(Object.assign(document.createElement('span'),{className:'empty-state',role:'listitem',textContent:'Không khả dụng trong ẩn danh.'}));}
     function savePasswordFromForm(){const tabId=Number(document.getElementById('passwordSaveTargetTab').value);const username=document.getElementById('passwordUsername').value.trim();const password=document.getElementById('passwordValue').value;if(!Number.isSafeInteger(tabId)||tabId<=0||!username||!password){showStatus('Chọn tab website rồi nhập tên đăng nhập và mật khẩu.');return}const target=[...document.getElementById('passwordSaveTargetTab').selectedOptions][0];const origin=target?.dataset.origin||target?.textContent?.split(' — ').at(-1);const exists=[...savedPasswordsList.querySelectorAll('.password-item')].some(row=>row.querySelector('strong')?.textContent===origin&&row.querySelector('.password-detail span')?.textContent===username);if(exists&&!confirm('Mật khẩu cùng website và tên đăng nhập sẽ được cập nhật. Tiếp tục?'))return;profileAction('SavePasswordForTab',{tab_id:tabId,username,password});document.getElementById('passwordValue').value=''}
-    window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null) => {
+    window.__renderGoogleDns = (enabled, active=enabled, failed=false, routeOk=null, fallbackUsed=false, resolutionFailed=false) => {
       document.getElementById('googleDnsToggle').checked=enabled;
       const applied=active||failed;
       const pending=enabled!==applied;
@@ -892,6 +892,12 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
           ? 'Đã lưu lựa chọn nhưng proxy chưa được áp dụng. Nhấn “Khởi động lại Pip” để áp dụng, sau đó kiểm tra lại.'
           : failed&&applied
             ? 'Pip không khởi động được proxy DNS riêng; các trang theo tên miền đang bị chặn để tránh dùng DNS Windows. Mở Cài đặt > Kết nối, tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows.'
+            : fallbackUsed&&resolutionFailed
+            ? 'Google DoH đã lỗi trong một số yêu cầu; Pip đã dùng DNS Windows dự phòng cho một số tên miền và cả hai bộ phân giải cùng lỗi với ít nhất một yêu cầu. Google DNS không áp dụng cho toàn bộ yêu cầu và một số trang có thể không mở được.'
+            : resolutionFailed
+            ? 'Google DoH và DNS Windows đều không phân giải được ít nhất một tên miền được yêu cầu. Một số trang có thể không mở được; hãy kiểm tra mạng hoặc tường lửa.'
+            : fallbackUsed
+            ? 'Google DoH đã lỗi khi phân giải ít nhất một tên miền; Pip đã dùng DNS Windows dự phòng cho yêu cầu đó. Google DNS không áp dụng cho toàn bộ yêu cầu trong phiên này, và DNS Windows có thể làm lộ tên miền cho mạng đang dùng.'
             : active&&routeOk===false
             ? 'Proxy Google DNS đã chạy nhưng yêu cầu HTTPS nền không tải được qua proxy. Website có thể không mở được; kiểm tra mạng hoặc tường lửa rồi bấm “Kiểm tra proxy DoH”. DNS Windows không đổi.'
             : active&&routeOk===null
@@ -901,7 +907,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
                 : 'Đang dùng DNS Windows. Bật Google DNS để dùng tuyến HTTPS riêng cho website và tác vụ HTTPS nền trong Pip.';
       document.getElementById('googleDnsHint').textContent=status+' Cập nhật WebView2 bằng PowerShell vẫn dùng mạng Windows.';
     };
-    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}},{{GOOGLE_DNS_ROUTE_OK}});
+    window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}},{{GOOGLE_DNS_ROUTE_OK}},{{GOOGLE_DNS_FALLBACK_USED}},{{GOOGLE_DNS_RESOLUTION_FAILED}});
 
     function sendAction(action) {
       if (window.ipc) {
@@ -1094,6 +1100,8 @@ pub fn get_settings_html(
     google_dns_active: bool,
     google_dns_failed: bool,
     google_dns_route_ok: Option<bool>,
+    google_dns_fallback_used: bool,
+    google_dns_resolution_failed: bool,
 ) -> String {
     let download_dir_str = settings.downloads.default_folder.to_string_lossy();
     let public_profiles = settings
@@ -1140,6 +1148,22 @@ pub fn get_settings_html(
             &google_dns_route_ok
                 .map(|ok| ok.to_string())
                 .unwrap_or_else(|| "null".into()),
+        )
+        .replace(
+            "{{GOOGLE_DNS_FALLBACK_USED}}",
+            if google_dns_fallback_used {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .replace(
+            "{{GOOGLE_DNS_RESOLUTION_FAILED}}",
+            if google_dns_resolution_failed {
+                "true"
+            } else {
+                "false"
+            },
         );
 
     let selected_adblock_mode = match settings.adblock_mode {
@@ -1299,7 +1323,7 @@ mod tests {
     fn sync_settings_are_available_without_exposing_protected_profile_credentials() {
         let mut settings = Settings::default();
         settings.profiles[0].sync_credentials_protected = Some("local-dpapi-secret-marker".into());
-        let html = get_settings_html("155.0", &settings, false, false, None);
+        let html = get_settings_html("155.0", &settings, false, false, None, false, false);
         assert!(html.contains("EnableBookmarkSync"));
         assert!(html.contains("ImportBookmarkSync"));
         assert!(html.contains("SyncBookmarks"));
@@ -1348,7 +1372,7 @@ mod tests {
         settings.appearance.theme = "dark".into();
         settings.appearance.density = "compact".into();
         settings.tabs.warn_on_close_tabs = false;
-        let html = get_settings_html("155.0", &settings, false, false, None);
+        let html = get_settings_html("155.0", &settings, false, false, None, false, false);
 
         assert!(html.contains("id=\"themeSelect\""));
         assert!(html.contains("<option value=\"dark\" selected>"));
@@ -1364,7 +1388,15 @@ mod tests {
 
     #[test]
     fn extension_install_control_discloses_missing_webview2_action_ui() {
-        let html = get_settings_html("155.0", &Settings::default(), false, false, None);
+        let html = get_settings_html(
+            "155.0",
+            &Settings::default(),
+            false,
+            false,
+            None,
+            false,
+            false,
+        );
         let warning = html
             .find("id=\"browserExtensionsCompatibilityHint\"")
             .expect("extension compatibility warning is shown");
@@ -1396,14 +1428,22 @@ mod tests {
     fn adblock_mode_selection_reflects_saved_setting() {
         let mut settings = Settings::default();
         settings.adblock_mode = evergreen_core::settings::AdblockMode::VideoFirst;
-        let html = get_settings_html("155.0", &settings, false, false, None);
+        let html = get_settings_html("155.0", &settings, false, false, None, false, false);
         assert!(html.contains("value=\"video_first\" selected"));
         assert!(html.contains("Ưu tiên video bỏ qua luật chặn"));
     }
 
     #[test]
     fn profile_deletion_explains_persistent_window_requirement() {
-        let html = get_settings_html("155.0", &Settings::default(), false, false, None);
+        let html = get_settings_html(
+            "155.0",
+            &Settings::default(),
+            false,
+            false,
+            None,
+            false,
+            false,
+        );
         assert!(html.contains("id=\"profileDeleteHint\""));
         assert!(html.contains("option.dataset.privateOpen=profile?.isPrivateOpen"));
         assert!(html.contains("Mở hồ sơ trong cửa sổ Pip bình thường trước khi xóa"));
@@ -1412,9 +1452,21 @@ mod tests {
 
     #[test]
     fn google_dns_status_discloses_that_route_check_covers_background_https_only() {
-        let html = get_settings_html("155.0", &Settings::default(), true, false, Some(true));
+        let html = get_settings_html(
+            "155.0",
+            &Settings::default(),
+            true,
+            false,
+            Some(true),
+            false,
+            false,
+        );
         assert!(html.contains("Kiểm tra proxy DoH"));
         assert!(html.contains("Nút kiểm tra chỉ gửi một yêu cầu HTTPS nền qua proxy, không kiểm tra trực tiếp từ tab WebView2"));
+        assert!(html.contains(
+            "Nếu cả truy vấn A và AAAA đều gặp lỗi tạm thời, Pip dùng DNS Windows dự phòng"
+        ));
+        assert!(html.contains("NXDOMAIN/NODATA hoặc không hợp lệ sẽ không fallback"));
         assert!(html.contains("Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy"));
         assert!(html.contains("chưa có đo bắt gói để xác minh mọi truy vấn DNS"));
         assert!(html
@@ -1425,9 +1477,30 @@ mod tests {
 
     #[test]
     fn google_dns_startup_failure_explains_that_web_traffic_is_blocked_until_disabled() {
-        let html = get_settings_html("155.0", &Settings::default(), false, true, None);
+        let html = get_settings_html(
+            "155.0",
+            &Settings::default(),
+            false,
+            true,
+            None,
+            false,
+            false,
+        );
         assert!(html.contains("các trang theo tên miền đang bị chặn để tránh dùng DNS Windows"));
         assert!(html.contains("tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows"));
         assert!(!html.contains("hiện tab vẫn dùng DNS Windows"));
+    }
+
+    #[test]
+    fn google_dns_status_discloses_system_dns_fallback_and_resolution_failure() {
+        let settings = Settings {
+            google_dns: true,
+            ..Settings::default()
+        };
+        let html = get_settings_html("155.0", &settings, true, false, Some(true), true, true);
+        assert!(!html.contains("{{GOOGLE_DNS_FALLBACK_USED}}"));
+        assert!(html.contains("đã dùng DNS Windows dự phòng cho một số tên miền"));
+        assert!(html.contains("cả hai bộ phân giải cùng lỗi với ít nhất một yêu cầu"));
+        assert!(html.contains("window.__renderGoogleDns(true,true,false,true,true,true)"));
     }
 }

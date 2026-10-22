@@ -577,7 +577,7 @@ pub fn sync_bookmarks(
 }
 
 /// Synchronizes a bounded V4 inner payload while preserving the opaque V1 HTTP envelope.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub fn sync_payload(
     credentials: &SyncCredentials,
     local: sync_v2::SyncPayloadV2,
@@ -713,7 +713,7 @@ fn sync_payload_with_client(
     Err("Không thể đồng bộ sau khi dữ liệu thay đổi trên thiết bị khác.".into())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 pub fn delete_vault(credentials: &SyncCredentials, proxy_port: Option<u16>) -> Result<(), String> {
     delete_vault_with_google_dns(credentials, false, proxy_port)
 }

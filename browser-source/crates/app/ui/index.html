@@ -1658,7 +1658,7 @@
       document.getElementById('googleDnsButton').disabled = true;
       postIpc('SetGoogleDns', {enabled: !googleDnsEnabled});
     }
-    window.__renderGoogleDns = function(enabled, active, failed = false, routeOk = null) {
+    window.__renderGoogleDns = function(enabled, active, failed = false, routeOk = null, fallbackUsed = false, resolutionFailed = false) {
       googleDnsEnabled = enabled;
       googleDnsActive = active;
       googleDnsFailed = failed;
@@ -1667,7 +1667,9 @@
       button.disabled = false;
       button.setAttribute('aria-pressed', String(enabled));
       const routeFailed = active && routeOk === false;
-      button.dataset.failed = String(enabled && (failed || routeFailed));
+      button.dataset.failed = String(enabled && (failed || routeFailed || fallbackUsed || resolutionFailed));
+      button.dataset.fallbackUsed = String(fallbackUsed);
+      button.dataset.resolutionFailed = String(resolutionFailed);
       button.dataset.pending = String(enabled !== googleDnsApplied);
       button.querySelector('span').textContent = failed && googleDnsApplied && !active && enabled === googleDnsApplied
         ? 'Cài đặt'
@@ -1676,6 +1678,12 @@
         ? 'Google DNS: đã lưu lựa chọn bật/tắt nhưng chưa áp dụng. Bấm để khởi động lại Pip và áp dụng.'
         : failed && googleDnsApplied
         ? 'Google DNS không khởi động được: Pip đang chặn các trang theo tên miền để tránh dùng DNS Windows. Mở Cài đặt > Kết nối, tắt Google DNS rồi khởi động lại nếu muốn dùng DNS Windows.'
+        : fallbackUsed && resolutionFailed
+          ? 'Pip đã dùng DNS Windows cho một số tra cứu sau khi Google DoH lỗi; một tra cứu khác không phân giải được bằng cả hai DNS. Google DNS không xác minh được cho toàn bộ yêu cầu.'
+        : resolutionFailed
+          ? 'Google DoH và DNS Windows đều không phân giải được ít nhất một tên miền. Kiểm tra kết nối mạng hoặc DNS.'
+        : fallbackUsed
+          ? 'Google DoH không phân giải được ít nhất một tên miền; Pip đã dùng DNS Windows dự phòng cho yêu cầu đó. Một số tên miền có thể được Windows DNS nhìn thấy. Mở Cài đặt > Kết nối để xem chi tiết.'
         : routeFailed
           ? 'Google DNS chưa kết nối được: proxy đang chạy nhưng tuyến HTTPS chưa qua kiểm tra. Mở Cài đặt > Kết nối để thử lại.'
           : active && routeOk === null

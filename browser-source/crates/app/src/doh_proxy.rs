@@ -5,11 +5,12 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 #[cfg(any(debug_assertions, test))]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,75 @@ const CACHE_MAX_ENTRIES: usize = 2048;
 const MAX_ACTIVE_PROXY_HANDLERS: usize = 32;
 /// Bound concurrent A/AAAA HTTP requests independently of client connections.
 const MAX_CONCURRENT_DOH_QUERIES: usize = 8;
+/// A stuck OS resolver must not consume all of the loopback proxy's request threads.
+const MAX_SYSTEM_DNS_WORKERS: usize = 4;
+const MAX_QUEUED_SYSTEM_DNS_LOOKUPS: usize = 16;
+const SYSTEM_DNS_FALLBACK_TIMEOUT: Duration = Duration::from_secs(4);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsResolverReport {
+    SystemFallbackUsed,
+    BothResolversFailed,
+}
+
+type DnsResolverReporter = Arc<dyn Fn(DnsResolverReport) + Send + Sync>;
+
+#[derive(Clone)]
+struct DnsFallbackSignal {
+    system_fallback_used: Arc<AtomicBool>,
+    both_resolvers_failed: Arc<AtomicBool>,
+    reporter: Option<DnsResolverReporter>,
+}
+
+impl DnsFallbackSignal {
+    fn report_system_fallback(&self) {
+        if !self.system_fallback_used.swap(true, Ordering::AcqRel) {
+            eprintln!(
+                "Pip Google DNS lookup failed; using Windows DNS fallback for some requests."
+            );
+            if let Some(reporter) = &self.reporter {
+                reporter(DnsResolverReport::SystemFallbackUsed);
+            }
+        }
+    }
+
+    fn report_both_resolvers_failed(&self) {
+        if !self.both_resolvers_failed.swap(true, Ordering::AcqRel) {
+            eprintln!(
+                "Pip Google DNS and Windows DNS both failed to resolve a requested hostname."
+            );
+            if let Some(reporter) = &self.reporter {
+                reporter(DnsResolverReport::BothResolversFailed);
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DnsResolutionSource {
+    GoogleDoh,
+    SystemFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoogleDohFailure {
+    Transient,
+    NameNotFound,
+    NoData,
+    InvalidResponse,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DnsResolution {
+    addresses: Vec<IpAddr>,
+    source: DnsResolutionSource,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DnsResolutionFailure {
+    GoogleDohRejected,
+    BothResolversFailed,
+}
 
 /// Configure a Reqwest client to use Pip's already-running local proxy when one
 /// is available. A configured proxy is explicit: request failures must not be
@@ -62,6 +132,8 @@ pub fn with_google_dns_proxy(
 pub struct DohProxy {
     port: u16,
     running: Arc<AtomicBool>,
+    system_dns_fallback_used: Arc<AtomicBool>,
+    both_resolvers_failed: Arc<AtomicBool>,
     #[cfg(debug_assertions)]
     accepted_connections: Arc<AtomicU64>,
     #[cfg(test)]
@@ -228,7 +300,18 @@ impl Drop for DohQueryPermit {
 }
 
 impl DohProxy {
+    #[cfg(test)]
     pub fn start() -> Result<Self, String> {
+        Self::start_inner(None)
+    }
+
+    pub fn start_with_fallback_reporter(
+        reporter: impl Fn(DnsResolverReport) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        Self::start_inner(Some(Arc::new(reporter)))
+    }
+
+    fn start_inner(reporter: Option<DnsResolverReporter>) -> Result<Self, String> {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|error| format!("cannot bind local proxy: {error}"))?;
         let port = listener
@@ -250,10 +333,18 @@ impl DohProxy {
         let cache = Arc::new(Mutex::new(HashMap::<String, CachedAnswers>::new()));
         let active_handlers = Arc::new(ActiveHandlerLimit::new(MAX_ACTIVE_PROXY_HANDLERS));
         let query_limit = Arc::new(DohQueryLimit::new(MAX_CONCURRENT_DOH_QUERIES));
+        let system_dns_fallback_used = Arc::new(AtomicBool::new(false));
+        let both_resolvers_failed = Arc::new(AtomicBool::new(false));
+        let fallback_signal = DnsFallbackSignal {
+            system_fallback_used: system_dns_fallback_used.clone(),
+            both_resolvers_failed: both_resolvers_failed.clone(),
+            reporter,
+        };
         let running = Arc::new(AtomicBool::new(true));
         let thread_running = running.clone();
         let thread_active_handlers = active_handlers.clone();
         let thread_query_limit = query_limit.clone();
+        let thread_fallback_signal = fallback_signal.clone();
         #[cfg(debug_assertions)]
         let accepted_connections = Arc::new(AtomicU64::new(0));
         #[cfg(test)]
@@ -286,6 +377,7 @@ impl DohProxy {
                             let client = client.clone();
                             let cache = cache.clone();
                             let query_limit = thread_query_limit.clone();
+                            let fallback_signal = thread_fallback_signal.clone();
                             #[cfg(debug_assertions)]
                             let doh_resolution_count = thread_doh_resolution_count.clone();
                             #[cfg(debug_assertions)]
@@ -304,6 +396,7 @@ impl DohProxy {
                                         client,
                                         cache,
                                         query_limit,
+                                        fallback_signal,
                                         #[cfg(debug_assertions)]
                                         doh_resolution_count,
                                         #[cfg(debug_assertions)]
@@ -326,6 +419,8 @@ impl DohProxy {
         Ok(Self {
             port,
             running,
+            system_dns_fallback_used,
+            both_resolvers_failed,
             #[cfg(debug_assertions)]
             accepted_connections,
             #[cfg(test)]
@@ -338,6 +433,14 @@ impl DohProxy {
             active_handlers,
             listener_thread: Some(listener_thread),
         })
+    }
+
+    pub fn system_dns_fallback_used(&self) -> bool {
+        self.system_dns_fallback_used.load(Ordering::Acquire)
+    }
+
+    pub fn both_resolvers_failed(&self) -> bool {
+        self.both_resolvers_failed.load(Ordering::Acquire)
     }
 
     pub fn port(&self) -> u16 {
@@ -415,19 +518,37 @@ fn handle_client(
     client: Client,
     cache: Arc<Mutex<HashMap<String, CachedAnswers>>>,
     query_limit: Arc<DohQueryLimit>,
+    fallback_signal: DnsFallbackSignal,
     #[cfg(debug_assertions)] successful_doh_resolutions: Arc<AtomicU64>,
     #[cfg(debug_assertions)] successful_connect_tunnels: Arc<AtomicU64>,
 ) {
-    #[cfg(debug_assertions)]
     let resolver = move |host: &str| {
-        let result = resolve_google_doh(host, &client, &cache, &query_limit);
-        if result.is_ok() {
+        let result = resolve_with_fallback(
+            host,
+            |hostname| resolve_google_doh(hostname, &client, &cache, &query_limit),
+            resolve_with_system_dns,
+        );
+        #[cfg(debug_assertions)]
+        if matches!(
+            &result,
+            Ok(resolution) if resolution.source == DnsResolutionSource::GoogleDoh
+        ) {
             successful_doh_resolutions.fetch_add(1, Ordering::Relaxed);
         }
-        result.ok()
+        match result {
+            Ok(resolution) => {
+                if resolution.source == DnsResolutionSource::SystemFallback {
+                    fallback_signal.report_system_fallback();
+                }
+                Some(resolution.addresses)
+            }
+            Err(DnsResolutionFailure::BothResolversFailed) => {
+                fallback_signal.report_both_resolvers_failed();
+                None
+            }
+            Err(DnsResolutionFailure::GoogleDohRejected) => None,
+        }
     };
-    #[cfg(not(debug_assertions))]
-    let resolver = move |host: &str| resolve_google_doh(host, &client, &cache, &query_limit).ok();
     handle_client_with_resolver_and_tunnel_counter(
         client_stream,
         resolver,
@@ -506,7 +627,7 @@ fn handle_client_with_resolver_and_tunnel_counter(
 
     let mut lines = request.lines();
     let _ = lines.next();
-    if writeln!(upstream, "{method} {path} HTTP/1.1").is_err() {
+    if write!(upstream, "{method} {path} HTTP/1.1\r\n").is_err() {
         return;
     }
     for line in lines {
@@ -758,10 +879,10 @@ fn resolve_google_doh(
     client: &Client,
     cache: &Arc<Mutex<HashMap<String, CachedAnswers>>>,
     query_limit: &Arc<DohQueryLimit>,
-) -> Result<Vec<IpAddr>, String> {
+) -> Result<Vec<IpAddr>, GoogleDohFailure> {
     let hostname = host.trim_end_matches('.').to_ascii_lowercase();
     if hostname.is_empty() || hostname.chars().any(char::is_control) {
-        return Err("invalid host name".to_string());
+        return Err(GoogleDohFailure::InvalidResponse);
     }
     if let Ok(ip) = hostname.parse::<IpAddr>() {
         return Ok(vec![ip]);
@@ -769,7 +890,7 @@ fn resolve_google_doh(
     let now = Instant::now();
     let mut entries = cache
         .lock()
-        .map_err(|_| "DNS cache is unavailable".to_string())?;
+        .map_err(|_| GoogleDohFailure::InvalidResponse)?;
     if let Some(cached) = entries.get_mut(&hostname) {
         if cached.expires > now {
             cached.last_used = now;
@@ -789,30 +910,18 @@ fn resolve_google_doh(
             query_google_json(client, &hostname, "AAAA")
         });
         (
-            v4.join()
-                .unwrap_or_else(|_| Err("IPv4 DoH worker failed".into())),
-            v6.join()
-                .unwrap_or_else(|_| Err("IPv6 DoH worker failed".into())),
+            v4.join().unwrap_or(Err(GoogleDohFailure::InvalidResponse)),
+            v6.join().unwrap_or(Err(GoogleDohFailure::InvalidResponse)),
         )
     });
-    let mut addresses = Vec::new();
-    let mut ttl = CACHE_MAX_AGE;
-    for (found, result_ttl) in [v4, v6].into_iter().flatten() {
-        addresses.extend(found);
-        ttl = ttl.min(result_ttl);
-    }
-    addresses.sort_by_key(|address| (u8::from(address.is_ipv4()), *address));
-    addresses.dedup();
-    if addresses.is_empty() {
-        return Err("Google DNS returned no address".to_string());
-    }
+    let (addresses, ttl) = aggregate_google_answers([v4, v6])?;
     // DNS TTLs are upper bounds: do not extend short CNAME/address lifetimes
     // to a convenience minimum, which can keep stale answers after a change.
-    ttl = ttl.min(CACHE_MAX_AGE);
+    let ttl = ttl.min(CACHE_MAX_AGE);
     let now = Instant::now();
     let mut entries = cache
         .lock()
-        .map_err(|_| "DNS cache is unavailable".to_string())?;
+        .map_err(|_| GoogleDohFailure::InvalidResponse)?;
     prune_dns_cache(&mut entries, now);
     entries.insert(
         hostname,
@@ -822,6 +931,176 @@ fn resolve_google_doh(
             last_used: now,
         },
     );
+    Ok(addresses)
+}
+
+fn aggregate_google_answers(
+    results: [Result<(Vec<IpAddr>, Duration), GoogleDohFailure>; 2],
+) -> Result<(Vec<IpAddr>, Duration), GoogleDohFailure> {
+    let mut addresses = Vec::new();
+    let mut ttl = CACHE_MAX_AGE;
+    let mut failures = Vec::new();
+    for result in results {
+        match result {
+            Ok((found, result_ttl)) => {
+                addresses.extend(found);
+                ttl = ttl.min(result_ttl);
+            }
+            Err(failure) => failures.push(failure),
+        }
+    }
+    addresses.sort_by_key(|address| (u8::from(address.is_ipv4()), *address));
+    addresses.dedup();
+    if addresses.is_empty() {
+        if failures.len() == 2
+            && failures
+                .iter()
+                .all(|failure| *failure == GoogleDohFailure::Transient)
+        {
+            return Err(GoogleDohFailure::Transient);
+        }
+        if failures.contains(&GoogleDohFailure::NameNotFound) {
+            return Err(GoogleDohFailure::NameNotFound);
+        }
+        if failures.contains(&GoogleDohFailure::NoData) {
+            return Err(GoogleDohFailure::NoData);
+        }
+        return Err(GoogleDohFailure::InvalidResponse);
+    }
+    Ok((addresses, ttl))
+}
+
+fn resolve_with_fallback(
+    host: &str,
+    doh_resolver: impl FnOnce(&str) -> Result<Vec<IpAddr>, GoogleDohFailure>,
+    system_resolver: impl FnOnce(&str) -> Result<Vec<IpAddr>, String>,
+) -> Result<DnsResolution, DnsResolutionFailure> {
+    match doh_resolver(host) {
+        Ok(addresses) if !addresses.is_empty() => {
+            return Ok(DnsResolution {
+                addresses,
+                source: DnsResolutionSource::GoogleDoh,
+            });
+        }
+        Err(GoogleDohFailure::Transient) => {}
+        Ok(_) | Err(_) => return Err(DnsResolutionFailure::GoogleDohRejected),
+    }
+
+    match system_resolver(host) {
+        Ok(addresses) if !addresses.is_empty() => Ok(DnsResolution {
+            addresses,
+            source: DnsResolutionSource::SystemFallback,
+        }),
+        Ok(_) | Err(_) => Err(DnsResolutionFailure::BothResolversFailed),
+    }
+}
+
+type ResolverJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// A fixed-size worker pool keeps OS DNS resolution from occupying every proxy handler when the
+/// Windows resolver stalls. Timed-out queued work is canceled before it starts; already-running
+/// OS calls are isolated to this small, bounded pool.
+struct BoundedResolverPool {
+    sender: SyncSender<ResolverJob>,
+}
+
+impl BoundedResolverPool {
+    fn new(worker_count: usize, queue_capacity: usize) -> Result<Self, String> {
+        let (sender, receiver) = mpsc::sync_channel::<ResolverJob>(queue_capacity);
+        let receiver = Arc::new(Mutex::new(receiver));
+
+        for worker_index in 0..worker_count {
+            let receiver = Arc::clone(&receiver);
+            thread::Builder::new()
+                .name(format!("pip-system-dns-{worker_index}"))
+                .spawn(move || loop {
+                    let job = {
+                        let receiver = receiver
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        receiver.recv()
+                    };
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                })
+                .map_err(|error| format!("Could not start the Windows DNS worker: {error}"))?;
+        }
+
+        Ok(Self { sender })
+    }
+
+    fn run_with_timeout<T>(
+        &self,
+        timeout: Duration,
+        work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let job: ResolverJob = Box::new(move || {
+            if worker_cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            let result = work();
+            let _ = result_sender.send(result);
+        });
+
+        match self.sender.try_send(job) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                return Err("Windows DNS fallback is busy".to_string());
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err("Windows DNS fallback is unavailable".to_string());
+            }
+        }
+
+        match result_receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                cancelled.store(true, Ordering::Release);
+                Err("Windows DNS lookup timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Windows DNS worker stopped unexpectedly".to_string())
+            }
+        }
+    }
+}
+
+static SYSTEM_DNS_RESOLVER: OnceLock<Result<BoundedResolverPool, String>> = OnceLock::new();
+
+fn system_dns_resolver_pool() -> Result<&'static BoundedResolverPool, String> {
+    match SYSTEM_DNS_RESOLVER.get_or_init(|| {
+        BoundedResolverPool::new(MAX_SYSTEM_DNS_WORKERS, MAX_QUEUED_SYSTEM_DNS_LOOKUPS)
+    }) {
+        Ok(pool) => Ok(pool),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn resolve_with_system_dns(host: &str) -> Result<Vec<IpAddr>, String> {
+    let host = host.to_owned();
+    system_dns_resolver_pool()?.run_with_timeout(SYSTEM_DNS_FALLBACK_TIMEOUT, move || {
+        resolve_with_system_dns_blocking(&host)
+    })
+}
+
+fn resolve_with_system_dns_blocking(host: &str) -> Result<Vec<IpAddr>, String> {
+    let resolved = (host, 0)
+        .to_socket_addrs()
+        .map_err(|_| "Windows DNS lookup failed".to_string())?;
+    let mut addresses: Vec<IpAddr> = resolved.map(|address| address.ip()).collect();
+    addresses.sort_by_key(|address| (u8::from(address.is_ipv4()), *address));
+    addresses.dedup();
+    if addresses.is_empty() {
+        return Err("Windows DNS returned no usable addresses".to_string());
+    }
     Ok(addresses)
 }
 
@@ -844,20 +1123,22 @@ fn query_google_json(
     client: &Client,
     host: &str,
     record_type: &str,
-) -> Result<(Vec<IpAddr>, Duration), String> {
-    let result: Value = client
+) -> Result<(Vec<IpAddr>, Duration), GoogleDohFailure> {
+    let response = client
         .get("https://dns.google/resolve")
         .query(&[("name", host), ("type", record_type)])
         .header("accept", "application/dns-json")
         .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| error.to_string())?
+        .map_err(|_| GoogleDohFailure::Transient)?
+        .error_for_status()
+        .map_err(|_| GoogleDohFailure::Transient)?;
+    let result: Value = response
         .json()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| GoogleDohFailure::InvalidResponse)?;
     let record_code = match record_type {
         "A" => 1,
         "AAAA" => 28,
-        _ => return Err("unsupported DNS record type".into()),
+        _ => return Err(GoogleDohFailure::InvalidResponse),
     };
     parse_google_json_answers(&result, record_code)
 }
@@ -865,9 +1146,12 @@ fn query_google_json(
 fn parse_google_json_answers(
     result: &Value,
     requested_record_code: u64,
-) -> Result<(Vec<IpAddr>, Duration), String> {
-    if result.get("Status").and_then(Value::as_u64) != Some(0) {
-        return Err("Google DNS returned an unsuccessful response".into());
+) -> Result<(Vec<IpAddr>, Duration), GoogleDohFailure> {
+    match result.get("Status").and_then(Value::as_u64) {
+        Some(0) => {}
+        Some(2) => return Err(GoogleDohFailure::Transient),
+        Some(3) => return Err(GoogleDohFailure::NameNotFound),
+        _ => return Err(GoogleDohFailure::InvalidResponse),
     }
     let mut addresses = Vec::new();
     let mut ttl = CACHE_MAX_AGE;
@@ -897,7 +1181,11 @@ fn parse_google_json_answers(
             }
         }
     }
-    Ok((addresses, ttl))
+    if addresses.is_empty() {
+        Err(GoogleDohFailure::NoData)
+    } else {
+        Ok((addresses, ttl))
+    }
 }
 
 fn respond_error(stream: &mut TcpStream, status: &str) {
@@ -930,6 +1218,218 @@ fn tunnel(mut client: TcpStream, mut upstream: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_system_resolver_times_out_and_rejects_work_when_its_queue_is_full() {
+        let pool = Arc::new(BoundedResolverPool::new(1, 1).unwrap());
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let first_pool = pool.clone();
+        let first = thread::spawn(move || {
+            first_pool.run_with_timeout(Duration::from_secs(2), move || {
+                started_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+                Ok::<_, String>(1)
+            })
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the first resolver job should start");
+
+        let queued_job_started = Arc::new(AtomicBool::new(false));
+        let queued_job_started_in_worker = Arc::clone(&queued_job_started);
+        let queued_result = pool.run_with_timeout(Duration::from_millis(20), move || {
+            queued_job_started_in_worker.store(true, Ordering::Release);
+            Ok::<_, String>(2)
+        });
+        assert!(queued_result.unwrap_err().contains("timed out"));
+
+        let overloaded_result =
+            pool.run_with_timeout(Duration::from_millis(20), || Ok::<_, String>(3));
+        assert!(overloaded_result.unwrap_err().contains("busy"));
+
+        release_sender.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap(), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let probe_result = loop {
+            match pool.run_with_timeout(Duration::from_millis(500), || Ok::<_, String>(4)) {
+                Err(error) if error.contains("busy") && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                result => break result,
+            }
+        };
+        assert_eq!(probe_result.unwrap(), 4);
+        assert!(!queued_job_started.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn resolver_fallback_google_doh_success_does_not_use_system_dns() {
+        let system_calls = AtomicUsize::new(0);
+        let resolution = resolve_with_fallback(
+            "primary.fixture.test",
+            |_| Ok(vec!["192.0.2.10".parse().unwrap()]),
+            |_| {
+                system_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(vec!["192.0.2.11".parse().unwrap()])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolution.source, DnsResolutionSource::GoogleDoh);
+        assert_eq!(
+            resolution.addresses,
+            vec!["192.0.2.10".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(system_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn resolver_fallback_transient_google_doh_error_uses_system_dns() {
+        let resolution = resolve_with_fallback(
+            "fallback.fixture.test",
+            |_| Err(GoogleDohFailure::Transient),
+            |_| Ok(vec!["192.0.2.12".parse().unwrap()]),
+        )
+        .unwrap();
+
+        assert_eq!(resolution.source, DnsResolutionSource::SystemFallback);
+        assert_eq!(
+            resolution.addresses,
+            vec!["192.0.2.12".parse::<IpAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn resolver_fallback_does_not_leak_authoritative_or_invalid_results_to_system_dns() {
+        for failure in [
+            GoogleDohFailure::NameNotFound,
+            GoogleDohFailure::NoData,
+            GoogleDohFailure::InvalidResponse,
+        ] {
+            let system_calls = AtomicUsize::new(0);
+            let resolution = resolve_with_fallback(
+                "negative.fixture.test",
+                |_| Err(failure),
+                |_| {
+                    system_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(vec!["192.0.2.13".parse().unwrap()])
+                },
+            );
+
+            assert_eq!(resolution, Err(DnsResolutionFailure::GoogleDohRejected));
+            assert_eq!(system_calls.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn google_doh_aggregation_only_falls_back_when_both_record_queries_are_transient() {
+        let cases = [
+            (
+                [
+                    Err(GoogleDohFailure::Transient),
+                    Err(GoogleDohFailure::Transient),
+                ],
+                Err(GoogleDohFailure::Transient),
+            ),
+            (
+                [
+                    Err(GoogleDohFailure::NameNotFound),
+                    Err(GoogleDohFailure::Transient),
+                ],
+                Err(GoogleDohFailure::NameNotFound),
+            ),
+            (
+                [
+                    Err(GoogleDohFailure::NoData),
+                    Err(GoogleDohFailure::Transient),
+                ],
+                Err(GoogleDohFailure::NoData),
+            ),
+        ];
+
+        for (results, expected) in cases {
+            assert_eq!(aggregate_google_answers(results), expected);
+        }
+
+        let addresses = aggregate_google_answers([
+            Ok((vec!["192.0.2.14".parse().unwrap()], Duration::from_secs(30))),
+            Err(GoogleDohFailure::Transient),
+        ])
+        .unwrap();
+        assert_eq!(addresses.0, vec!["192.0.2.14".parse::<IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn resolver_fallback_total_failure_rejects_that_request() {
+        let failed = resolve_with_fallback(
+            "failed.fixture.test",
+            |_| Err(GoogleDohFailure::Transient),
+            |_| Err("system DNS unavailable".into()),
+        );
+        assert_eq!(failed, Err(DnsResolutionFailure::BothResolversFailed));
+
+        let empty =
+            resolve_with_fallback("empty.fixture.test", |_| Ok(Vec::new()), |_| Ok(Vec::new()));
+        assert_eq!(empty, Err(DnsResolutionFailure::GoogleDohRejected));
+    }
+
+    #[test]
+    fn proxy_can_reach_origin_when_google_doh_fails_and_system_dns_recovers() {
+        let origin = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        let origin_thread = thread::spawn(move || {
+            let (mut stream, _) = origin.accept().unwrap();
+            let request = read_request_head(&mut stream).unwrap();
+            assert!(String::from_utf8(request)
+                .unwrap()
+                .starts_with("GET /offline-recovery HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+
+        let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let used_fallback = Arc::new(AtomicBool::new(false));
+        let server_used_fallback = Arc::clone(&used_fallback);
+        let proxy_thread = thread::spawn(move || {
+            let (stream, _) = proxy.accept().unwrap();
+            handle_client_with_resolver(stream, move |host| {
+                assert_eq!(host, "fallback.fixture.test");
+                let resolution = resolve_with_fallback(
+                    host,
+                    |_| Err(GoogleDohFailure::Transient),
+                    |_| Ok(vec!["127.0.0.1".parse().unwrap()]),
+                )
+                .ok()?;
+                server_used_fallback.store(
+                    resolution.source == DnsResolutionSource::SystemFallback,
+                    Ordering::Release,
+                );
+                Some(resolution.addresses)
+            });
+        });
+
+        let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        write!(
+            client,
+            "GET http://fallback.fixture.test:{origin_port}/offline-recovery HTTP/1.1\r\nHost: fallback.fixture.test:{origin_port}\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        proxy_thread.join().unwrap();
+        origin_thread.join().unwrap();
+        assert!(used_fallback.load(Ordering::Acquire));
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.ends_with("ok"), "{response}");
+    }
 
     fn proxy_response_with_resolver(
         request: &str,
@@ -1217,7 +1717,35 @@ mod tests {
                 { "name": "missing.example.", "type": 1, "TTL": 60, "data": "192.0.2.7" }
             ]
         });
-        assert!(parse_google_json_answers(&response, 1).is_err());
+        assert_eq!(
+            parse_google_json_answers(&response, 1),
+            Err(GoogleDohFailure::NameNotFound)
+        );
+
+        let server_failure = serde_json::json!({ "Status": 2 });
+        assert_eq!(
+            parse_google_json_answers(&server_failure, 1),
+            Err(GoogleDohFailure::Transient)
+        );
+
+        let refused = serde_json::json!({ "Status": 5 });
+        assert_eq!(
+            parse_google_json_answers(&refused, 1),
+            Err(GoogleDohFailure::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn google_dns_answer_parser_classifies_no_data_without_system_dns_fallback() {
+        let response = serde_json::json!({
+            "Status": 0,
+            "Question": [{ "name": "ipv6-only.example.", "type": 1 }],
+            "Authority": [{ "name": "example.", "type": 6, "TTL": 300 }]
+        });
+        assert_eq!(
+            parse_google_json_answers(&response, 1),
+            Err(GoogleDohFailure::NoData)
+        );
     }
 
     #[test]

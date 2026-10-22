@@ -358,6 +358,7 @@ pub(crate) enum BrowserEvent {
     BrowsingDataClearDone(WindowId, BrowsingDataClearKind, bool),
     GoogleDnsCheckDone(WindowId, Result<(), String>),
     GoogleDnsHealthCheckDone(Result<(), String>),
+    GoogleDnsResolverReport(doh_proxy::DnsResolverReport),
     AppUpdateCheckDone(WindowId, Result<app_updates::AppUpdateInfo, String>),
     AdblockFilterUpdateDone(WindowId, Result<adblock_updates::UpdateSummary, String>),
     TabSuspendResult(WindowId, TabId, bool),
@@ -1471,6 +1472,8 @@ struct BrowserApp {
     google_dns_start_failed: bool,
     google_dns_health_check_started: bool,
     google_dns_route_ok: Option<bool>,
+    google_dns_fallback_used: bool,
+    google_dns_resolution_failed: bool,
     doh_proxy: Option<doh_proxy::DohProxy>,
     failed_closed_dns_proxy: Option<doh_proxy::RejectingProxy>,
     restart_requested: bool,
@@ -2091,10 +2094,12 @@ impl BrowserApp {
             .google_dns_route_ok
             .map(|ok| ok.to_string())
             .unwrap_or_else(|| "null".into());
+        let fallback_used = self.google_dns_fallback_used;
+        let resolution_failed = self.google_dns_resolution_failed;
         for win in self.windows.values() {
             if let Some(chrome) = &win.chrome_webview {
                 let _ = chrome.evaluate_script(&format!(
-                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok});"
+                    "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok},{fallback_used},{resolution_failed});"
                 ));
             }
             for (id, view) in &win.tabs {
@@ -2104,7 +2109,7 @@ impl BrowserApp {
                     .is_some_and(|tab| tab.url == "evergreen://settings")
                 {
                     let _ = view.evaluate_script(&format!(
-                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok});"
+                        "if(window.__renderGoogleDns) window.__renderGoogleDns({enabled},{active},{failed},{route_ok},{fallback_used},{resolution_failed});"
                     ));
                 }
             }
@@ -2134,8 +2139,54 @@ impl BrowserApp {
     }
 
     fn record_google_dns_health(&mut self, result: &Result<(), String>) {
-        self.google_dns_route_ok = Some(result.is_ok());
+        if self
+            .doh_proxy
+            .as_ref()
+            .is_some_and(doh_proxy::DohProxy::system_dns_fallback_used)
+        {
+            self.google_dns_fallback_used = true;
+        }
+        if self
+            .doh_proxy
+            .as_ref()
+            .is_some_and(doh_proxy::DohProxy::both_resolvers_failed)
+        {
+            self.google_dns_resolution_failed = true;
+        }
+        self.google_dns_route_ok = Some(
+            result.is_ok() && !self.google_dns_fallback_used && !self.google_dns_resolution_failed,
+        );
         self.sync_google_dns();
+    }
+
+    fn google_dns_check_message(
+        result: &Result<(), String>,
+        fallback_used: bool,
+        resolution_failed: bool,
+    ) -> String {
+        match result {
+            Ok(()) if fallback_used => {
+                let failed_detail = if resolution_failed {
+                    " Một hostname khác cũng đã thất bại với cả Google DoH và DNS Windows."
+                } else {
+                    ""
+                };
+                format!("Yêu cầu kiểm tra tải Google được qua proxy Pip. Trong phiên này, ít nhất một hostname đã dùng DNS Windows dự phòng; mạng Windows có thể nhìn thấy hostname đó, nên Google DNS chưa được xác minh đầy đủ.{failed_detail}")
+            }
+            Ok(()) if resolution_failed => "Yêu cầu kiểm tra tải Google được qua proxy Pip, nhưng trong phiên này có hostname thất bại với cả Google DoH và DNS Windows.".into(),
+            Ok(()) => "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".into(),
+            Err(error) => {
+                let reason: String = error.chars().take(120).collect();
+                let detail = if fallback_used {
+                    " Pip đã phải dùng DNS Windows dự phòng cho ít nhất một hostname; hostname đó có thể được mạng Windows nhìn thấy."
+                } else if resolution_failed {
+                    " Google DoH và DNS Windows đều không phân giải được ít nhất một hostname."
+                } else {
+                    ""
+                };
+                format!("Tuyến DNS của Pip chưa tải được Google. Kiểm tra mạng hoặc tường lửa.{detail} Chi tiết: {reason}")
+            }
+        }
     }
 
     fn notify_settings(&self, win_id: WindowId, message: &str) {
@@ -2287,7 +2338,10 @@ impl BrowserApp {
         let google_dns_applied = settings.google_dns;
         let mut failed_closed_dns_proxy = None;
         let doh_proxy = if google_dns_applied {
-            match doh_proxy::DohProxy::start() {
+            let dns_event_proxy = proxy.clone();
+            match doh_proxy::DohProxy::start_with_fallback_reporter(move |report| {
+                let _ = dns_event_proxy.send_event(BrowserEvent::GoogleDnsResolverReport(report));
+            }) {
                 Ok(proxy) => Some(proxy),
                 Err(error) => {
                     eprintln!("Pip Google DNS proxy failed to start: {error}");
@@ -2328,6 +2382,8 @@ impl BrowserApp {
             google_dns_start_failed,
             google_dns_health_check_started: false,
             google_dns_route_ok: None,
+            google_dns_fallback_used: false,
+            google_dns_resolution_failed: false,
             doh_proxy,
             failed_closed_dns_proxy,
             restart_requested: false,
@@ -2797,6 +2853,8 @@ impl BrowserApp {
         let google_dns_active = self.active_google_dns;
         let google_dns_failed = self.google_dns_start_failed;
         let google_dns_route_ok = self.google_dns_route_ok;
+        let google_dns_fallback_used = self.google_dns_fallback_used;
+        let google_dns_resolution_failed = self.google_dns_resolution_failed;
 
         let browser_args = webview_browser_args(context.dns_proxy_required, context.dns_proxy_port);
         let mut builder = WebViewBuilder::new()
@@ -2853,6 +2911,8 @@ impl BrowserApp {
                         google_dns_active,
                         google_dns_failed,
                         google_dns_route_ok,
+                        google_dns_fallback_used,
+                        google_dns_resolution_failed,
                     )
                     .replace("{{CURRENT_PROFILE}}", &protocol_profile)
                     .replace(
@@ -2914,6 +2974,8 @@ impl BrowserApp {
                     google_dns_active,
                     google_dns_failed,
                     google_dns_route_ok,
+                    google_dns_fallback_used,
+                    google_dns_resolution_failed,
                 )
                 .replace("{{CURRENT_PROFILE}}", &profile_id)
                 .replace(
@@ -6264,16 +6326,14 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
             }
             BrowserEvent::GoogleDnsCheckDone(win_id, result) => {
                 self.record_google_dns_health(&result);
-                let message = match result {
-                    Ok(()) => {
-                        "Đã thử tải Google thành công qua proxy DNS của Pip. DNS Windows không bị thay đổi.".to_string()
-                    }
-                    Err(error) => {
-                        eprintln!("Pip Google DNS route test failed: {error}");
-                        let reason: String = error.chars().take(120).collect();
-                        format!("Tuyến DNS của Pip chưa tải được Google. Kiểm tra mạng hoặc tường lửa. Chi tiết: {reason}")
-                    }
-                };
+                if let Err(error) = &result {
+                    eprintln!("Pip Google DNS route test failed: {error}");
+                }
+                let message = Self::google_dns_check_message(
+                    &result,
+                    self.google_dns_fallback_used,
+                    self.google_dns_resolution_failed,
+                );
                 self.notify_settings(win_id, &message);
             }
             BrowserEvent::GoogleDnsHealthCheckDone(result) => {
@@ -6281,6 +6341,18 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 if let Err(error) = result {
                     eprintln!("Pip Google DNS startup route check failed: {error}");
                 }
+            }
+            BrowserEvent::GoogleDnsResolverReport(report) => {
+                match report {
+                    doh_proxy::DnsResolverReport::SystemFallbackUsed => {
+                        self.google_dns_fallback_used = true;
+                    }
+                    doh_proxy::DnsResolverReport::BothResolversFailed => {
+                        self.google_dns_resolution_failed = true;
+                    }
+                }
+                self.google_dns_route_ok = Some(false);
+                self.sync_google_dns();
             }
             BrowserEvent::AppUpdateCheckDone(win_id, result) => {
                 let payload = match result {
@@ -7836,6 +7908,19 @@ fn shortcut_enabled_by_feature(
 #[cfg(test)]
 mod google_dns_preferences_tests {
     use super::*;
+
+    #[test]
+    fn google_dns_manual_check_discloses_system_dns_fallback() {
+        let message = BrowserApp::google_dns_check_message(&Ok(()), true, false);
+        assert!(message.contains("DNS Windows dự phòng"));
+        assert!(message.contains("Google DNS chưa được xác minh đầy đủ"));
+        let degraded = BrowserApp::google_dns_check_message(&Ok(()), true, true);
+        assert!(degraded.contains("Một hostname khác cũng đã thất bại"));
+
+        let failed =
+            BrowserApp::google_dns_check_message(&Err("connection failed".into()), false, true);
+        assert!(failed.contains("Google DoH và DNS Windows đều không phân giải được"));
+    }
 
     #[test]
     fn close_warning_only_applies_when_enabled_and_more_than_one_tab_is_open() {

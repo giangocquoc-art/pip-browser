@@ -57,6 +57,7 @@ fn parse_release(
     })
 }
 
+#[cfg(test)]
 pub fn check(proxy_port: Option<u16>) -> Result<AppUpdateInfo, String> {
     check_with_google_dns(false, proxy_port)
 }

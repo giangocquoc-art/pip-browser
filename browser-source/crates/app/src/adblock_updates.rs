@@ -126,6 +126,7 @@ fn download(client: &reqwest::blocking::Client, url: &str, name: &str) -> Result
     String::from_utf8(bytes).map_err(|_| format!("Danh sách {name} không phải UTF-8."))
 }
 
+#[cfg(test)]
 pub fn fetch_and_store(
     directory: PathBuf,
     proxy_port: Option<u16>,
