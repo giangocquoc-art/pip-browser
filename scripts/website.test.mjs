@@ -108,6 +108,17 @@ test("homepage fallback version matches the public version manifest", async () =
   assert.equal(fallbackVersion, manifest.version);
 });
 
+test("fallback release manifest has a valid version, installer, SHA-256 and size", async () => {
+  const manifest = JSON.parse(await readFile(path.join(root, "version.json"), "utf8"));
+  assert.match(manifest.version ?? "", /^\d+\.\d+\.\d+$/);
+  assert.equal(manifest.downloadAvailable, true);
+  assert.equal(manifest.installer, "PipSetup.exe");
+  assert.match(manifest.url ?? "", /^https:\/\/download\.pip\.psharehub\.com\/$/);
+  assert.match(manifest.sha256 ?? "", /^[a-f0-9]{64}$/i);
+  assert.ok(Number.isSafeInteger(manifest.size) && manifest.size > 0, "installer size must be a positive safe integer");
+  assert.match(manifest.updated ?? "", /^\d{4}-\d{2}-\d{2}$/);
+});
+
 test("homepage preview tabs support keyboard navigation", async () => {
   const homepage = await readFile(path.join(root, "index.html"), "utf8");
   const script = await readFile(path.join(root, "app.js"), "utf8");
@@ -120,11 +131,22 @@ test("homepage preview tabs support keyboard navigation", async () => {
   assert.match(script, /item\.tabIndex = active \? 0 : -1/);
 });
 
+test("all dynamically selected preview images exist", async () => {
+  const script = await readFile(path.join(root, "app.js"), "utf8");
+  for (const view of ["browser", "private", "menu", "settings"]) {
+    const asset = script.match(new RegExp(`\\b${view}:\\s*\\['([^']+)'`))?.[1];
+    assert.ok(asset, `${view}: preview asset is missing from app.js`);
+    const target = resolveLocalReference("app.js", asset);
+    assert.ok(target, `${view}: preview asset must be a local website asset`);
+    assert.ok((await stat(target)).isFile(), `${view}: preview asset does not exist: ${asset}`);
+  }
+});
+
 test("mobile layout keeps navigation and hero copy within the viewport", async () => {
   const homepage = await readFile(path.join(root, "index.html"), "utf8");
   const styles = await readFile(path.join(root, "styles.css"), "utf8");
   assert.match(homepage, /<nav aria-label="Điều hướng chính">/);
-  assert.match(styles, /@media\(max-width:600px\)\{[\s\S]*?\.topbar nav\{grid-column:1\/-1;grid-row:2;display:flex;flex-wrap:wrap/);
+  assert.match(styles, /@media\(max-width:600px\)\{[\s\S]*?\.topbar nav\{grid-column:1\/-1;grid-row:2;display:flex;flex-wrap:nowrap;gap:6px 14px;width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;padding:5px 2px 9px;white-space:nowrap;scrollbar-width:thin;scroll-padding-inline-end:28px/);
   assert.match(styles, /\.showcase h1\{display:block;width:100%;max-width:100%;font-size:clamp\(28px,8vw,33px\);[^}]*overflow-wrap:anywhere/);
   assert.match(styles, /\.showcase-head>div:first-child\{align-self:stretch;width:100%;min-width:0\}/);
   assert.match(styles, /\.brand span\{display:none\}/);
