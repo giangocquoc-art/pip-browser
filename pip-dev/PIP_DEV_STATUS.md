@@ -1,6 +1,6 @@
 # Pip Dev implementation status
 
-> Status snapshot: 2026-10-24, reviewed against `main` commit `8d3ad0ca1631fc8970f0176de30125eeec110977` (PR #39 merge). CI runs [#59](https://github.com/giangocquoc-art/pip-browser/actions/runs/40033543130) and [#60](https://github.com/giangocquoc-art/pip-browser/actions/runs/40034260931) both passed. This document records repository and CI evidence; dated D-drive observations below are historical snapshots, not statements about current local storage.
+> Status snapshot: 2026-10-24, reviewed against `main` commit `94973eb7966c87a91c68b872e2b47fe5603459e3` (PR #43 merge). Main verification run [#113](https://github.com/giangocquoc-art/pip-browser/actions/runs/40038748073) passed all three jobs; earlier CI runs [#59](https://github.com/giangocquoc-art/pip-browser/actions/runs/40033543130) and [#60](https://github.com/giangocquoc-art/pip-browser/actions/runs/40034260931) passed. This document records repository and CI evidence; dated D-drive observations below are historical snapshots, not statements about current local storage.
 
 Pip Dev is developed beside the original Pip browser. This directory vendors BrowserOS at
 commit `1cccd53b8be7b220ce1cf793f20bf42274a38ba0` (2026-10-19). The upstream source is
@@ -18,6 +18,7 @@ launcher from a future packaged release.
   extension icons, cockpit branding and the in-page agent status bar.
 - BrowserOS neo's existing MCP service provides tab selection, DOM snapshots, stable element
   references, actions, waits, diffs and multi-step workflows.
+- DOM element references fail closed when their captured backend node is detached: `act` returns a stale-ref error directing the agent to take a new snapshot. Transient CDP failures propagate instead of silently rematching by role/name/occurrence. Source tests cover detached replacements and duplicate same-label controls; this package-level evidence does not verify a running Pip Dev browser.
 - MCP `visual_targets` finds visible canvas, image, video, SVG and `role=img` regions without
   capturing the page. `screenshot.region` only accepts a crop fully contained within one of the
   regions returned by that exact observation. It returns one visible-viewport crop inline, limited
