@@ -51,9 +51,6 @@ jobs:
       - name: Run Pip Dev extension tests
         run: bun run --filter '@browseros/claw-app' test
 
-      - name: Type-check Pip Dev extension
-        run: bun run --filter '@browseros/claw-app' typecheck
-
   codegen:
     name: Verify generated Claw API files
     runs-on: ubuntu-latest
@@ -69,11 +66,14 @@ jobs:
         with:
           bun-version: 1.4.2
 
-      - name: Install locked codegen dependencies
-        run: bun install --filter browseros-monorepo --frozen-lockfile
+      - name: Install locked API and extension dependencies
+        run: bun install --filter browseros-monorepo --filter '@browseros/claw-app' --frozen-lockfile
 
       - name: Verify generated Claw API files
         run: bun run codegen:claw-api:check
 
       - name: Run Claw API contract tests
         run: bun run test:claw-api-contract
+
+      - name: Type-check Pip Dev extension
+        run: bun run --filter '@browseros/claw-app' typecheck
