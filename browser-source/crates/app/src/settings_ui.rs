@@ -694,7 +694,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
 
     <div class="section-title">Kết nối</div>
     <div class="card">
-      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Khi bật, Pip cấu hình WebView2 và tác vụ HTTPS nền dùng proxy DNS qua HTTPS của Google. Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy. Nếu cả truy vấn A và AAAA đều gặp lỗi tạm thời, Pip dùng DNS Windows dự phòng và mạng đó có thể thấy tên miền; phản hồi NXDOMAIN/NODATA hoặc không hợp lệ sẽ không fallback. Nút kiểm tra chỉ gửi một yêu cầu HTTPS nền qua proxy, không kiểm tra trực tiếp từ tab WebView2; chưa có đo bắt gói để xác minh mọi truy vấn DNS. Cập nhật WebView2 bằng PowerShell vẫn dùng DNS Windows. Sau khi đổi, hãy khởi động lại để áp dụng.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button type="button" class="btn btn-secondary" onclick="sendAction('TestGoogleDns')">Kiểm tra proxy DoH</button></div>
+      <div class="row"><div class="row-info"><span class="row-label">Google DNS bảo mật</span><span class="row-desc" id="googleDnsHint">Khi bật, Pip cấu hình WebView2 và tác vụ HTTPS nền dùng proxy DNS qua HTTPS của Google. Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy. Nếu cả truy vấn A và AAAA đều gặp lỗi tạm thời, Pip dùng DNS Windows dự phòng và mạng đó có thể thấy tên miền; phản hồi NXDOMAIN/NODATA hoặc không hợp lệ sẽ không fallback. Nút “Kiểm tra từ WebView2” gửi GET tới YouTube bằng no-cors, không gửi cookie hoặc referrer, qua tuyến mạng hiện hành của chính WebView2 (gồm proxy cục bộ Pip nếu Google DNS đang bật). Kết quả chỉ cho biết yêu cầu hoàn tất, lỗi mạng hoặc timeout; no-cors ẩn mã HTTP và kiểm tra này không bắt gói để xác minh từng truy vấn DNS. Cập nhật WebView2 bằng PowerShell vẫn dùng DNS Windows. Sau khi đổi, hãy khởi động lại để áp dụng.</span></div><input id="googleDnsToggle" type="checkbox" aria-label="Dùng Google DNS" onchange="profileAction('SetGoogleDns',{enabled:this.checked})"><button id="testGoogleDnsWebViewButton" type="button" class="btn btn-secondary" onclick="checkGoogleDnsWebView()">Kiểm tra từ WebView2</button></div>
       <div class="row" id="googleDnsRestartRow" hidden><div class="row-info"><span class="row-label">Cần khởi động lại</span><span class="row-desc">Tab thường được lưu và khôi phục. Cửa sổ ẩn danh sẽ đóng để bảo vệ riêng tư.</span></div><button type="button" class="btn btn-secondary" onclick="if(confirm('Khởi động lại Pip để áp dụng Google DNS? Tab thường sẽ được lưu và khôi phục; cửa sổ ẩn danh sẽ đóng.')) sendAction('RestartBrowser')">Khởi động lại Pip</button></div>
     </div>
 
@@ -899,15 +899,75 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
             : fallbackUsed
             ? 'Google DoH đã lỗi khi phân giải ít nhất một tên miền; Pip đã dùng DNS Windows dự phòng cho yêu cầu đó. Google DNS không áp dụng cho toàn bộ yêu cầu trong phiên này, và DNS Windows có thể làm lộ tên miền cho mạng đang dùng.'
             : active&&routeOk===false
-            ? 'Proxy Google DNS đã chạy nhưng yêu cầu HTTPS nền không tải được qua proxy. Website có thể không mở được; kiểm tra mạng hoặc tường lửa rồi bấm “Kiểm tra proxy DoH”. DNS Windows không đổi.'
+            ? 'Proxy Google DNS đang chạy nhưng yêu cầu HTTPS nền thất bại. Kết quả này không thay cho phép thử WebView2; bấm “Kiểm tra từ WebView2” để thử YouTube theo cấu hình hiện hành. DNS Windows không đổi.'
             : active&&routeOk===null
-              ? 'Proxy Google DNS đang chạy. Pip đang kiểm tra một yêu cầu HTTPS nền qua proxy. Chưa xác minh xong thì trạng thái này chưa khẳng định tuyến đang hoạt động.'
+              ? 'Proxy Google DNS đang chạy. Pip đang kiểm tra HTTPS nền qua proxy; nút “Kiểm tra từ WebView2” thử riêng yêu cầu tới YouTube từ trang cài đặt.'
               : active
-                ? 'Kiểm tra proxy DoH thành công: yêu cầu HTTPS nền đã tải qua proxy Google. WebView2 được cấu hình dùng cùng proxy và chặn tra cứu trước cục bộ, trừ localhost/proxy; kiểm tra này không chạy từ tab WebView2 và không bắt gói để xác minh mọi truy vấn DNS. DNS Windows không bị thay đổi; địa chỉ IP không được ẩn.'
+                ? 'Kiểm tra proxy DoH nền thành công: một yêu cầu HTTPS đã tải qua proxy Google. Nút “Kiểm tra từ WebView2” thử riêng YouTube trong WebView2; kết quả no-cors không cho biết mã HTTP và không bắt gói để xác minh từng truy vấn DNS. DNS Windows không bị thay đổi; địa chỉ IP không được ẩn.'
                 : 'Đang dùng DNS Windows. Bật Google DNS để dùng tuyến HTTPS riêng cho website và tác vụ HTTPS nền trong Pip.';
       document.getElementById('googleDnsHint').textContent=status+' Cập nhật WebView2 bằng PowerShell vẫn dùng mạng Windows.';
     };
     window.__renderGoogleDns({{GOOGLE_DNS_ENABLED}},{{GOOGLE_DNS_ACTIVE}},{{GOOGLE_DNS_FAILED}},{{GOOGLE_DNS_ROUTE_OK}},{{GOOGLE_DNS_FALLBACK_USED}},{{GOOGLE_DNS_RESOLUTION_FAILED}});
+
+    function probeGoogleDnsWebView(fetchImpl = window.fetch, timeoutMs = 5000) {
+      const controller = new AbortController();
+      const timeoutDelay = Number.isFinite(timeoutMs) ? Math.max(1, timeoutMs) : 5000;
+
+      return new Promise(resolve => {
+        let settled = false;
+        let timer;
+        const finish = result => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        };
+
+        timer = setTimeout(() => {
+          controller.abort();
+          finish({ ok: false, kind: 'timeout' });
+        }, timeoutDelay);
+
+        try {
+          Promise.resolve(fetchImpl.call(window, 'https://www.youtube.com/generate_204', {
+            method: 'GET',
+            mode: 'no-cors',
+            credentials: 'omit',
+            referrer: '',
+            referrerPolicy: 'no-referrer',
+            cache: 'no-store',
+            signal: controller.signal
+          })).then(
+            () => finish({ ok: true, kind: 'response' }),
+            () => finish({ ok: false, kind: controller.signal.aborted ? 'timeout' : 'network' })
+          );
+        } catch (_) {
+          finish({ ok: false, kind: controller.signal.aborted ? 'timeout' : 'network' });
+        }
+      });
+    }
+
+    window.__pipGoogleDnsWebViewProbe = probeGoogleDnsWebView;
+
+    async function checkGoogleDnsWebView() {
+      const button = document.getElementById('testGoogleDnsWebViewButton');
+      if (button) button.disabled = true;
+      showStatus('Đang thử yêu cầu HTTPS từ WebView2 tới YouTube...');
+      let result;
+      try {
+        result = await probeGoogleDnsWebView();
+      } catch (_) {
+        result = { ok: false, kind: 'network' };
+      }
+      if (result.ok) {
+        showStatus('WebView2 đã nhận phản hồi HTTPS từ YouTube theo tuyến mạng hiện hành (proxy cục bộ Pip nếu Google DNS đang bật). no-cors không cho biết mã HTTP hay khả năng phát video.');
+      } else if (result.kind === 'timeout') {
+        showStatus('WebView2 chưa nhận kết quả từ YouTube sau 5 giây. Hãy kiểm tra kết nối hoặc tuyến DNS rồi thử lại.');
+      } else {
+        showStatus('WebView2 không thể hoàn tất yêu cầu tới YouTube theo tuyến mạng hiện hành. Hãy kiểm tra proxy, DNS, mạng hoặc tường lửa.');
+      }
+      if (button) button.disabled = false;
+    }
 
     function sendAction(action) {
       if (window.ipc) {
@@ -1451,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn google_dns_status_discloses_that_route_check_covers_background_https_only() {
+    fn google_dns_status_explains_the_direct_webview_probe_limits() {
         let html = get_settings_html(
             "155.0",
             &Settings::default(),
@@ -1461,17 +1521,21 @@ mod tests {
             false,
             false,
         );
-        assert!(html.contains("Kiểm tra proxy DoH"));
-        assert!(html.contains("Nút kiểm tra chỉ gửi một yêu cầu HTTPS nền qua proxy, không kiểm tra trực tiếp từ tab WebView2"));
+        assert!(html.contains("Kiểm tra từ WebView2"));
+        assert!(html.contains("window.__pipGoogleDnsWebViewProbe"));
+        assert!(html.contains("mode: 'no-cors'"));
+        assert!(html.contains("credentials: 'omit'"));
+        assert!(html.contains("referrerPolicy: 'no-referrer'"));
+        assert!(html.contains("kind: 'timeout'"));
+        assert!(html.contains("kind: controller.signal.aborted ? 'timeout' : 'network'"));
+        assert!(html.contains("no-cors ẩn mã HTTP"));
+        assert!(html.contains("không bắt gói để xác minh từng truy vấn DNS"));
         assert!(html.contains(
             "Nếu cả truy vấn A và AAAA đều gặp lỗi tạm thời, Pip dùng DNS Windows dự phòng"
         ));
         assert!(html.contains("NXDOMAIN/NODATA hoặc không hợp lệ sẽ không fallback"));
         assert!(html.contains("Tra cứu trước từ WebView2 bị chặn cục bộ, ngoại trừ localhost và 127.0.0.1 dùng cho proxy"));
-        assert!(html.contains("chưa có đo bắt gói để xác minh mọi truy vấn DNS"));
-        assert!(html
-            .contains("Kiểm tra proxy DoH thành công: yêu cầu HTTPS nền đã tải qua proxy Google"));
-        assert!(html.contains("WebView2 được cấu hình dùng cùng proxy và chặn tra cứu trước cục bộ, trừ localhost/proxy; kiểm tra này không chạy từ tab WebView2"));
+        assert!(html.contains("Kiểm tra proxy DoH nền thành công"));
         assert!(!html.contains("Google DNS đã được xác minh:"));
     }
 

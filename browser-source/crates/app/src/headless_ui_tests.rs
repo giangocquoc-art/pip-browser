@@ -217,7 +217,95 @@ impl Check {
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
                 self.query(id,true,"(()=>{const button=document.getElementById('googleDnsButton');const saved=button.title.includes('áp dụng')&&button.querySelector('span').textContent==='Áp dụng';window.__renderGoogleDns(true,true,false,null);const checking=button.title.includes('đang kiểm tra')&&button.querySelector('span').textContent==='G DNS';window.__renderGoogleDns(true,true,false,true);const verified=button.title.includes('đã xác minh');window.__renderGoogleDns(true,true,false,false);const routeFailure=button.dataset.failed==='true'&&button.dataset.pending==='false'&&button.title.includes('chưa kết nối');window.__renderGoogleDns(true,false,true,null);const startupFailure=button.dataset.failed==='true'&&button.dataset.pending==='false'&&button.title.includes('không khởi động được')&&button.querySelector('span').textContent==='Cài đặt';window.__renderGoogleDns(false,false,true,null);const pendingOff=button.dataset.pending==='true'&&button.querySelector('span').textContent==='Áp dụng'&&button.title.includes('chưa áp dụng');window.__renderGoogleDns(true,false,false,null);postIpc('OpenSettings');return saved&&checking&&verified&&routeFailure&&startupFailure&&pendingOff})()");
             }
-            2=>self.query(id,false,"(()=>{const dnsRow=document.getElementById('googleDnsRestartRow'),hint=document.getElementById('googleDnsHint'),dns=document.getElementById('googleDnsToggle'),input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton'),clearTypes=['clearDataHistory','clearDataSite','clearDataCache','clearDataPasswords','clearDataAutofill','clearDataDownloads'];const details={dnsRow:!!dnsRow,rowHidden:dnsRow?.hidden,rowDisplay:dnsRow?getComputedStyle(dnsRow).display:null,hint:hint?.textContent,dnsToggle:!!dns,input:!!input,clear:!!clear,clearText:clear?.textContent,clearOnclick:clear?.getAttribute('onclick'),missingClearTypes:clearTypes.filter(id=>!document.getElementById(id)),clearFn:typeof clearSelectedBrowsingData,clearButtonOnclick:document.getElementById('clearSelectedBrowsingDataButton')?.getAttribute('onclick')};if(!dnsRow||dnsRow.hidden||getComputedStyle(dnsRow).display==='none'||!hint.textContent.includes('proxy chưa được áp dụng')||!dns||!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData')||clearTypes.some(id=>!document.getElementById(id))||typeof clearSelectedBrowsingData!=='function'||!document.getElementById('clearSelectedBrowsingDataButton').getAttribute('onclick').includes('clearSelectedBrowsingData'))return JSON.stringify(details);window.__renderGoogleDns(true,false,true,null);const failure=hint.textContent.includes('không khởi động được')&&dnsRow.hidden;window.__renderGoogleDns(true,false,false,null);dns.checked=false;dns.onchange();const before=input.checked;input.click();for(const id of clearTypes)document.getElementById(id).checked=false;clearSelectedBrowsingData();const emptySelection=document.getElementById('statusText').textContent.includes('ít nhất một loại');window.confirm=()=>true;document.getElementById('clearDataCache').checked=true;clearSelectedBrowsingData();const result={failure,before,inputAfter:input.checked,emptySelection,pipSend:typeof window.__pipSend};return result.failure&&result.before&&!result.inputAfter&&result.emptySelection&&result.pipSend==='function'?true:JSON.stringify(result)})()"),
+            2 => self.query(
+                id,
+                false,
+                r#"(()=> {
+                    if (window.__pipDnsProbeTestsStarted) {
+                        const completed = window.__pipDnsProbeTestsResult;
+                        return completed ? (completed.pass ? true : JSON.stringify(completed)) : null;
+                    }
+
+                    const dnsRow=document.getElementById('googleDnsRestartRow');
+                    const hint=document.getElementById('googleDnsHint');
+                    const dns=document.getElementById('googleDnsToggle');
+                    const input=document.getElementById('askWhereToSaveToggle');
+                    const clear=document.getElementById('clearSiteDataButton');
+                    const clearTypes=['clearDataHistory','clearDataSite','clearDataCache','clearDataPasswords','clearDataAutofill','clearDataDownloads'];
+                    const details={dnsRow:!!dnsRow,rowHidden:dnsRow?.hidden,rowDisplay:dnsRow?getComputedStyle(dnsRow).display:null,hint:hint?.textContent,dnsToggle:!!dns,input:!!input,clear:!!clear,clearText:clear?.textContent,clearOnclick:clear?.getAttribute('onclick'),missingClearTypes:clearTypes.filter(id=>!document.getElementById(id)),clearFn:typeof clearSelectedBrowsingData,clearButtonOnclick:document.getElementById('clearSelectedBrowsingDataButton')?.getAttribute('onclick')};
+
+                    if (!dnsRow || dnsRow.hidden || getComputedStyle(dnsRow).display==='none' ||
+                        !hint.textContent.includes('proxy chưa được áp dụng') || !dns || !input || !clear ||
+                        !clear.textContent.includes('Xóa dữ liệu website') ||
+                        !clear.getAttribute('onclick').includes('ClearSiteData') ||
+                        clearTypes.some(id=>!document.getElementById(id)) ||
+                        typeof clearSelectedBrowsingData!=='function' ||
+                        !document.getElementById('clearSelectedBrowsingDataButton').getAttribute('onclick').includes('clearSelectedBrowsingData')) {
+                        return JSON.stringify(details);
+                    }
+
+                    window.__renderGoogleDns(true,false,true,null);
+                    const failure=hint.textContent.includes('không khởi động được')&&dnsRow.hidden;
+                    window.__renderGoogleDns(true,false,false,null);
+                    dns.checked=false;
+                    dns.onchange();
+                    const before=input.checked;
+                    input.click();
+                    for(const id of clearTypes)document.getElementById(id).checked=false;
+                    clearSelectedBrowsingData();
+                    const emptySelection=document.getElementById('statusText').textContent.includes('ít nhất một loại');
+                    window.confirm=()=>true;
+                    document.getElementById('clearDataCache').checked=true;
+                    clearSelectedBrowsingData();
+                    const settingsPass=failure&&before&&!input.checked&&emptySelection&&typeof window.__pipSend==='function';
+                    if (!settingsPass) {
+                        return JSON.stringify({failure,before,inputAfter:input.checked,emptySelection,pipSend:typeof window.__pipSend});
+                    }
+                    if (typeof window.__pipGoogleDnsWebViewProbe !== 'function') {
+                        return JSON.stringify({probeMissing:true});
+                    }
+
+                    window.__pipDnsProbeTestsStarted=true;
+                    (async()=>{
+                        let request;
+                        const resolved=await window.__pipGoogleDnsWebViewProbe((url,init)=>{
+                            request={
+                                url,
+                                method:init.method,
+                                mode:init.mode,
+                                credentials:init.credentials,
+                                referrer:init.referrer,
+                                referrerPolicy:init.referrerPolicy,
+                                cache:init.cache,
+                                hasSignal:!!init.signal
+                            };
+                            return Promise.resolve({type:'opaque',status:0});
+                        },100);
+                        const rejected=await window.__pipGoogleDnsWebViewProbe(
+                            ()=>Promise.reject(new TypeError('simulated network failure')),
+                            100
+                        );
+                        const timeout=await window.__pipGoogleDnsWebViewProbe(
+                            ()=>new Promise(()=>{}),
+                            20
+                        );
+                        window.__pipDnsProbeTestsResult={
+                            pass:resolved.ok===true&&resolved.kind==='response'&&
+                                rejected.ok===false&&rejected.kind==='network'&&
+                                timeout.ok===false&&timeout.kind==='timeout'&&
+                                request.url==='https://www.youtube.com/generate_204'&&
+                                request.method==='GET'&&request.mode==='no-cors'&&
+                                request.credentials==='omit'&&request.referrer===''&&
+                                request.referrerPolicy==='no-referrer'&&request.cache==='no-store'&&
+                                request.hasSignal,
+                            resolved,rejected,timeout,request
+                        };
+                    })().catch(error=>{
+                        window.__pipDnsProbeTestsResult={pass:false,error:String(error)};
+                    });
+                    return null;
+                })()"#,
+            ),
             3=>{
                 if self.app.settings.downloads.ask_where_to_save {return Err("Settings checkbox did not reach native storage".into());}
                 if self.app.settings.google_dns {return Err("Google DNS setting did not return to its original state".into());}
@@ -1812,7 +1900,7 @@ pub fn run() {
     }
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/native-ui-verification.json");
-    std::fs::write(&artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","bookmarks/history","native local bookmark/history omnibox suggestions through IPC, keyboard navigation, safe text rendering, and Alt+Home","profile-local quick-link add/remove through the native IPC with persistence","InPrivate storage/history","distinct downloads/no overwrite","profile cookie/storage isolation","profile-scoped persistent download history","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","idle inactive WebView2 tab suspends after configured delay, exposes an accessible sleeping state, and preserves unsent form after waking","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search","Tab group action syncs to native state and draws a visible group indicator","Page translation invokes local Translator API and restores original text","disabled downloads manager stays closed","unpacked WebView2 extension installs, content script runs, and removal stops it","procedural cosmetic ad filter removes matching ad nodes in real WebView2","service-worker and shared-worker requests pass through Brave network filtering","uBlock noop redirect resource reaches a native WebView2 response","native WebView2 profile password/autofill flags track settings and remain off in InPrivate","Alt+Shift+P leaves multiple saved logins untouched and fills the only exact-origin match","Pip password save uses the selected open tab's Rust-derived origin; stale, non-web, and private requests are rejected and summaries omit secrets","toolbar Home button and Alt+Home navigate the current tab to Pip's start page","version checker offers only a newer Pip release on the official GitHub repository"]})).unwrap()).unwrap();
+    std::fs::write(&artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","Settings WebView2 YouTube probe handles response, network failure, and timeout without credentials or referrer","bookmarks/history","native local bookmark/history omnibox suggestions through IPC, keyboard navigation, safe text rendering, and Alt+Home","profile-local quick-link add/remove through the native IPC with persistence","InPrivate storage/history","distinct downloads/no overwrite","profile cookie/storage isolation","profile-scoped persistent download history","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","idle inactive WebView2 tab suspends after configured delay, exposes an accessible sleeping state, and preserves unsent form after waking","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search","Tab group action syncs to native state and draws a visible group indicator","Page translation invokes local Translator API and restores original text","disabled downloads manager stays closed","unpacked WebView2 extension installs, content script runs, and removal stops it","procedural cosmetic ad filter removes matching ad nodes in real WebView2","service-worker and shared-worker requests pass through Brave network filtering","uBlock noop redirect resource reaches a native WebView2 response","native WebView2 profile password/autofill flags track settings and remain off in InPrivate","Alt+Shift+P leaves multiple saved logins untouched and fills the only exact-origin match","Pip password save uses the selected open tab's Rust-derived origin; stale, non-web, and private requests are rejected and summaries omit secrets","toolbar Home button and Alt+Home navigate the current tab to Pip's start page","version checker offers only a newer Pip release on the official GitHub repository"]})).unwrap()).unwrap();
     let mut report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&artifact).unwrap()).unwrap();
     report["checks"]
