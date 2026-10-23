@@ -118,6 +118,7 @@ describe('takeover bridge', () => {
       context: {
         mode: 'help',
         sessionId: 'session-1',
+        requestId: 'help-1',
         agentLabel: 'Claude-code',
         reason: 'Enter the login',
         resumeHint: undefined,
