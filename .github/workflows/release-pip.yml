@@ -65,6 +65,29 @@ jobs:
         # The fixture's popup listener is its own harness and does not prove production popup callback wiring.
         run: cargo run --locked -p evergreen-browser --example adblock_smoke --release
 
+      - name: Verify production popup handling in native WebView2
+        # Exercises Pip's popup callback with local UI fixtures, including ad88vip6.com; it does not test live ads or YouTube ad removal.
+        run: cargo run --locked -p evergreen-browser -- --verify-native-ui
+
+      - name: Validate native WebView2 popup report
+        shell: pwsh
+        run: |
+          $reportPath = "./target/native-ui-verification.json"
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            throw "Native UI verification did not create $reportPath"
+          }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ($report.status -ne "passed") {
+            throw "Native UI verification did not pass: $($report.status)"
+          }
+          $popupCheck = $report.checks | Where-Object {
+            $_ -eq "Known ad88vip6.com and local gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
+          }
+          if (-not $popupCheck) {
+            throw "The native UI report is missing the ad88vip6 WebView2 popup check."
+          }
+          Write-Host "Verified $($report.checks.Count) native UI checks, including the ad88vip6 popup."
+
       - name: Build installer payloads and source archive
         shell: pwsh
         run: ./scripts/build-installer.ps1 -SkipBrowserBuild
