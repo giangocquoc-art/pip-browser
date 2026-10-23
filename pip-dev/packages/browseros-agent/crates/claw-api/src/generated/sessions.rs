@@ -152,7 +152,7 @@ impl LiveSessionState {
     }
 }
 
-/// ResolveHelpRequest : Hand control back only for the current help request on its pinned browser tab.
+/// ResolveHelpRequest : Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResolveHelpRequest {
     #[serde(rename = "requestId")]
@@ -164,7 +164,7 @@ pub struct ResolveHelpRequest {
 }
 
 impl ResolveHelpRequest {
-    /// Hand control back only for the current help request on its pinned browser tab.
+    /// Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
     pub fn new(request_id: String, browser_tab_id: i64) -> ResolveHelpRequest {
         ResolveHelpRequest {
             request_id,
