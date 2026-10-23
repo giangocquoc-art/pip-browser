@@ -251,7 +251,7 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** @description Hand control back to a waiting agent after a human has taken over its page. */
+    /** @description Hand control back only if requestId and browserTabId still match the current live request and the pinned CDP page incarnation. */
     post: operations['resolveHelp']
     delete?: never
     options?: never
@@ -820,11 +820,14 @@ export interface components {
       /** Format: int64 */
       requestedAt: number
     }
-    /** @description Hand control back only for the current help request on its pinned browser tab. */
+    /** @description Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation. */
     ResolveHelpRequest: {
-      /** The requestId from the current live HelpRequest. */
+      /** @description The requestId from the current live HelpRequest. */
       requestId: string
-      /** The browser tab that sent the hand-back action and is pinned to the current HelpRequest. Format: int64 */
+      /**
+       * Format: int64
+       * @description The browser tab that sent the hand-back action and is pinned to the current HelpRequest.
+       */
       browserTabId: number
       note?: string
     }
