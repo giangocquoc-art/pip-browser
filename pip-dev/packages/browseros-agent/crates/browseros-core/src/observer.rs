@@ -696,7 +696,9 @@ mod tests {
                             .and_then(Value::as_str)
                             .and_then(|value| value.strip_prefix("obj-"))
                             .and_then(|value| value.parse::<i64>().ok());
-                        Ok(json!({ "result": { "value": backend.is_some_and(|id| !self.detached.contains(&id)) } }))
+                        Ok(
+                            json!({ "result": { "value": backend.is_some_and(|id| !self.detached.contains(&id)) } }),
+                        )
                     }
                     "Accessibility.getFullAXTree" => Ok(json!({ "nodes": self.ax_tree })),
                     "Runtime.releaseObject" => {
@@ -806,9 +808,10 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
-            CoreError::Message("missing ref".to_string())
-        })?;
+        let entry = refs
+            .get(&ref_id)
+            .cloned()
+            .ok_or_else(|| CoreError::Message("missing ref".to_string()))?;
 
         let result = resolve_ref_entry(&session, &entry).await;
 
@@ -856,9 +859,10 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
-            CoreError::Message("missing ref".to_string())
-        })?;
+        let entry = refs
+            .get(&ref_id)
+            .cloned()
+            .ok_or_else(|| CoreError::Message("missing ref".to_string()))?;
 
         let result = resolve_ref_entry(&session, &entry).await;
 
@@ -884,9 +888,10 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
-            CoreError::Message("missing ref".to_string())
-        })?;
+        let entry = refs
+            .get(&ref_id)
+            .cloned()
+            .ok_or_else(|| CoreError::Message("missing ref".to_string()))?;
 
         let result = resolve_ref_entry(&session, &entry).await;
 
@@ -914,13 +919,17 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
-            CoreError::Message("missing ref".to_string())
-        })?;
+        let entry = refs
+            .get(&ref_id)
+            .cloned()
+            .ok_or_else(|| CoreError::Message("missing ref".to_string()))?;
 
         let result = resolve_ref_entry(&session, &entry).await;
 
-        assert!(matches!(result, Err(CoreError::Cdp(CdpError::Timeout { .. }))));
+        assert!(matches!(
+            result,
+            Err(CoreError::Cdp(CdpError::Timeout { .. }))
+        ));
         Ok(())
     }
 
