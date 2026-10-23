@@ -215,7 +215,7 @@ export default defineBackground(() => {
       return true
     }
     if (takeoverMessage.type === 'takeover-resolve') {
-      const { sessionId, note } = message as TakeoverResolveMessage
+      const { sessionId, requestId, note } = message as TakeoverResolveMessage
       const tabId = sender.tab?.id
       if (typeof tabId !== 'number') {
         sendResponse({ ok: false })
@@ -226,6 +226,7 @@ export default defineBackground(() => {
         .resolve(
           tabId,
           sessionId,
+          requestId,
           note,
           async (context) => {
             // A help-only session may not appear in agentControlForTab; the

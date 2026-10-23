@@ -15,6 +15,7 @@ function context(over: Partial<TakeoverContext> = {}): TakeoverContext {
   return {
     mode: 'help',
     sessionId: 'session-1',
+    requestId: 'help-1',
     agentLabel: 'CLAUDE-CODE',
     reason: 'Enter the login so the run can continue',
     resumeHint: 'play Castlevania',

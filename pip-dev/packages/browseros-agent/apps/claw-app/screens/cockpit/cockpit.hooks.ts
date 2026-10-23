@@ -17,7 +17,11 @@ export interface HelpTakeover {
   /** Foreground the agent's blocked tab and open the in-control bar. */
   takeOver: (sessionId: string, browserTabId: number) => void
   /** Signal the waiting agent to resume with an optional note, then close the bar. */
-  handBack: (sessionId: string, note?: string) => void
+  handBack: (
+    sessionId: string,
+    target: { requestId: string; browserTabId: number },
+    note?: string,
+  ) => void
   /** Close the in-control bar without resuming; the agent keeps waiting. */
   cancelControl: () => void
   /** Terminally stop a session from the banner (the card has its own Stop). */
@@ -78,10 +82,14 @@ export function useHelpTakeover(
     )
   }
 
-  const handBack = (sessionId: string, note?: string) => {
+  const handBack = (
+    sessionId: string,
+    target: { requestId: string; browserTabId: number },
+    note?: string,
+  ) => {
     const trimmed = note?.trim()
     resolve.mutate(
-      { sessionId, note: trimmed || undefined },
+      { sessionId, ...target, note: trimmed || undefined },
       {
         onSuccess: (result) => {
           setInControlSessionId(null)

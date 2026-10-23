@@ -13,6 +13,7 @@
 export interface TakeoverContext {
   mode: 'help'
   sessionId: string
+  requestId: string
   agentLabel: string
   reason: string
   resumeHint?: string
@@ -58,6 +59,7 @@ export type TakeoverPollResponse =
 export interface TakeoverResolveMessage {
   type: 'takeover-resolve'
   sessionId: string
+  requestId: string
   note?: string
 }
 

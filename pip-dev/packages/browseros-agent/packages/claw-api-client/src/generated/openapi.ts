@@ -820,8 +820,12 @@ export interface components {
       /** Format: int64 */
       requestedAt: number
     }
-    /** @description Hand control back to the waiting agent, optionally with a note for it. */
+    /** @description Hand control back only for the current help request on its pinned browser tab. */
     ResolveHelpRequest: {
+      /** The requestId from the current live HelpRequest. */
+      requestId: string
+      /** The browser tab that sent the hand-back action and is pinned to the current HelpRequest. Format: int64 */
+      browserTabId: number
       note?: string
     }
     ResolveHelpResponse: {
@@ -1627,7 +1631,7 @@ export interface operations {
       }
       cookie?: never
     }
-    requestBody?: {
+    requestBody: {
       content: {
         'application/json': components['schemas']['ResolveHelpRequest']
       }

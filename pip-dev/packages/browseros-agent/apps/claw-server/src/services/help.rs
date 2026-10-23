@@ -21,15 +21,25 @@ use std::{
 };
 use tokio::sync::{Mutex, Notify};
 
-/// What the agent said when it opened the request, plus the tab it was blocked on, captured at
-/// request time so takeover targets the exact page even if the agent has several tabs open.
+/// The current browser page incarnation pinned when help was requested. Page and target IDs
+/// distinguish a reused Chrome tab; the connection epoch distinguishes a reconnected CDP session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpTargetIdentity {
+    pub browser_tab_id: i64,
+    pub page_id: u32,
+    pub target_id: String,
+    pub connection_epoch: u64,
+}
+
+/// What the agent said when it opened the request, plus the exact page incarnation it was blocked
+/// on, captured at request time so takeover cannot drift to a reused tab or target.
 pub struct HelpOpenParams {
     pub request_id: String,
     pub reason: String,
     pub details: Option<String>,
     pub resume_hint: Option<String>,
     pub kind: Option<HelpRequestKind>,
-    pub browser_tab_id: Option<i64>,
+    pub target: Option<HelpTargetIdentity>,
     pub url: Option<String>,
     pub title: Option<String>,
 }
@@ -57,7 +67,7 @@ pub struct HelpEntry {
     details: Option<String>,
     resume_hint: Option<String>,
     kind: Option<HelpRequestKind>,
-    browser_tab_id: Option<i64>,
+    target: Option<HelpTargetIdentity>,
     url: Option<String>,
     title: Option<String>,
     requested_at_ms: i64,
@@ -122,7 +132,7 @@ impl HelpRegistry {
             details: params.details,
             resume_hint: params.resume_hint,
             kind: params.kind,
-            browser_tab_id: params.browser_tab_id,
+            target: params.target,
             url: params.url,
             title: params.title,
             requested_at_ms: now_ms(),
@@ -139,16 +149,32 @@ impl HelpRegistry {
         self.entries.lock().await.get(session).cloned()
     }
 
-    /// Hand control back to a waiting agent. Returns true when a pending request was found.
-    pub async fn resolve(&self, session: &SessionId, note: Option<String>) -> bool {
-        let entry = { self.entries.lock().await.get(session).cloned() };
-        match entry {
-            Some(entry) => {
-                entry.mark_resolved(note);
-                true
-            }
-            None => false,
+    /// Hand control back only when the UI still names this request, the sender still names its
+    /// pinned tab, and the live page incarnation (including CDP epoch) is unchanged.
+    pub async fn resolve(
+        &self,
+        session: &SessionId,
+        request_id: &str,
+        browser_tab_id: i64,
+        current_target: Option<&HelpTargetIdentity>,
+        note: Option<String>,
+    ) -> bool {
+        let entries = self.entries.lock().await;
+        let Some(entry) = entries.get(session) else {
+            return false;
+        };
+        let Some(current_target) = current_target else {
+            return false;
+        };
+        if entry.resolved.load(Ordering::Acquire)
+            || entry.request_id != request_id
+            || entry.target.as_ref() != Some(current_target)
+            || current_target.browser_tab_id != browser_tab_id
+        {
+            return false;
         }
+        entry.mark_resolved(note);
+        true
     }
 
     /// Remove the entry only if it is still the one this waiter owns, so a stale waiter from an
@@ -218,33 +244,33 @@ impl HelpRegistry {
     /// read: a resolved or expired entry is hidden but left in place for the agent's own wait call
     /// to consume, so a poll between wait calls cannot drop a hand-back note or mask a timeout.
     ///
-    /// The tab pinned at request time wins; the `fallback_*` values (the poll-time most-active owned
-    /// tab) only fill in when nothing was captured then, so takeover targets the blocked page even
-    /// when the agent has several tabs open.
+    /// The request is visible only while the same tab, page, target, and CDP connection epoch
+    /// remain live. An unpinned or stale request cannot be handed back to the agent.
     pub async fn snapshot(
         &self,
         session: &SessionId,
-        fallback_tab_id: Option<i64>,
-        fallback_url: Option<String>,
-        fallback_title: Option<String>,
+        current_targets: &[HelpTargetIdentity],
     ) -> Option<HelpRequest> {
         let entries = self.entries.lock().await;
         let entry = entries.get(session)?.clone();
         if entry.resolved.load(Ordering::Acquire) || entry.created.elapsed() >= self.max_wait {
             return None;
         }
-        let tab = entry.browser_tab_id.or(fallback_tab_id)?;
+        let target = entry.target.as_ref()?;
+        if !current_targets.contains(target) {
+            return None;
+        }
         let mut wire = HelpRequest::new(
             entry.request_id.clone(),
             entry.reason.clone(),
-            tab,
+            target.browser_tab_id,
             entry.requested_at_ms,
         );
         wire.details = entry.details.clone();
         wire.resume_hint = entry.resume_hint.clone();
         wire.kind = entry.kind;
-        wire.url = entry.url.clone().or(fallback_url);
-        wire.title = entry.title.clone().or(fallback_title);
+        wire.url = entry.url.clone();
+        wire.title = entry.title.clone();
         Some(wire)
     }
 }
@@ -268,9 +294,18 @@ mod tests {
             details: None,
             resume_hint: Some("resume at 15".to_string()),
             kind: Some(HelpRequestKind::Login),
-            browser_tab_id: None,
+            target: Some(target()),
             url: None,
             title: None,
+        }
+    }
+
+    fn target() -> HelpTargetIdentity {
+        HelpTargetIdentity {
+            browser_tab_id: 42,
+            page_id: 7,
+            target_id: "target-7".to_string(),
+            connection_epoch: 3,
         }
     }
 
@@ -309,7 +344,12 @@ mod tests {
         let entry = registry.open(&session, params("req-1")).await;
         assert!(
             registry
-                .resolve(&session, Some("2fa done".to_string()))
+                .resolve(&session, "req-1", 42, Some(&target()), Some("2fa done".to_string()))
+                .await
+        );
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 42, Some(&target()), None)
                 .await
         );
         let outcome = wait(&registry, &session, &entry, Duration::from_secs(1)).await;
@@ -320,6 +360,52 @@ mod tests {
             }
         );
         assert!(registry.get(&session).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_stale_request_tab_page_target_epoch_and_missing_identity() {
+        let registry = HelpRegistry::new(Duration::from_secs(60));
+        let session = SessionId::new("s1");
+        registry.open(&session, params("req-1")).await;
+
+        assert!(
+            !registry
+                .resolve(&session, "req-old", 42, Some(&target()), None)
+                .await
+        );
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 99, Some(&target()), None)
+                .await
+        );
+
+        let mut stale_page = target();
+        stale_page.page_id += 1;
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 42, Some(&stale_page), None)
+                .await
+        );
+        let mut stale_target = target();
+        stale_target.target_id.push_str("-replacement");
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 42, Some(&stale_target), None)
+                .await
+        );
+        let mut stale_epoch = target();
+        stale_epoch.connection_epoch += 1;
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 42, Some(&stale_epoch), None)
+                .await
+        );
+        assert!(
+            !registry
+                .resolve(&session, "req-1", 42, None, None)
+                .await
+        );
+        assert!(registry.get(&session).await.is_some());
     }
 
     #[tokio::test]
@@ -390,7 +476,9 @@ mod tests {
         let session = SessionId::new("s1");
         let first = registry.open(&session, params("req-1")).await;
         // First request is resolved and consumed by its waiter, which removes it.
-        registry.resolve(&session, None).await;
+        registry
+            .resolve(&session, "req-1", 42, Some(&target()), None)
+            .await;
         wait(&registry, &session, &first, Duration::from_secs(1)).await;
         // A new request opens for the same session.
         let second = registry.open(&session, params("req-2")).await;
@@ -408,31 +496,18 @@ mod tests {
         let registry = HelpRegistry::new(Duration::from_secs(60));
         let session = SessionId::new("s1");
         registry.open(&session, params("req-1")).await;
-        let Some(wire) = registry
-            .snapshot(&session, Some(42), Some("https://x".to_string()), None)
-            .await
-        else {
+        let Some(wire) = registry.snapshot(&session, &[target()]).await else {
             panic!("a pending request");
         };
         assert_eq!(wire.browser_tab_id, 42);
         assert_eq!(wire.resume_hint.as_deref(), Some("resume at 15"));
-        // No owned tab to take over -> nothing to show, entry untouched.
-        assert!(
-            registry
-                .snapshot(&session, None, None, None)
-                .await
-                .is_none()
-        );
+        // A different live page cannot surface the stale request.
+        assert!(registry.snapshot(&session, &[]).await.is_none());
         // Resolved -> hidden from the cockpit but kept so the agent's wait consumes the note.
         registry
-            .resolve(&session, Some("2fa done".to_string()))
+            .resolve(&session, "req-1", 42, Some(&target()), Some("2fa done".to_string()))
             .await;
-        assert!(
-            registry
-                .snapshot(&session, Some(42), None, None)
-                .await
-                .is_none()
-        );
+        assert!(registry.snapshot(&session, &[target()]).await.is_none());
         assert!(registry.get(&session).await.is_some());
     }
 
@@ -440,13 +515,21 @@ mod tests {
     async fn snapshot_prefers_the_tab_pinned_at_request_time() {
         let registry = HelpRegistry::new(Duration::from_secs(60));
         let session = SessionId::new("s1");
+        let pinned_target = HelpTargetIdentity {
+            browser_tab_id: 7,
+            ..target()
+        };
         let mut pinned = params("req-1");
-        pinned.browser_tab_id = Some(7);
+        pinned.target = Some(pinned_target.clone());
         pinned.url = Some("https://blocked".to_string());
         registry.open(&session, pinned).await;
-        // The poll-time fallback points at a different, more-active tab; the pinned tab wins.
+        // A different, more-active tab cannot replace the pinned page.
+        let other_target = HelpTargetIdentity {
+            browser_tab_id: 42,
+            ..target()
+        };
         let Some(wire) = registry
-            .snapshot(&session, Some(42), Some("https://other".to_string()), None)
+            .snapshot(&session, &[other_target, pinned_target])
             .await
         else {
             panic!("a pending request");

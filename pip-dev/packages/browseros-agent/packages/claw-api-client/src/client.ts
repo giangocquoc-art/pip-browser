@@ -224,12 +224,17 @@ export class ClawApiClient {
   }
 
   async resolveHelp(
-    request: SessionRequest & { note?: string },
+    request: SessionRequest &
+      operations['resolveHelp']['requestBody']['content']['application/json'],
   ): Promise<ResolveHelpResponse> {
     return this.unwrap(
       await this.client.POST('/api/v1/sessions/{sessionId}/help/resolve', {
         params: { path: { sessionId: request.sessionId } },
-        body: { note: request.note },
+        body: {
+          requestId: request.requestId,
+          browserTabId: request.browserTabId,
+          note: request.note,
+        },
       }),
     )
   }

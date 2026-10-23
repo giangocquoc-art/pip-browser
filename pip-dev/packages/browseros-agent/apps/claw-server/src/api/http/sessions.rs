@@ -46,7 +46,7 @@ pub(super) async fn list(
 ) -> Result<Json<SessionList>, CanonicalError> {
     let query = parse_query(&request_id, &raw)?;
     if query.status == Some(TaskStatus::Live) {
-        let mut items = state
+        let projections = state
             .cockpit
             .list(&LiveSessionFilters {
                 profile_id: query.profile_id,
@@ -56,32 +56,25 @@ pub(super) async fn list(
                 since: query.since,
             })
             .await
-            .map_err(|source| internal(&request_id, source))?
-            .into_iter()
-            .map(contract_live_projection)
-            .collect::<Vec<_>>();
-        for item in &mut items {
-            let session_id = SessionId::new(item.session_id.clone());
-            let target = item
+            .map_err(|source| internal(&request_id, source))?;
+        let mut items = Vec::with_capacity(projections.len());
+        for projection in projections {
+            let current_targets = projection
                 .live
-                .as_deref()
-                .and_then(|live| {
-                    live.browser_tabs
-                        .iter()
-                        .max_by_key(|tab| tab.last_activity_at.unwrap_or(0))
-                })
-                .map(|tab| (tab.browser_tab_id, tab.url.clone(), tab.title.clone()));
-            let (tab_id, url, title) = match target {
-                Some((tab_id, url, title)) => (Some(tab_id), Some(url), Some(title)),
-                None => (None, None, None),
-            };
+                .browser_tabs
+                .iter()
+                .map(|tab| tab.identity.clone())
+                .collect::<Vec<_>>();
+            let session_id = SessionId::new(projection.task.session_id.clone());
+            let mut item = contract_live_projection(projection);
             if let Some(live) = item.live.as_deref_mut() {
                 live.help_request = state
                     .help
-                    .snapshot(&session_id, tab_id, url, title)
+                    .snapshot(&session_id, &current_targets)
                     .await
                     .map(Box::new);
             }
+            items.push(item);
         }
         return Ok(Json(SessionList::new(items)));
     }
@@ -192,17 +185,42 @@ pub(super) async fn cancel(
 }
 
 pub(super) async fn resolve_help(
+    Extension(request_id): Extension<RequestId>,
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    body: Option<Json<ResolveHelpRequest>>,
-) -> Json<ResolveHelpResponse> {
+    Json(request): Json<ResolveHelpRequest>,
+) -> Result<Json<ResolveHelpResponse>, CanonicalError> {
     let session_id = SessionId::new(session_id);
-    let note = body
-        .and_then(|Json(req)| req.note)
+    let current_target = state
+        .cockpit
+        .list(&LiveSessionFilters::default())
+        .await
+        .map_err(|source| internal(&request_id, source))?
+        .into_iter()
+        .find(|projection| projection.task.session_id == session_id.as_str())
+        .and_then(|projection| {
+            projection
+                .live
+                .browser_tabs
+                .into_iter()
+                .find(|tab| tab.identity.browser_tab_id == request.browser_tab_id)
+                .map(|tab| tab.identity)
+        });
+    let note = request
+        .note
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
-    let resolved = state.help.resolve(&session_id, note).await;
-    Json(ResolveHelpResponse::new(resolved))
+    let resolved = state
+        .help
+        .resolve(
+            &session_id,
+            &request.request_id,
+            request.browser_tab_id,
+            current_target.as_ref(),
+            note,
+        )
+        .await;
+    Ok(Json(ResolveHelpResponse::new(resolved)))
 }
 
 async fn live_sessions(state: &AppState) -> HashMap<String, Arc<Session>> {
@@ -330,7 +348,7 @@ fn contract_live_state(projection: LiveStateProjection) -> claw_api::models::Liv
 
 fn contract_live_tab(projection: LiveTabProjection) -> SessionBrowserTab {
     let mut tab = SessionBrowserTab::new(
-        projection.browser_tab_id,
+        projection.identity.browser_tab_id,
         projection.url,
         projection.title,
         projection.tool_count,

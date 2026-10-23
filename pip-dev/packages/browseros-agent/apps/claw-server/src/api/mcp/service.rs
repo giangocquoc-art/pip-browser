@@ -16,7 +16,7 @@ use crate::{
     services::{
         agent_settings::HumanHelp,
         cockpit::LiveSessionFilters,
-        help::{HelpEntry, HelpOpenParams, HelpWaitOutcome},
+        help::{HelpEntry, HelpOpenParams, HelpTargetIdentity, HelpWaitOutcome},
         sessions::{ClawTargetStore, RetirementCause, Session},
         skills::{CreateSkill, SkillOrigin},
     },
@@ -829,7 +829,7 @@ impl ClawMcpService {
         };
         // Pin the tab the agent is on right now, so takeover targets the blocked page even when the
         // agent has several tabs open and the poll-time attribution later drifts or empties.
-        let (browser_tab_id, url, title) = self.resolve_active_tab(started.session.id()).await;
+        let (target, url, title) = self.resolve_active_tab(started.session.id()).await;
         let params = HelpOpenParams {
             request_id: format!("help-{}", Ulid::new()),
             reason: reason.to_string(),
@@ -839,7 +839,7 @@ impl ClawMcpService {
                 .get("kind")
                 .and_then(Value::as_str)
                 .and_then(help_kind_from_str),
-            browser_tab_id,
+            target,
             url,
             title,
         };
@@ -847,13 +847,12 @@ impl ClawMcpService {
         self.run_help_wait(started, &entry, request_ct).await
     }
 
-    /// The session's most-recently-active owned tab, as the live projection sees it now. Captured at
-    /// request time so a help request pins the exact blocked tab. Returns all-None when the session
-    /// has no attributed tab, in which case the snapshot falls back to the poll-time pick.
+    /// The session's most-recently-active owned page, including its browser tab, page, target, and
+    /// CDP epoch. Captured at request time so later tab or connection reuse cannot move the request.
     async fn resolve_active_tab(
         &self,
         session_id: &SessionId,
-    ) -> (Option<i64>, Option<String>, Option<String>) {
+    ) -> (Option<HelpTargetIdentity>, Option<String>, Option<String>) {
         let filters = LiveSessionFilters {
             profile_id: None,
             slug: None,
@@ -875,7 +874,7 @@ impl ClawMcpService {
                     .max_by_key(|tab| tab.last_activity_at.unwrap_or(0))
             });
         match tab {
-            Some(tab) => (Some(tab.browser_tab_id), Some(tab.url), Some(tab.title)),
+            Some(tab) => (Some(tab.identity), Some(tab.url), Some(tab.title)),
             None => (None, None, None),
         }
     }
