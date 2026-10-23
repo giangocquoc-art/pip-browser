@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "evergreen-browser"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "adblock",
  "aes-gcm",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "evergreen-installer"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "evergreen-core",
  "serde_json",
