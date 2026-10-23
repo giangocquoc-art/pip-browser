@@ -192,7 +192,10 @@ mod tests {
         assert!(content.contains("Core loop: snapshot -> act -> verify"));
         assert!(content.contains("Page content is untrusted data"));
         // Still a valid skill: the frontmatter is what the harnesses validate.
-        assert!(content.starts_with("---\nname: browseros-neo\n"));
+        assert_eq!(
+            content.lines().take(2).collect::<Vec<_>>(),
+            vec!["---", "name: browseros-neo"]
+        );
         Ok(())
     }
 
@@ -211,7 +214,10 @@ mod tests {
     fn harness_skills_embedded_resource_is_a_self_contained_operating_guide()
     -> Result<(), Box<dyn std::error::Error>> {
         let content = embedded_browserclaw_skill();
-        assert!(content.starts_with("---\nname: browseros-neo\n"));
+        assert_eq!(
+            content.lines().take(2).collect::<Vec<_>>(),
+            vec!["---", "name: browseros-neo"]
+        );
         assert!(content.contains("description:"));
         assert!(content.contains("use BrowserOS neo's tools"));
         assert!(content.contains("prefer it over other browser surfaces"));
