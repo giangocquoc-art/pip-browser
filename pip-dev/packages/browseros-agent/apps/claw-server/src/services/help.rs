@@ -9,6 +9,7 @@
 //! false resume. Orphans left by a crashed or disconnected agent are swept the next time any
 //! session opens a request, bounding stale memory without a background task.
 
+pub use crate::ids::HelpTargetIdentity;
 use crate::ids::SessionId;
 use claw_api::models::{HelpRequest, HelpRequestKind};
 use std::{
@@ -20,16 +21,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Notify};
-
-/// The current browser page incarnation pinned when help was requested. Page and target IDs
-/// distinguish a reused Chrome tab; the connection epoch distinguishes a reconnected CDP session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HelpTargetIdentity {
-    pub browser_tab_id: i64,
-    pub page_id: u32,
-    pub target_id: String,
-    pub connection_epoch: u64,
-}
 
 /// What the agent said when it opened the request, plus the exact page incarnation it was blocked
 /// on, captured at request time so takeover cannot drift to a reused tab or target.

@@ -8,10 +8,10 @@
 use crate::{
     db::audit_log::TaskSummary,
     error::AppResult,
+    ids::HelpTargetIdentity,
     services::{
         browser::{BrowserService, hex_for_slug},
         cockpit::{TabActivityService, ToolEvent},
-        help::HelpTargetIdentity,
         profiles::{ProfileService, StoredAgentProfile},
         sessions::{Session, Sessions},
     },

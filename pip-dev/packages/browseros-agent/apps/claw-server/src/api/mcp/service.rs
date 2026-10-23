@@ -12,11 +12,11 @@ use crate::{
         pursue::PursueOffering,
     },
     identity::{ClientIdentity, ClientInfo, ProfileView},
-    ids::{DispatchId, SessionId},
+    ids::{DispatchId, HelpTargetIdentity, SessionId},
     services::{
         agent_settings::HumanHelp,
         cockpit::LiveSessionFilters,
-        help::{HelpEntry, HelpOpenParams, HelpTargetIdentity, HelpWaitOutcome},
+        help::{HelpEntry, HelpOpenParams, HelpWaitOutcome},
         sessions::{ClawTargetStore, RetirementCause, Session},
         skills::{CreateSkill, SkillOrigin},
     },
