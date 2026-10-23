@@ -2655,4 +2655,3 @@ async fn one_run_without_a_default_window_opens_one_window_for_all_pages() -> an
     );
     Ok(())
 }
-
