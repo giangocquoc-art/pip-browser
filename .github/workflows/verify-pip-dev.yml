@@ -96,6 +96,11 @@ jobs:
       - name: Install locked API and extension dependencies
         run: bun install --filter browseros-monorepo --filter '@browseros/claw-app' --frozen-lockfile
 
+      - name: Diagnose canonical generated sessions model
+        run: |
+          bun run codegen:claw-api
+          git diff --no-ext-diff -- crates/claw-api/src/generated/sessions.rs
+
       - name: Verify generated Claw API files
         run: bun run codegen:claw-api:check
 
