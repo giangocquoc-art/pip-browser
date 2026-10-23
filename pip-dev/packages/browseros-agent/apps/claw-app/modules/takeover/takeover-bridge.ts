@@ -32,6 +32,7 @@ export interface TakeoverBridge {
     sessionId: string,
     note?: string,
     beforeResume?: (context: AgentControlContext | null) => Promise<void>,
+    afterResumeFailure?: () => Promise<void>,
   ) => Promise<boolean>
   stopForTab: (tabId: number) => Promise<{ stopped: number; total: number }>
 }
@@ -95,16 +96,38 @@ export function createTakeoverBridge(
     async refreshForTab(tabId) {
       return contextForTab(await freshLiveSessions(), tabId)
     },
-    async resolve(tabId, sessionId, note, beforeResume) {
+    async resolve(tabId, sessionId, note, beforeResume, afterResumeFailure) {
       const sessions = await freshLiveSessions()
       const helpRequest = takeoverForTab(sessions, tabId)
       if (!helpRequest || helpRequest.sessionId !== sessionId) return false
 
+      const reconcileAfterFailedHandBack = async () => {
+        // A response can be lost after the server has resumed the agent. Read
+        // live ownership again instead of blindly unlocking or retaining the lease.
+        cache = null
+        try {
+          await afterResumeFailure?.()
+        } catch {
+          // The background owns the last-known native lease; its next poll or a
+          // browser detach performs another reconciliation.
+          cache = null
+        }
+      }
+
       // Lock the tab before waking the agent. The caller can therefore make
       // the hand-back atomic with respect to the human's page interaction.
-      await beforeResume?.(agentControlForTab(sessions, tabId))
-      const result = await (await client()).resolveHelp({ sessionId, note })
-      if (!result.resolved) return false
+      let result: { resolved: boolean }
+      try {
+        await beforeResume?.(agentControlForTab(sessions, tabId))
+        result = await (await client()).resolveHelp({ sessionId, note })
+      } catch (error) {
+        await reconcileAfterFailedHandBack()
+        throw error
+      }
+      if (!result.resolved) {
+        await reconcileAfterFailedHandBack()
+        return false
+      }
       // Drop the cache so the next poll reflects the resolve and clears the bar.
       cache = null
       return true
