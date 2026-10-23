@@ -64,6 +64,11 @@ jobs:
             $parseErrors | Format-List | Out-String | Write-Error
           }
 
+      - name: Test existing-artifact preflight guards
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: ./pip-dev/tests/test-existing-artifacts.ps1
+
       - name: Install locked extension dependencies
         run: bun install --filter '@browseros/claw-app' --frozen-lockfile
 
