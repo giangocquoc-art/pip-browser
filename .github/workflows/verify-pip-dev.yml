@@ -42,6 +42,21 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Parse Windows launcher
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-Content -Raw -LiteralPath "pip-dev/run-pip-dev-windows.ps1"),
+            [ref] $tokens,
+            [ref] $parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Error
+          }
+
       - name: Install locked extension dependencies
         run: bun install --filter '@browseros/claw-app' --frozen-lockfile
 
