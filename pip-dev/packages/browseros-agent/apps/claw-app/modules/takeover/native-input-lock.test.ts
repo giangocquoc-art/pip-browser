@@ -3,6 +3,7 @@ import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
+  requireAcknowledgedNativeInputLock,
   type NativeInputDebugger,
 } from './native-input-lock'
 
