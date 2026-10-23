@@ -469,6 +469,11 @@ struct Frame {
 }
 
 #[derive(Debug, Deserialize)]
+struct AxTreeResult {
+    nodes: Vec<AxNode>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ResolveNodeResult {
     object: Option<RemoteObject>,
 }
