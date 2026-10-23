@@ -1293,6 +1293,46 @@ fn sync_settings_patch_present(value: &serde_json::Value) -> bool {
             })
 }
 
+fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("askWhereToSave")
+        || object.contains_key("ask_where_to_save")
+        || object
+            .get("downloads")
+            .and_then(|value| value.as_object())
+            .is_some_and(|downloads| downloads.contains_key("ask_where_to_save"))
+}
+
+/// Strip the local-only download preference before updating shared settings.
+fn without_profile_download_settings_patch(value: &serde_json::Value) -> serde_json::Value {
+    let mut clean = value.clone();
+    if let Some(object) = clean.as_object_mut() {
+        object.remove("askWhereToSave");
+        object.remove("ask_where_to_save");
+        if let Some(downloads) = object
+            .get_mut("downloads")
+            .and_then(|value| value.as_object_mut())
+        {
+            downloads.remove("ask_where_to_save");
+        }
+    }
+    clean
+}
+
+fn update_profile_download_folder(
+    settings: &mut evergreen_core::settings::Settings,
+    profile_id: &str,
+    folder: std::path::PathBuf,
+) -> bool {
+    let Some(mut download_settings) = settings.profile_download_settings(profile_id) else {
+        return false;
+    };
+    download_settings.default_folder = folder;
+    settings.set_profile_download_settings(profile_id, download_settings)
+}
+
 /// Strip the nine profile-local Sync preferences before updating global settings.
 fn without_sync_settings_patch(value: &serde_json::Value) -> serde_json::Value {
     let mut clean = value.clone();
@@ -4575,6 +4615,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     sync_settings_updated_at_ms: 0,
                                     sync_settings_fingerprint: None,
                                     sync_settings_values: None,
+                                    download_settings: None,
                                 });
                             if settings.save_to_path(&get_settings_path()).is_ok() {
                                 self.settings = settings;
@@ -5874,21 +5915,40 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::ChangeDownloadFolder => {
+                    let profile_id = self
+                        .windows
+                        .get(&win_id)
+                        .map(|win| win.profile_id.clone());
                     let result = self
                         .windows
                         .get(&win_id)
                         .map(|win| choose_download_folder(&win.window));
                     match result {
                         Some(Ok(folder)) => {
+                            let Some(profile_id) = profile_id else {
+                                return;
+                            };
                             let mut settings = self.settings.clone();
-                            settings.downloads.default_folder = folder;
+                            if !update_profile_download_folder(&mut settings, &profile_id, folder) {
+                                self.notify_settings(win_id, "Không tìm thấy hồ sơ tải xuống.");
+                                return;
+                            }
                             if settings.save_to_path(&get_settings_path()).is_ok() {
                                 self.settings = settings;
                                 let folder = serde_json::to_string(
-                                    &self.settings.downloads.default_folder.to_string_lossy(),
+                                    &self
+                                        .settings
+                                        .for_profile(&profile_id)
+                                        .downloads
+                                        .default_folder
+                                        .to_string_lossy(),
                                 )
                                 .unwrap();
-                                for win in self.windows.values() {
+                                for win in self
+                                    .windows
+                                    .values()
+                                    .filter(|win| win.profile_id == profile_id)
+                                {
                                     for (id, view) in &win.tabs {
                                         if win
                                             .tab_manager
@@ -5917,8 +5977,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         let profile_id =
                             self.windows.get(&win_id).map(|win| win.profile_id.clone());
                         let has_profile_sync_patch = sync_settings_patch_present(&val);
+                        let has_profile_download_patch =
+                            profile_download_settings_patch_present(&val);
                         let mut settings = self.settings.clone();
-                        settings.update_from_json(&without_sync_settings_patch(&val));
+                        settings.update_from_json(&without_sync_settings_patch(
+                            &without_profile_download_settings_patch(&val),
+                        ));
                         if has_profile_sync_patch {
                             if let Some(profile_id) = profile_id.as_deref() {
                                 let mut effective = self.settings.for_profile(profile_id);
@@ -5934,6 +5998,18 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                         ),
                                     );
                                 }
+                            }
+                        }
+                        if has_profile_download_patch {
+                            if let Some(profile_id) = profile_id.as_deref() {
+                                let mut effective = self.settings.for_profile(profile_id);
+                                effective.update_from_json(&val);
+                                let download_settings =
+                                    evergreen_core::settings::ProfileDownloadSettings::from_global(
+                                        &effective,
+                                    );
+                                settings
+                                    .set_profile_download_settings(profile_id, download_settings);
                             }
                         }
                         let path = get_settings_path();
@@ -6849,7 +6925,12 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
             }
             BrowserEvent::DownloadRequested(win_id, id) => {
-                downloads::start(win_id, id, self.proxy.clone(), &self.settings);
+                let settings = self
+                    .windows
+                    .get(&win_id)
+                    .map(|win| self.settings.for_profile(&win.profile_id))
+                    .unwrap_or_else(|| self.settings.clone());
+                downloads::start(win_id, id, self.proxy.clone(), &settings);
             }
             BrowserEvent::DownloadProgress {
                 window_id,

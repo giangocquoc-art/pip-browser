@@ -71,6 +71,9 @@ pub struct BrowserProfile {
     /// legacy profiles on the existing global values until they are changed/synced.
     #[serde(default)]
     pub sync_settings_values: Option<ProfileSyncSettings>,
+    /// Local-only download preferences; missing values inherit the legacy global settings.
+    #[serde(default)]
+    pub download_settings: Option<ProfileDownloadSettings>,
 }
 
 /// The exact set of preferences that Sync V4 is allowed to move between devices.
@@ -161,6 +164,8 @@ struct BrowserProfileData {
     sync_settings_fingerprint: Option<String>,
     #[serde(default)]
     sync_settings_values: Option<ProfileSyncSettings>,
+    #[serde(default)]
+    download_settings: Option<ProfileDownloadSettings>,
 }
 
 impl From<BrowserProfileData> for BrowserProfile {
@@ -183,6 +188,7 @@ impl From<BrowserProfileData> for BrowserProfile {
             },
             sync_settings_fingerprint: data.sync_settings_fingerprint,
             sync_settings_values: data.sync_settings_values,
+            download_settings: data.download_settings,
         }
     }
 }
@@ -214,6 +220,7 @@ pub fn default_profiles() -> Vec<BrowserProfile> {
         sync_settings_updated_at_ms: 0,
         sync_settings_fingerprint: None,
         sync_settings_values: None,
+        download_settings: None,
     }]
 }
 
@@ -269,6 +276,29 @@ pub struct DownloadSettings {
     pub show_progress_toolbar: bool,
     /// Default download folder
     pub default_folder: PathBuf,
+}
+
+/// Download preferences stored locally for one browser profile and never included in Sync.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileDownloadSettings {
+    #[serde(default = "enabled_by_default")]
+    pub ask_where_to_save: bool,
+    #[serde(default = "dirs_fallback_downloads")]
+    pub default_folder: PathBuf,
+}
+
+impl ProfileDownloadSettings {
+    pub fn from_global(settings: &Settings) -> Self {
+        Self {
+            ask_where_to_save: settings.downloads.ask_where_to_save,
+            default_folder: settings.downloads.default_folder.clone(),
+        }
+    }
+
+    pub fn apply_to(&self, settings: &mut Settings) {
+        settings.downloads.ask_where_to_save = self.ask_where_to_save;
+        settings.downloads.default_folder = self.default_folder.clone();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -405,6 +435,14 @@ impl Settings {
         {
             values.apply_to(&mut effective);
         }
+        if let Some(values) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.download_settings.as_ref())
+        {
+            values.apply_to(&mut effective);
+        }
         effective
     }
 
@@ -419,6 +457,34 @@ impl Settings {
                 .clone()
                 .unwrap_or_else(|| ProfileSyncSettings::from_global(self)),
         )
+    }
+
+    pub fn profile_download_settings(&self, profile_id: &str) -> Option<ProfileDownloadSettings> {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| {
+                profile
+                    .download_settings
+                    .clone()
+                    .unwrap_or_else(|| ProfileDownloadSettings::from_global(self))
+            })
+    }
+
+    pub fn set_profile_download_settings(
+        &mut self,
+        profile_id: &str,
+        values: ProfileDownloadSettings,
+    ) -> bool {
+        let Some(profile) = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+        else {
+            return false;
+        };
+        profile.download_settings = Some(values);
+        true
     }
 
     pub fn search_url_template(&self) -> &'static str {
@@ -770,4 +836,50 @@ pub fn extract_domain(input: &str) -> String {
         domain = stripped.to_string();
     }
     domain
+}
+
+#[cfg(test)]
+mod profile_download_settings_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_profiles_inherit_global_download_preferences_until_overridden() {
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        for profile in legacy["profiles"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("download_settings");
+        }
+        let legacy_folder = PathBuf::from("legacy-downloads");
+        legacy["downloads"]["ask_where_to_save"] = serde_json::json!(false);
+        legacy["downloads"]["default_folder"] = serde_json::to_value(&legacy_folder).unwrap();
+
+        let mut settings: Settings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(settings.profiles[0].download_settings, None);
+        assert!(!settings.for_profile("Default").downloads.ask_where_to_save);
+        assert_eq!(
+            settings.for_profile("Default").downloads.default_folder,
+            legacy_folder
+        );
+
+        let mut work = settings.profiles[0].clone();
+        work.id = "Work".into();
+        work.name = "Work".into();
+        settings.profiles.push(work);
+
+        let profile_folder = PathBuf::from("profile-a-downloads");
+        let mut profile_a = settings.profile_download_settings("Default").unwrap();
+        profile_a.ask_where_to_save = true;
+        profile_a.default_folder = profile_folder.clone();
+        assert!(settings.set_profile_download_settings("Default", profile_a));
+
+        let reloaded: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+        let profile_a = reloaded.for_profile("Default");
+        let profile_b = reloaded.for_profile("Work");
+        assert!(profile_a.downloads.ask_where_to_save);
+        assert_eq!(profile_a.downloads.default_folder, profile_folder);
+        assert!(!profile_b.downloads.ask_where_to_save);
+        assert_eq!(profile_b.downloads.default_folder, legacy_folder);
+        assert!(!reloaded.downloads.ask_where_to_save);
+        assert_eq!(reloaded.downloads.default_folder, legacy_folder);
+    }
 }
