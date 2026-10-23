@@ -16,6 +16,7 @@ import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
+  requireAcknowledgedNativeInputLock,
 } from '@/modules/takeover/native-input-lock'
 import { TakeoverInputLockGate } from '@/modules/takeover/takeover-input-lock-gate'
 import { handleTakeoverAction } from '@/modules/takeover/takeover-action'
@@ -222,12 +223,18 @@ export default defineBackground(() => {
       }
       inputLockGate.beginStop(tabId)
       void takeover
-        .resolve(tabId, sessionId, note, async (context) => {
-          if (context) {
-            // Restore the lock before waking the help-requesting agent.
-            await nativeInputLocks.sync(tabId, context.sessionIds)
-          }
-        })
+        .resolve(
+          tabId,
+          sessionId,
+          note,
+          async (context) => {
+            // A help-only session may not appear in agentControlForTab; the
+            // validated request still pins its exact session to this sender tab.
+            const owners = context?.sessionIds ?? [sessionId]
+            await requireAcknowledgedNativeInputLock(nativeInputLocks, tabId, owners)
+          },
+          () => reconcileInputLockIfFinalStop(tabId),
+        )
         .then(async (resolved) => {
           await reconcileInputLockIfFinalStop(tabId)
           sendResponse({ ok: resolved })

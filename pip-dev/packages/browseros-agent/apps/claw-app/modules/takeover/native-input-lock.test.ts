@@ -3,6 +3,7 @@ import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
+  requireAcknowledgedNativeInputLock,
   type NativeInputDebugger,
 } from './native-input-lock'
 
@@ -320,6 +321,27 @@ describe('NativeInputLockManager', () => {
       ['Input.setAgentInputLock', 7],
       ['detach', 7],
     ])
+  })
+
+  it('requires an acknowledged lock and propagates debugger errors before hand-back', async () => {
+    const unavailable = { sync: async () => 'unavailable' as const }
+    await expect(
+      requireAcknowledgedNativeInputLock(unavailable, 7, ['session-a']),
+    ).rejects.toThrow('native input lock was not acknowledged')
+
+    const failed = {
+      sync: async () => {
+        throw new Error('debugger disconnected')
+      },
+    }
+    await expect(
+      requireAcknowledgedNativeInputLock(failed, 7, ['session-a']),
+    ).rejects.toThrow('debugger disconnected')
+
+    const locked = { sync: async () => 'locked' as const }
+    await expect(
+      requireAcknowledgedNativeInputLock(locked, 7, ['session-a']),
+    ).resolves.toBeUndefined()
   })
 
   it('reports browser debugger detachment instead of leaving a stale locked state', async () => {

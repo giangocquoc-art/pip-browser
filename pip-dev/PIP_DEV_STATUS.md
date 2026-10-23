@@ -20,9 +20,12 @@ launcher from a future packaged release.
   capturing the page. `screenshot.region` only accepts a crop fully contained within one of the
   regions returned by that exact observation. It returns one visible-viewport crop inline, limited
   to 1 megapixel, and does not save it. Each crop requires the matching `observationId`, checked
-  before and after capture against URL, viewport, scroll and returned visual-target bounds. MCP
-  `visual_targets` declares a structured output schema with that token and the regions, so clients
-  can pass the fresh token directly to `screenshot.region`; its legacy text region list remains.
+  before and after capture against URL, viewport, scroll, visual-target node identities and bounds.
+  Coordinate actions must land within one of those fresh observed visual regions and reject points
+  covered by another element; ordinary DOM controls should use semantic element references.
+  The MCP `visual_targets` tool declares a structured output schema with that token and the
+  regions, so clients can pass the fresh token directly to `screenshot.region`; its legacy text
+  region list remains.
   Tool metadata warns that the crop is delivered to the caller and may be forwarded to an external
   model; the browser cannot determine where the MCP client sends it next.
 - Layout changes invalidate old crop coordinates. The observation token does not detect pixel
@@ -46,31 +49,37 @@ launcher from a future packaged release.
 - Idle visible tabs poll session state every 15 seconds, active agent tabs every 3 seconds, and
   hidden tabs stop polling until they become visible. The help timer runs only while a help
   request is displayed.
-- The extension now asks Chromium for a per-tab native input-lock lease while an agent session
-  controls that tab, and releases it when control ends, the user stops the session, or the tab
-  closes. It reports `locked` only after Chromium confirms the custom CDP command; older or
-  unpatched builds show an unlocked warning instead of claiming exclusive control.
-- Overlapping stop/help hand-back operations keep that tab gated until the final operation has
-  reconciled live ownership. A revision check after CDP work triggers a fresh snapshot when an
-  overlapping stop changed the gate mid-operation. Server ownership creation is not atomic with
-  the browser snapshot and CDP update: a newly created owner can exist briefly before the next
-  poll acquires the native lock. If a stop starts while CDP is detaching, Pip reattaches and
-  relocks immediately, but Chromium drops its lease before that recovery can run. Removing these
-  brief arrival windows requires a server-side ownership reservation.
+- Pip Dev's takeover UI now reads native input-lock state from the claw-server live-session API,
+  keyed to the current browser tab, page, target, and CDP connection epoch. It reports `locked`
+  only after the server's BrowserOS native command is acknowledged; `paused`, `absent`, and
+  `uncertain` remain distinct, and the extension's local CDP state is not authoritative. The
+  server rejects page-scoped agent dispatch when it cannot confirm the required lock.
+- The active `D:\src` tree now contains the native `Input.setAgentInputLock` command,
+  `WebContentsImpl::AcquireNativeInputLock`, and Aura gates for mouse, keyboard, scroll, touch,
+  and gesture input. Source presence is verified, but its runtime behavior is not: no Pip Dev
+  Chromium executable has been produced yet. Do not treat a native lock as active or claim that
+  physical input is blocked until it is tested in the running browser. The UI only makes that
+  claim when the server reports an acknowledged `locked` state.
 - The existing Pip data directory can be exported with `tools/export-pip-dev-migration.py`.
   The Pip Dev Settings migration screen previews a versioned JSON export, validates URLs and
   folder trees, requires explicit selection/confirmation, imports bookmarks into named folders,
   and makes history import opt-in. Cookies, credentials and passwords are excluded.
 - The Windows PowerShell launcher keeps Cargo's registry/cache in the ignored project-level
-  `.cargo-home`, build output in `packages/browseros-agent/.cargo-target`, and temporary files
-  in `.data/windows-dev/temp`; it restores the caller's `CARGO_HOME`, `TEMP`, and `TMP` after
-  exiting. Custom Cargo registry configuration must be provisioned in that D-only home. It then
-  builds and starts the neo MCP/API server, waits for its health endpoint, and loads the WXT
-  extension in a Windows Chromium exe with an isolated dev profile.
+  `.cargo-home`, Cargo build output in `packages/browseros-agent/.cargo-target`, and Bun/npm/runtime
+  caches plus temporary files in `packages/browseros-agent/.data/windows-dev`; it restores the
+  caller's Cargo, npm, Bun, and temp environment values after exiting. Custom Cargo registry
+  configuration must be provisioned in that D-only home. It then builds and starts the neo MCP/API
+  server, waits for its health endpoint, and loads the WXT extension in a Windows Chromium exe with
+  an isolated dev profile.
 
 ## Important limits and remaining work
 
-- As of 2026-10-22 05:49 (Asia/Bangkok), the full Windows `chrome` target is compiling from the D-only Chromium checkout. The resumed Ninja run has completed 2,827 of its 28,792 actions (about 3,493 of 29,458 total, counting the 666 completed before it resumed); `chrome.exe` has not been produced yet. Ninja is responsive and the live stderr log is empty, with no failure markers. The live build log is `D:\src\pipdev-chrome-build-resume.log`; the checkout, portable sysroot and build output remain local on D.
+- Historical Windows Chromium build snapshot (2026-10-23): the lower-memory incremental `ninja -j 2 -C D:\src\out\PipDevPortableSDK chrome` build was observed at 731/7,272 steps and stopped then to reduce D HDD load; the Ninja/Clang/LLD process tree had exited at that snapshot. As of this documentation update (2026-10-24), the current process and artifact state on `D:\src` has not been rechecked and is unknown. The prior snapshot reported `chrome.exe`, `chrome.dll`, `mini_installer.exe`, and `initialexe/chrome.exe` absent, with GN args `is_debug=true`, `enable_updater=false`, and `enable_winsparkle=false`; those historical settings describe a debug `chrome` target, not a distributable installer. Chromium source, sysroot, build output, and logs are local D-drive state and are not included in this repository.
+- Upstream prebuilt test option checked 2026-10-23: the official [BrowserOS neo v0.51.1.2 release](https://github.com/browseros-ai/BrowserOS/releases/tag/browserclaw%2Fv0.51.1.2) includes a Windows x64 installer (137,344,056 bytes) and ZIP (137,355,879 bytes), built on Chromium 155.0.8059.26. If used, it can check process startup, extension loading, MCP health, and `tools/list`; it cannot verify page-scoped actions or crops because this release predates Pip Dev's required native input-lock command. It also cannot verify Pip Dev branding. The archive has not been downloaded; keep it as a limited smoke-test option only if HDD load permits.
+- Hand-back safety on PR #19: the extension background requires an acknowledged native input lock before resolving help, then reconciles current live-tab owners after a false or rejected resolve. Tests cover unavailable/throwing lock acquisition, a false response unlocking a paused-only tab, and a deferred resolve failure retaining another live owner. The HTTP `sessions.rs::resolve_help` endpoint remains session-ID-only and has no exact tab/page/target/connection-epoch rollback guard; if the extension background exits mid-request, cleanup relies on Chromium debugger-session teardown, which still needs runtime verification. The checked-in Aura test asserts physical mouse/key callbacks are handled while locked and the lock state clears after release; it does not assert DevTools synthetic dispatch or physical event delivery after unlock. Native enforcement remains unverified until Pip Dev Chromium runs.
+- Low-I/O CI coverage is now defined in `.github/workflows/verify-pip-dev.yml` for Rust core/MCP/server tests, Pip Dev extension tests/typecheck, and Claw API generated-schema contracts. The full Claw MCP browser contract suite is not run there: it requires a custom BrowserOS executable with Pip Dev's native lock command, which is not available until the Chromium target is built.
+
+- Fresh coordinate actions now require an `observationId` from `visual_targets`; tokens are bound to the page, target, CDP connection epoch, and current layout. The `run` helper exposes `page.visualTargets()` and passes the token through click/type/hover/drag helpers. Missing or stale tokens are rejected before dispatch. Rust unit and MCP contract coverage was added; Rust formatting, Biome, and targeted TypeScript checks passed, but the new Cargo and Bun tests have not yet run in this checkout. A local Bun 1.4.2 bootstrap was attempted with npm and D-only cache/temp paths; npm stalled while resolving registry metadata, so the command was stopped before extension tests ran. Native input-lock transitions now mark state uncertain before awaiting Chromium, schedule exact-page reconciliation on cancellation, and keep `release_owner` cleanup pinned to the exact snapshot it observed. After the latest generation/cancellation edits, `rustfmt --check` and the cancellation regression tests remain unverified; those checks were stopped to reduce D HDD load.
 
 - The current `out/PipDevPortableSDK/args.gn` disables both `enable_updater` and `enable_winsparkle`; it only builds the `chrome` target and is not a distributable package configuration. BrowserOS's Windows package step requires `mini_installer.exe` and `WinSparkle.dll`. After runtime checks pass, regenerate with the Pip Dev Windows release configuration and build the package targets. Pip Dev's artifact prefix is now `PipDevSetup`, matching the Windows install guide; descriptor and context tests verify the installer and DMG names.
 
@@ -108,12 +117,18 @@ launcher from a future packaged release.
 ## Windows development
 
 Run `run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\BrowserOS.exe"` with a Pip
-Dev/BrowserOS Chromium executable built for Windows. The launcher builds the BrowserOS neo Rust
-server and starts the extension through WXT with a dedicated profile. It uses Bun 1.4.2 from PATH,
-or invokes that pinned version through npm; Rust MSVC is required. `-InstallDependencies` installs
-the locked `@browseros/claw-app` workspace dependencies. This is a development loop, not an
-installer. The extension build has been verified, but the full browser runtime has not because
-this checkout has no Pip Dev/BrowserOS Chromium executable.
+Dev/BrowserOS Chromium executable built for Windows. The default launcher builds the BrowserOS neo
+Rust server and starts the extension through WXT with a dedicated profile. It uses Bun 1.4.2 from
+PATH, or invokes that pinned version through npm; Rust MSVC is required for the default build.
+`-InstallDependencies` installs the locked `@browseros/claw-app` workspace dependencies. This is a
+development loop, not an installer. To avoid dependency downloads and Cargo build I/O, pass
+`-UseExistingArtifacts`; it requires Bun 1.4.2 on PATH, existing `node_modules`, and a prebuilt MCP
+server, skips dependency installation and Cargo build, and avoids creating their cache/output
+directories. It reuses existing binaries, so it is only a lower-I/O smoke path and does not verify
+current source changes. It still runs the WXT dev server, which may compile the extension and write
+runtime cache/profile/log data to D; it is not a no-write mode. The extension build has been
+verified, but the full browser runtime has not because this checkout has no Pip Dev/BrowserOS
+Chromium executable.
 
 To create the migration file on Windows, run from the repository root:
 

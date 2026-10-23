@@ -2,6 +2,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $BrowserBinary,
   [switch] $InstallDependencies,
+  [ValidateRange(1, 32)]
+  [int] $BuildJobs = 1,
   [ValidateRange(1024, 65535)]
   [int] $ServerPort = 9200,
   [ValidateRange(1024, 65535)]
@@ -137,9 +139,21 @@ try {
 
     New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
     $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\', '/')
-    Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows (Cargo cache: $cargoBuildDir)..."
-    & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
-    if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
+    $originalCargoBuildJobs = $env:CARGO_BUILD_JOBS
+    try {
+      $env:CARGO_BUILD_JOBS = [string] $BuildJobs
+      Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows with up to $BuildJobs Cargo jobs (cache: $cargoBuildDir)..."
+      & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
+      if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
+    }
+    finally {
+      if ($null -eq $originalCargoBuildJobs) {
+        Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
+      }
+      else {
+        $env:CARGO_BUILD_JOBS = $originalCargoBuildJobs
+      }
+    }
   }
   finally {
     Pop-Location

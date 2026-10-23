@@ -1,0 +1,94 @@
+name: Verify Pip Dev
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pip-dev/**'
+      - 'PIP_PRODUCT_REQUIREMENTS.md'
+      - '.github/workflows/verify-pip-dev.yml'
+  pull_request:
+    paths:
+      - 'pip-dev/**'
+      - 'PIP_PRODUCT_REQUIREMENTS.md'
+      - '.github/workflows/verify-pip-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Pip Dev Windows checks
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pip-dev/packages/browseros-agent
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Install Bun 1.4.2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Parse Windows launcher
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-Content -Raw -LiteralPath "pip-dev/run-pip-dev-windows.ps1"),
+            [ref] $tokens,
+            [ref] $parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Error
+          }
+
+      - name: Install locked extension dependencies
+        run: bun install --filter '@browseros/claw-app' --frozen-lockfile
+
+      - name: Run BrowserOS MCP and server tests
+        run: cargo test -p browseros-core -p browseros-mcp -p claw-server --locked
+
+      - name: Run Pip Dev extension tests
+        run: bun run --filter '@browseros/claw-app' test
+
+  codegen:
+    name: Verify generated Claw API files
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pip-dev/packages/browseros-agent
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Bun 1.4.2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Install locked API and extension dependencies
+        run: bun install --filter browseros-monorepo --filter '@browseros/claw-app' --frozen-lockfile
+
+      - name: Verify generated Claw API files
+        run: bun run codegen:claw-api:check
+
+      - name: Run Claw API contract tests
+        run: bun run test:claw-api-contract
+
+      - name: Type-check Pip Dev extension
+        run: bun run --filter '@browseros/claw-app' typecheck

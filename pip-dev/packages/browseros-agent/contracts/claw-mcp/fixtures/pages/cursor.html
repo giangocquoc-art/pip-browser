@@ -15,6 +15,12 @@
         min-height: 24px;
         width: 300px;
       }
+      #visual-target {
+        display: block;
+        width: 64px;
+        height: 40px;
+        margin-top: 12px;
+      }
     </style>
   </head>
   <body>
@@ -24,12 +30,55 @@
     <h1>Cursor fixture</h1>
     <div id="cursor-div">Clickable area</div>
     <div id="editable" contenteditable="true">editable text</div>
+    <svg id="visual-target" role="img" aria-label="Coordinate observation fixture" viewBox="0 0 64 40">
+      <rect width="64" height="40" fill="#c60" />
+    </svg>
     <span id="focus-span" tabindex="0">Focusable span</span>
     <div id="cursor-result">untouched</div>
     <script>
       document.getElementById('cursor-div').addEventListener('click', () => {
         document.getElementById('cursor-result').textContent = 'div-clicked'
       })
+      document.getElementById('visual-target').addEventListener('click', () => {
+        document.getElementById('cursor-result').textContent = 'svg-clicked'
+      })
+      document.getElementById('cursor-div').addEventListener('mouseenter', () => {
+        const result = document.getElementById('cursor-result')
+        if (result.textContent === 'untouched') result.textContent = 'div-hovered'
+      })
+      window.replaceVisualTargetWithSameSizeNode = () => {
+        const old = document.getElementById('visual-target')
+        const replacement = old.cloneNode(true)
+        replacement.addEventListener('click', () => {
+          document.getElementById('cursor-result').textContent = 'replacement-clicked'
+        })
+        old.replaceWith(replacement)
+        return true
+      }
+      window.coverVisualTargetWithOverlay = () => {
+        const target = document.getElementById('visual-target')
+        const rect = target.getBoundingClientRect()
+        const overlay = document.createElement('div')
+        overlay.id = 'visual-target-overlay'
+        Object.assign(overlay.style, {
+          position: 'fixed',
+          left: `${rect.left}px`,
+          top: `${rect.top}px`,
+          width: `${rect.width}px`,
+          height: `${rect.height}px`,
+          zIndex: '2147483647',
+          background: 'transparent',
+          pointerEvents: 'auto',
+        })
+        overlay.addEventListener('click', () => {
+          document.getElementById('cursor-result').textContent = 'overlay-clicked'
+        })
+        document.body.appendChild(overlay)
+        return JSON.stringify({
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+        })
+      }
     </script>
   </body>
 </html>
