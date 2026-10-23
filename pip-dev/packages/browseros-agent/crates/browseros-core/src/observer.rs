@@ -11,6 +11,7 @@ use crate::{
 };
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
+use browseros_cdp::CdpError;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::Mutex;
@@ -177,14 +178,7 @@ impl Observer {
                 .frame_session(target.session, entry.frame_id.clone())
                 .await?;
         }
-        let mut entry_for_resolution = entry.clone();
-        let resolved =
-            resolve_ref_entry(&target.session, &mut entry_for_resolution, target.ax_params).await?;
-        if entry_for_resolution.backend_node_id != entry.backend_node_id
-            && let Some(stored) = self.state.lock().await.refs.get_mut(ref_id)
-        {
-            stored.backend_node_id = entry_for_resolution.backend_node_id;
-        }
+        let resolved = resolve_ref_entry(&target.session, &entry).await?;
         if let Some(access) = &self.access {
             access.fresh().await?;
         }
@@ -475,11 +469,6 @@ struct Frame {
 }
 
 #[derive(Debug, Deserialize)]
-struct AxTreeResult {
-    nodes: Vec<AxNode>,
-}
-
-#[derive(Debug, Deserialize)]
 struct ResolveNodeResult {
     object: Option<RemoteObject>,
 }
@@ -505,123 +494,47 @@ struct DescribedNode {
 
 pub async fn resolve_ref_entry(
     session: &ProtocolSession,
-    entry: &mut RefEntry,
-    ax_params: Value,
+    entry: &RefEntry,
 ) -> Result<ResolvedElement, CoreError> {
-    if is_live(session, entry.backend_node_id).await {
-        return Ok(ResolvedElement {
-            session: session.clone(),
-            backend_node_id: entry.backend_node_id,
-            entry: entry.clone(),
-        });
-    }
-
-    let fresh = find_by_role_name_nth(&fetch_ax_tree(session, ax_params).await?, entry);
-    let Some(fresh) = fresh else {
+    if !is_live(session, entry.backend_node_id).await? {
         return Err(CoreError::StaleRef {
             ref_id: entry.ref_id.clone(),
             role: entry.role.clone(),
             name: entry.name.clone(),
         });
-    };
-    entry.backend_node_id = fresh;
+    }
+
     Ok(ResolvedElement {
         session: session.clone(),
-        backend_node_id: fresh,
+        backend_node_id: entry.backend_node_id,
         entry: entry.clone(),
     })
 }
 
-async fn is_live(session: &ProtocolSession, backend_node_id: i64) -> bool {
-    let resolved = session
+async fn is_live(session: &ProtocolSession, backend_node_id: i64) -> Result<bool, CoreError> {
+    let resolved = match session
         .send::<_, ResolveNodeResult>(
             "DOM.resolveNode",
             json!({ "backendNodeId": backend_node_id }),
         )
-        .await;
-    let Ok(resolved) = resolved else {
-        return false;
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(CoreError::Cdp(CdpError::Protocol {
+            code: -32000,
+            message,
+        })) if message.contains("No node with given id") => return Ok(false),
+        Err(error) => return Err(error),
     };
     let object_id = resolved.object.and_then(|object| object.object_id);
     if let Some(object_id) = object_id {
         let _ = session
             .send::<_, Value>("Runtime.releaseObject", json!({ "objectId": object_id }))
             .await;
-        true
+        Ok(true)
     } else {
-        false
+        Ok(false)
     }
-}
-
-fn find_by_role_name_nth(nodes: &[AxNode], entry: &RefEntry) -> Option<i64> {
-    let by_id = nodes
-        .iter()
-        .map(|node| (node.node_id.clone(), node))
-        .collect::<HashMap<_, _>>();
-    let roots = nodes
-        .iter()
-        .filter(|node| {
-            role_of(node).is_some_and(|role| crate::snapshot::roles::is_root_role(&role))
-        })
-        .map(|node| node.node_id.clone())
-        .collect::<Vec<_>>();
-    let start = if roots.is_empty() {
-        nodes
-            .first()
-            .map(|node| vec![node.node_id.clone()])
-            .unwrap_or_default()
-    } else {
-        roots
-    };
-
-    let mut count = 0;
-    let mut found = None;
-    for id in start {
-        visit_match(&by_id, &id, entry, &mut count, &mut found);
-        if found.is_some() {
-            break;
-        }
-    }
-    found
-}
-
-fn visit_match(
-    by_id: &HashMap<String, &AxNode>,
-    id: &str,
-    entry: &RefEntry,
-    count: &mut usize,
-    found: &mut Option<i64>,
-) {
-    if found.is_some() {
-        return;
-    }
-    let Some(node) = by_id.get(id).copied() else {
-        return;
-    };
-    if !node.ignored.unwrap_or(false)
-        && node.backend_dom_node_id.is_some()
-        && role_of(node).as_deref() == Some(entry.role.as_str())
-        && name_of(node) == entry.name
-    {
-        if *count == entry.nth {
-            *found = node.backend_dom_node_id;
-            return;
-        }
-        *count += 1;
-    }
-    for child_id in node.child_ids.as_deref().unwrap_or(&[]) {
-        visit_match(by_id, child_id, entry, count, found);
-    }
-}
-
-async fn fetch_ax_tree(
-    session: &ProtocolSession,
-    ax_params: Value,
-) -> Result<Vec<AxNode>, CoreError> {
-    let result: AxTreeResult = session
-        .send("Accessibility.getFullAXTree", ax_params)
-        .await?;
-    Ok(result.nodes)
 }
 
 fn known_main_frame_changed(before: &MainFrameState, after: &MainFrameState) -> bool {
@@ -736,6 +649,7 @@ mod tests {
     struct MockConnection {
         live: HashSet<i64>,
         ax_tree: Vec<AxNode>,
+        resolve_error: Option<CdpError>,
         releases: Mutex<Vec<String>>,
     }
 
@@ -749,6 +663,9 @@ mod tests {
             Box::pin(async move {
                 match method {
                     "DOM.resolveNode" => {
+                        if let Some(error) = &self.resolve_error {
+                            return Err(error.clone());
+                        }
                         let backend = params
                             .get("backendNodeId")
                             .and_then(Value::as_i64)
@@ -825,6 +742,7 @@ mod tests {
         let connection = Arc::new(MockConnection {
             live: HashSet::from([10]),
             ax_tree: Vec::new(),
+            resolve_error: None,
             releases: Mutex::new(Vec::new()),
         });
         let session = ProtocolSession::root(connection.clone());
@@ -840,7 +758,7 @@ mod tests {
             Some(entry) => entry,
             None => return Err(CoreError::Message("missing ref".to_string())),
         };
-        let resolved = resolve_ref_entry(&session, &mut entry, json!({})).await?;
+        let resolved = resolve_ref_entry(&session, &entry).await?;
         assert_eq!(resolved.backend_node_id, 10);
         let releases = match connection.releases.lock() {
             Ok(releases) => releases.clone(),
@@ -851,7 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_ref_tier_two_requeries_by_role_name_nth() -> Result<(), CoreError> {
+    async fn resolve_ref_does_not_rebind_to_same_role_name_duplicate() -> Result<(), CoreError> {
         let ax_tree = vec![
             AxNode {
                 node_id: "root".to_string(),
@@ -865,31 +783,81 @@ mod tests {
         let connection = Arc::new(MockConnection {
             live: HashSet::from([20, 21]),
             ax_tree,
+            resolve_error: None,
             releases: Mutex::new(Vec::new()),
         });
         let session = ProtocolSession::root(connection);
         let mut refs = crate::snapshot::RefMap::new();
-        refs.mint(MintRef {
-            backend_node_id: 10,
-            role: "button",
-            name: "OK",
-            document_id: None,
-            frame_id: None,
-        });
-        let second = refs.mint(MintRef {
+        let ref_id = refs.mint(MintRef {
             backend_node_id: 11,
             role: "button",
             name: "OK",
             document_id: None,
             frame_id: None,
         });
-        let mut entry = match refs.get(&second).cloned() {
-            Some(entry) => entry,
-            None => return Err(CoreError::Message("missing ref".to_string())),
-        };
-        let resolved = resolve_ref_entry(&session, &mut entry, json!({})).await?;
-        assert_eq!(resolved.backend_node_id, 21);
-        assert_eq!(entry.backend_node_id, 21);
+        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
+            CoreError::Message("missing ref".to_string())
+        })?;
+
+        let result = resolve_ref_entry(&session, &entry).await;
+
+        assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resolve_ref_does_not_rebind_to_detached_replacement() -> Result<(), CoreError> {
+        let connection = Arc::new(MockConnection {
+            live: HashSet::from([20]),
+            ax_tree: vec![ax_button("replacement", "Continue", 20)],
+            resolve_error: None,
+            releases: Mutex::new(Vec::new()),
+        });
+        let session = ProtocolSession::root(connection);
+        let mut refs = crate::snapshot::RefMap::new();
+        let ref_id = refs.mint(MintRef {
+            backend_node_id: 10,
+            role: "button",
+            name: "Continue",
+            document_id: None,
+            frame_id: None,
+        });
+        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
+            CoreError::Message("missing ref".to_string())
+        })?;
+
+        let result = resolve_ref_entry(&session, &entry).await;
+
+        assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resolve_ref_propagates_transient_cdp_errors() -> Result<(), CoreError> {
+        let connection = Arc::new(MockConnection {
+            live: HashSet::from([20]),
+            ax_tree: vec![ax_button("replacement", "Continue", 20)],
+            resolve_error: Some(CdpError::Timeout {
+                method: "DOM.resolveNode".to_string(),
+            }),
+            releases: Mutex::new(Vec::new()),
+        });
+        let session = ProtocolSession::root(connection);
+        let mut refs = crate::snapshot::RefMap::new();
+        let ref_id = refs.mint(MintRef {
+            backend_node_id: 10,
+            role: "button",
+            name: "Continue",
+            document_id: None,
+            frame_id: None,
+        });
+        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
+            CoreError::Message("missing ref".to_string())
+        })?;
+
+        let result = resolve_ref_entry(&session, &entry).await;
+
+        assert!(matches!(result, Err(CoreError::Cdp(CdpError::Timeout { .. }))));
         Ok(())
     }
 
@@ -898,6 +866,7 @@ mod tests {
         let connection = Arc::new(MockConnection {
             live: HashSet::new(),
             ax_tree: Vec::new(),
+            resolve_error: None,
             releases: Mutex::new(Vec::new()),
         });
         let session = ProtocolSession::root(connection);
@@ -913,7 +882,7 @@ mod tests {
             Some(entry) => entry,
             None => return Err(CoreError::Message("missing ref".to_string())),
         };
-        let result = resolve_ref_entry(&session, &mut entry, json!({})).await;
+        let result = resolve_ref_entry(&session, &entry).await;
         assert!(matches!(result, Err(CoreError::StaleRef { .. })));
         Ok(())
     }
