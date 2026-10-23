@@ -51,9 +51,6 @@ jobs:
       - name: Run Pip Dev extension tests
         run: bun run --filter '@browseros/claw-app' test
 
-      - name: Run Claw API contract tests
-        run: bun run test:claw-api-contract
-
       - name: Type-check Pip Dev extension
         run: bun run --filter '@browseros/claw-app' typecheck
 
@@ -77,3 +74,6 @@ jobs:
 
       - name: Verify generated Claw API files
         run: bun run codegen:claw-api:check
+
+      - name: Run Claw API contract tests
+        run: bun run test:claw-api-contract
