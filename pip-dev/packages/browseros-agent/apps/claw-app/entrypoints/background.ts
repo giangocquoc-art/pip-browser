@@ -222,12 +222,21 @@ export default defineBackground(() => {
       }
       inputLockGate.beginStop(tabId)
       void takeover
-        .resolve(tabId, sessionId, note, async (context) => {
-          if (context) {
-            // Restore the lock before waking the help-requesting agent.
-            await nativeInputLocks.sync(tabId, context.sessionIds)
-          }
-        })
+        .resolve(
+          tabId,
+          sessionId,
+          note,
+          async (context) => {
+            // A help-only session may not appear in agentControlForTab; the
+            // validated request still pins its exact session to this sender tab.
+            const owners = context?.sessionIds ?? [sessionId]
+            const status = await nativeInputLocks.sync(tabId, owners)
+            if (status !== 'locked') {
+              throw new Error('native input lock was not acknowledged before hand-back')
+            }
+          },
+          () => reconcileInputLockIfFinalStop(tabId),
+        )
         .then(async (resolved) => {
           await reconcileInputLockIfFinalStop(tabId)
           sendResponse({ ok: resolved })
