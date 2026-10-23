@@ -1825,6 +1825,39 @@ mod tests {
     }
 
     #[test]
+    fn bundled_youtube_network_rules_match_ad_requests_and_preserve_normal_video() {
+        let blocker = Blocker::load(
+            std::env::temp_dir().join("pip-unused-test-path"),
+            AdblockMode::Balanced,
+        );
+        let top = "https://www.youtube.com/watch?v=offline-fixture";
+
+        // Offline synthetic requests exercise the pinned uBlock rules only;
+        // they do not prove that a visible YouTube video ad is removed.
+        assert!(blocker.should_block(
+            "https://r1.googlevideo.com/initplayback?source=youtube&c=TVHTML5&oad=1",
+            top,
+            top,
+            "xmlhttprequest",
+            "GET",
+        ));
+        assert!(blocker.should_block(
+            "https://r1.googlevideo.com/videoplayback?id=_ad_fixture",
+            top,
+            top,
+            "media",
+            "GET",
+        ));
+        assert!(!blocker.should_block(
+            "https://r1.googlevideo.com/videoplayback?id=normal-fixture",
+            top,
+            top,
+            "media",
+            "GET",
+        ));
+    }
+
+    #[test]
     fn redirect_data_uri_decoder_rejects_untrusted_schemes_and_malformed_mime() {
         assert!(decode_redirect_data_uri("https://example.test/redirect.js").is_none());
         assert!(decode_redirect_data_uri("data:text/html;name=x;base64,PGI+").is_none());
