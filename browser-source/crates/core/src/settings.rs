@@ -1032,8 +1032,10 @@ mod profile_permission_settings_tests {
     #[test]
     fn invalid_profile_permission_values_do_not_replace_the_global_fallback() {
         let mut settings = Settings::default();
-        let mut overrides = ProfilePermissionSettings::default();
-        overrides.camera = Some("maybe".into());
+        let overrides = ProfilePermissionSettings {
+            camera: Some("maybe".into()),
+            ..Default::default()
+        };
         assert!(settings.set_profile_permission_settings("Default", overrides));
         assert_eq!(
             settings.for_profile("Default").permissions.camera,
