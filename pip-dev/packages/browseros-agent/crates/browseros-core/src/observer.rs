@@ -898,6 +898,7 @@ mod tests {
     async fn resolve_ref_propagates_transient_cdp_errors() -> Result<(), CoreError> {
         let connection = Arc::new(MockConnection {
             live: HashSet::from([20]),
+            detached: HashSet::new(),
             ax_tree: vec![ax_button("replacement", "Continue", 20)],
             resolve_error: Some(CdpError::Timeout {
                 method: "DOM.resolveNode".to_string(),
