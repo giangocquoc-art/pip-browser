@@ -14,7 +14,7 @@ wry = { version = "0.57", features = ["devtools"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 aes-gcm = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 rand = "0.8"
 sha2 = "0.10"
 semver = "1.0"
