@@ -9,6 +9,7 @@ See the [Windows installation guide](docs/INSTALL_WINDOWS.md), [agent setup guid
 ---
 
 ## Upstream BrowserOS neo reference (not Pip Dev download links)
+
 <div align="center">
 <img width="693" height="415" alt="BrowserOS neo: the missing browser for your AI agents" src="https://github.com/user-attachments/assets/8129f9c8-e8f4-4afe-834a-91397121d833" />
 
