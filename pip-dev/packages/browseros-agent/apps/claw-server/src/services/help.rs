@@ -344,7 +344,13 @@ mod tests {
         let entry = registry.open(&session, params("req-1")).await;
         assert!(
             registry
-                .resolve(&session, "req-1", 42, Some(&target()), Some("2fa done".to_string()))
+                .resolve(
+                    &session,
+                    "req-1",
+                    42,
+                    Some(&target()),
+                    Some("2fa done".to_string())
+                )
                 .await
         );
         assert!(
@@ -400,11 +406,7 @@ mod tests {
                 .resolve(&session, "req-1", 42, Some(&stale_epoch), None)
                 .await
         );
-        assert!(
-            !registry
-                .resolve(&session, "req-1", 42, None, None)
-                .await
-        );
+        assert!(!registry.resolve(&session, "req-1", 42, None, None).await);
         assert!(registry.get(&session).await.is_some());
     }
 
@@ -505,7 +507,13 @@ mod tests {
         assert!(registry.snapshot(&session, &[]).await.is_none());
         // Resolved -> hidden from the cockpit but kept so the agent's wait consumes the note.
         registry
-            .resolve(&session, "req-1", 42, Some(&target()), Some("2fa done".to_string()))
+            .resolve(
+                &session,
+                "req-1",
+                42,
+                Some(&target()),
+                Some("2fa done".to_string()),
+            )
             .await;
         assert!(registry.snapshot(&session, &[target()]).await.is_none());
         assert!(registry.get(&session).await.is_some());
