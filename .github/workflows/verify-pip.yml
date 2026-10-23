@@ -99,6 +99,11 @@ jobs:
           }
           Write-Host "Verified $($report.checks.Count) native UI checks, including the ad88vip6 popup."
 
+      - name: Verify YouTube through Pip's Google DNS proxy
+        env:
+          PIP_VERIFY_DOH_TARGET: youtube
+        run: cargo run --locked -p evergreen-browser -- --verify-google-dns-webview
+
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
