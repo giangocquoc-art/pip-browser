@@ -16,6 +16,7 @@ import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
+  requireAcknowledgedNativeInputLock,
 } from '@/modules/takeover/native-input-lock'
 import { TakeoverInputLockGate } from '@/modules/takeover/takeover-input-lock-gate'
 import { handleTakeoverAction } from '@/modules/takeover/takeover-action'
