@@ -641,6 +641,9 @@ mod tests {
                 .get("functionDeclaration")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if function.contains("this.isConnected") {
+                return Ok(json!({ "result": { "value": true } }));
+            }
             if function.contains("elementFromPoint") {
                 let response = match self.state.lock() {
                     Ok(mut state) => {
