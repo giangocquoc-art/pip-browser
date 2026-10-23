@@ -260,6 +260,20 @@ export class NativeInputLockManager {
 }
 
 /**
+ * Require an acknowledged native lock before allowing a paused agent to resume.
+ */
+export async function requireAcknowledgedNativeInputLock(
+  manager: Pick<NativeInputLockManager, 'sync'>,
+  tabId: number,
+  sessionIds: string[],
+): Promise<void> {
+  const status = await manager.sync(tabId, sessionIds)
+  if (status !== 'locked') {
+    throw new Error('native input lock was not acknowledged before hand-back')
+  }
+}
+
+/**
  * Release a tab lease when its controlling session disappears and report the
  * manager's observed state even if CDP cleanup fails. Callers must not infer
  * that an attempted release succeeded merely because the session is offline.
