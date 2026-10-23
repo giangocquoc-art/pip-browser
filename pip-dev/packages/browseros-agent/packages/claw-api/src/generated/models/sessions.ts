@@ -145,7 +145,7 @@ export interface LiveSessionState {
 }
 
 /**
- * Hand control back only for the current help request on its pinned browser tab.
+ * Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
  * @export
  * @interface ResolveHelpRequest
  */
