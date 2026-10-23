@@ -483,6 +483,61 @@ impl Check {
                 self.query_tab(id,tab,"(()=>{if(!window.__pipPrivacyCleanupStarted){window.__pipPrivacyCleanupStarted=true;window.__pipPrivacyCleanupDone=false;window.__pipPrivacyCleanupError=null;(async()=>{const registration=await navigator.serviceWorker.getRegistration('/');if(registration){const script=registration.active?.scriptURL||registration.waiting?.scriptURL||registration.installing?.scriptURL;if(!script?.endsWith('/privacy-isolation-sw.js'))throw new Error('unexpected service worker: '+script);if(!await registration.unregister())throw new Error('service worker unregister failed')}await caches.delete('pip-privacy-isolation');await new Promise((resolve,reject)=>{const request=indexedDB.deleteDatabase('pip-privacy-isolation');request.onsuccess=()=>resolve();request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('database delete blocked'))})})().then(()=>window.__pipPrivacyCleanupDone=true).catch(error=>window.__pipPrivacyCleanupError=String(error))}if(window.__pipPrivacyCleanupError)return JSON.stringify({cleanupError:window.__pipPrivacyCleanupError});return window.__pipPrivacyCleanupDone?true:null})()");
             }
             150=>self.query(id,true,"(()=>{const button=document.getElementById('profileButton');button.click();const names=[...document.querySelectorAll('#profileList .profile-choice-name')].map(n=>n.textContent);return !document.getElementById('profilePopover').hidden&&names.includes('Cá nhân')&&names.includes('Kiểm thử')})()"),
+            151 => {
+                let profile_id = self
+                    .app
+                    .windows
+                    .get(&id)
+                    .map(|window| window.profile_id.clone())
+                    .ok_or("Permission policy test window missing")?;
+                let global_before = self.app.settings.permissions.clone();
+                self.app.user_event(
+                    events,
+                    BrowserEvent::Ipc(
+                        id,
+                        UiToHostMessage::SaveSettings {
+                            settings_json: serde_json::json!({
+                                "permissions": { "camera": "block" }
+                            })
+                            .to_string(),
+                        },
+                    ),
+                );
+                if self.app.settings.for_profile(&profile_id).permissions.camera != "block" {
+                    return Err("Permission policy SaveSettings patch did not reach the active profile".into());
+                }
+                if self.app.settings.permissions != global_before {
+                    return Err("Profile-local permission policy changed the global fallback".into());
+                }
+                let other_profile_id = self
+                    .app
+                    .settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id != profile_id)
+                    .map(|profile| profile.id.clone())
+                    .ok_or("Second profile missing from permission policy test")?;
+                if self.app.settings.for_profile(&other_profile_id).permissions != global_before {
+                    return Err("Profile-local permission policy changed another profile".into());
+                }
+                let persisted =
+                    evergreen_core::settings::Settings::load_from_path(&get_settings_path())
+                        .map_err(|error| error.to_string())?;
+                if persisted.for_profile(&profile_id).permissions.camera != "block"
+                    || persisted.permissions != global_before
+                    || persisted.for_profile(&other_profile_id).permissions != global_before
+                {
+                    return Err("Profile-local permission policies did not persist independently".into());
+                }
+                if permission_policy_for_profile(&persisted, &profile_id, "Camera")
+                    != PermissionPolicy::Block
+                {
+                    return Err("Permission decision did not use the owning profile's policy".into());
+                }
+                self.app.settings = persisted;
+                self.step = 16;
+                self.next = Instant::now() + Duration::from_millis(400);
+            }
             16=>{
                 let win=&self.app.windows[&id];
                 if !win.profile_menu_open {return Err("Profile popup did not expand the native toolbar WebView".into());}
@@ -616,7 +671,17 @@ impl Check {
             }
             29=>{
                 if self.private_permission_check_phase == 0 {
-                    let private_id=self.app.windows.values().find(|window|window.private).ok_or("Private window missing for permission isolation check")?.id;
+                    let private_window = self.app.windows.values().find(|window|window.private).ok_or("Private window missing for permission isolation check")?;
+                    if private_window.profile_id != "Default"
+                        || permission_policy_for_profile(
+                            &self.app.settings,
+                            &private_window.profile_id,
+                            "Camera",
+                        ) != PermissionPolicy::Block
+                    {
+                        return Err("InPrivate permission defaults did not inherit the owning profile override".into());
+                    }
+                    let private_id=private_window.id;
                     self.query(private_id,false,"(()=>{if(!window.__pipPrivatePermissionProbeStarted){window.__pipPrivatePermissionProbeStarted=true;window.__pipPrivatePermissionProbeResult=null;navigator.permissions.query({name:'camera'}).then(permission=>window.__pipPrivatePermissionProbeResult=permission.state==='prompt').catch(()=>window.__pipPrivatePermissionProbeResult=false)}return window.__pipPrivatePermissionProbeResult===null?null:window.__pipPrivatePermissionProbeResult===true})()");
                 } else {
                     let origin=serde_json::to_string(self.url.trim_end_matches('/')).unwrap();
@@ -1266,7 +1331,7 @@ impl ApplicationHandler<BrowserEvent> for Check {
                     return;
                 }
                 if self.step == 150 {
-                    self.step = 16;
+                    self.step = 151;
                     self.next = Instant::now() + Duration::from_millis(400);
                     return;
                 }
@@ -2077,6 +2142,12 @@ pub fn run() {
         .unwrap()
         .push(serde_json::json!(
             "Tab group IPC changes are written to the profile session snapshot immediately"
+        ));
+    report["checks"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(
+            "Permission policy SaveSettings IPC applies a local camera override to one profile, keeps the root fallback and other profile unchanged after reload, and resolves InPrivate defaults through its owning profile"
         ));
     std::fs::write(&artifact, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     let _ = std::fs::remove_dir_all(stage);

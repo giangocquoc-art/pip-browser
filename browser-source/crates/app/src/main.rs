@@ -1395,6 +1395,96 @@ fn update_profile_download_folder(
     settings.set_profile_download_settings(profile_id, download_settings)
 }
 
+const PROFILE_PERMISSION_SETTING_KEYS: [&str; 4] =
+    ["location", "camera", "microphone", "notifications"];
+
+fn profile_permission_settings_patch_present(value: &serde_json::Value) -> bool {
+    value
+        .get("permissions")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|permissions| {
+            PROFILE_PERMISSION_SETTING_KEYS
+                .iter()
+                .any(|key| permissions.contains_key(*key))
+        })
+}
+
+/// Strip profile-local permission policies before updating the shared root settings.
+fn without_profile_permission_settings_patch(value: &serde_json::Value) -> serde_json::Value {
+    let mut clean = value.clone();
+    if let Some(permissions) = clean
+        .get_mut("permissions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for key in PROFILE_PERMISSION_SETTING_KEYS {
+            permissions.remove(key);
+        }
+    }
+    clean
+}
+
+/// Apply only valid permission policy values to one profile, preserving inherited fields.
+fn apply_profile_permission_settings_patch(
+    settings: &mut evergreen_core::settings::Settings,
+    profile_id: &str,
+    value: &serde_json::Value,
+) -> bool {
+    let Some(permissions) = value
+        .get("permissions")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    let Some(mut profile_settings) = settings.profile_permission_settings(profile_id) else {
+        return false;
+    };
+    let mut changed = false;
+    for (key, target) in [
+        ("location", &mut profile_settings.location),
+        ("camera", &mut profile_settings.camera),
+        ("microphone", &mut profile_settings.microphone),
+        ("notifications", &mut profile_settings.notifications),
+    ] {
+        if let Some(policy) = permissions
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|policy| matches!(*policy, "ask" | "allow" | "block"))
+        {
+            *target = Some(policy.to_string());
+            changed = true;
+        }
+    }
+    changed && settings.set_profile_permission_settings(profile_id, profile_settings)
+}
+
+/// Permission defaults are resolved for the owning profile (including InPrivate windows).
+fn permission_policy_for_profile(
+    settings: &evergreen_core::settings::Settings,
+    profile_id: &str,
+    permission_kind: &str,
+) -> PermissionPolicy {
+    let effective = settings.for_profile(profile_id);
+    let policy = match permission_kind {
+        "Microphone" => effective.permissions.microphone.as_str(),
+        "Camera" => effective.permissions.camera.as_str(),
+        "Geolocation" => effective.permissions.location.as_str(),
+        "Notifications" => effective.permissions.notifications.as_str(),
+        _ => "ask",
+    };
+    match policy {
+        "allow" => PermissionPolicy::Allow,
+        "block" => PermissionPolicy::Block,
+        _ => PermissionPolicy::Ask,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionPolicy {
+    Ask,
+    Allow,
+    Block,
+}
+
 /// Strip the nine profile-local Sync preferences before updating global settings.
 fn without_sync_settings_patch(value: &serde_json::Value) -> serde_json::Value {
     let mut clean = value.clone();
@@ -4678,6 +4768,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                                     sync_settings_fingerprint: None,
                                     sync_settings_values: None,
                                     download_settings: None,
+                                    permission_settings: None,
                                 });
                             if settings.save_to_path(&get_settings_path()).is_ok() {
                                 self.settings = settings;
@@ -6038,9 +6129,13 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         let has_profile_sync_patch = sync_settings_patch_present(&val);
                         let has_profile_download_patch =
                             profile_download_settings_patch_present(&val);
+                        let has_profile_permission_patch =
+                            profile_permission_settings_patch_present(&val);
                         let mut settings = self.settings.clone();
                         settings.update_from_json(&without_sync_settings_patch(
-                            &without_profile_download_settings_patch(&val),
+                            &without_profile_permission_settings_patch(
+                                &without_profile_download_settings_patch(&val),
+                            ),
                         ));
                         if has_profile_sync_patch {
                             if let Some(profile_id) = profile_id.as_deref() {
@@ -6062,6 +6157,15 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         if has_profile_download_patch {
                             if let Some(profile_id) = profile_id.as_deref() {
                                 apply_profile_download_settings_patch(
+                                    &mut settings,
+                                    profile_id,
+                                    &val,
+                                );
+                            }
+                        }
+                        if has_profile_permission_patch {
+                            if let Some(profile_id) = profile_id.as_deref() {
+                                apply_profile_permission_settings_patch(
                                     &mut settings,
                                     profile_id,
                                     &val,
@@ -7066,18 +7170,24 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 origin,
                 permission_kind,
             } => {
-                let choice = match permission_kind.as_str() {
-                    "Microphone" => self.settings.permissions.microphone.as_str(),
-                    "Camera" => self.settings.permissions.camera.as_str(),
-                    "Geolocation" => self.settings.permissions.location.as_str(),
-                    "Notifications" => self.settings.permissions.notifications.as_str(),
-                    _ => "ask",
-                };
-                if choice == "block" || !self.settings.features.enable_permissions_prompt {
+                let choice = self
+                    .windows
+                    .get(&window_id)
+                    .map(|window| {
+                        permission_policy_for_profile(
+                            &self.settings,
+                            &window.profile_id,
+                            &permission_kind,
+                        )
+                    })
+                    .unwrap_or(PermissionPolicy::Block);
+                if choice == PermissionPolicy::Block
+                    || !self.settings.features.enable_permissions_prompt
+                {
                     accelerator::resolve_permission(permission_id, false);
                     return;
                 }
-                if choice == "allow" {
+                if choice == PermissionPolicy::Allow {
                     accelerator::resolve_permission(permission_id, true);
                     return;
                 }
@@ -8664,6 +8774,119 @@ mod profile_download_settings_patch_tests {
         assert_eq!(
             settings.downloads.default_folder,
             std::path::PathBuf::from("legacy-downloads")
+        );
+    }
+}
+
+#[cfg(test)]
+mod profile_permission_settings_patch_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn permission_patches_are_local_to_the_active_profile_and_excluded_from_sync() {
+        let mut settings = evergreen_core::settings::Settings::default();
+        settings.permissions.location = "allow".into();
+        settings.permissions.camera = "ask".into();
+        settings.permissions.microphone = "block".into();
+        settings.permissions.notifications = "allow".into();
+        let mut other = settings.profiles[0].clone();
+        other.id = "Work".into();
+        other.name = "Work".into();
+        settings.profiles.push(other);
+        let sync_before = sync::syncable_settings_from(&settings.for_profile("Default"), 0);
+
+        let patch = json!({
+            "permissions": {
+                "camera": "block",
+                "notifications": "ask",
+                "future_policy": "retained"
+            }
+        });
+        assert!(profile_permission_settings_patch_present(&patch));
+        let shared = without_profile_permission_settings_patch(&patch);
+        assert!(!profile_permission_settings_patch_present(&shared));
+        assert_eq!(shared["permissions"]["future_policy"], "retained");
+        settings.update_from_json(&shared);
+        assert!(apply_profile_permission_settings_patch(
+            &mut settings,
+            "Default",
+            &patch
+        ));
+
+        let active = settings.for_profile("Default");
+        assert_eq!(active.permissions.location, "allow");
+        assert_eq!(active.permissions.camera, "block");
+        assert_eq!(active.permissions.microphone, "block");
+        assert_eq!(active.permissions.notifications, "ask");
+        assert_eq!(
+            settings.for_profile("Work").permissions,
+            settings.permissions
+        );
+        assert_eq!(settings.permissions.camera, "ask");
+        assert_eq!(settings.permissions.notifications, "allow");
+        assert_eq!(
+            sync::syncable_settings_from(&active, 0),
+            sync_before,
+            "profile-local permission policies must not enter Pip Sync"
+        );
+    }
+
+    #[test]
+    fn invalid_permission_values_are_ignored_instead_of_becoming_global_or_local_policies() {
+        let mut settings = evergreen_core::settings::Settings::default();
+        let patch = json!({"permissions": {"camera": "sometimes"}});
+        let shared = without_profile_permission_settings_patch(&patch);
+        settings.update_from_json(&shared);
+        assert!(!apply_profile_permission_settings_patch(
+            &mut settings,
+            "Default",
+            &patch
+        ));
+        assert_eq!(settings.permissions.camera, "ask");
+        assert_eq!(settings.for_profile("Default").permissions.camera, "ask");
+    }
+
+    #[test]
+    fn permission_prompt_policy_is_resolved_for_the_window_profile() {
+        let mut settings = evergreen_core::settings::Settings::default();
+        settings.permissions.location = "allow".into();
+        settings.permissions.camera = "block".into();
+        settings.permissions.microphone = "ask".into();
+        settings.permissions.notifications = "allow".into();
+        let mut work = settings.profiles[0].clone();
+        work.id = "Work".into();
+        work.name = "Work".into();
+        work.permission_settings = Some(evergreen_core::settings::ProfilePermissionSettings {
+            location: Some("block".into()),
+            camera: Some("allow".into()),
+            ..Default::default()
+        });
+        settings.profiles.push(work);
+
+        for (kind, personal, work) in [
+            (
+                "Geolocation",
+                PermissionPolicy::Allow,
+                PermissionPolicy::Block,
+            ),
+            ("Camera", PermissionPolicy::Block, PermissionPolicy::Allow),
+            ("Microphone", PermissionPolicy::Ask, PermissionPolicy::Ask),
+            (
+                "Notifications",
+                PermissionPolicy::Allow,
+                PermissionPolicy::Allow,
+            ),
+        ] {
+            assert_eq!(
+                permission_policy_for_profile(&settings, "Default", kind),
+                personal
+            );
+            assert_eq!(permission_policy_for_profile(&settings, "Work", kind), work);
+        }
+        assert_eq!(
+            permission_policy_for_profile(&settings, "Work", "Unknown"),
+            PermissionPolicy::Ask
         );
     }
 }

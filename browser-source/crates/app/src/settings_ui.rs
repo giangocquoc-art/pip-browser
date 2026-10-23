@@ -634,7 +634,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="section-title">Quyền truy cập website</div>
+    <div class="section-title">Quyền truy cập website · riêng cho hồ sơ này</div>
     <div class="card">
       <div class="row">
         <div class="row-info">
@@ -1091,7 +1091,7 @@ pub const SETTINGS_TEMPLATE: &str = r#"<!DOCTYPE html>
           action: 'SaveSettings',
           payload: { settings_json: JSON.stringify({ permissions: { [perm]: value } }) }
         }));
-        showStatus('Đang lưu quyền truy cập...');
+        showStatus('Đang lưu quyền truy cập cho hồ sơ này...');
       }
     }
 
