@@ -1863,6 +1863,21 @@ mod tests {
     }
 
     #[test]
+    fn pip_popup_overrides_are_translated_into_active_network_rules() {
+        let popup_engine =
+            popup_engine_from_sources([include_str!("../filters/popup-overrides.txt")]);
+        let request = Request::new(
+            "https://ad88vip6.com/home/register?id=940814853",
+            "https://news.example/article",
+            "other",
+            "GET",
+        )
+        .expect("valid popup destination request");
+
+        assert!(popup_engine.check_network_request(&request).should_block());
+    }
+
+    #[test]
     fn known_gambling_popup_domain_is_blocked_even_when_webview_marks_it_user_initiated() {
         let blocker = Blocker {
             engine: engine(""),
