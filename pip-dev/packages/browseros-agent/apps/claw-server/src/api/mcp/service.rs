@@ -3447,6 +3447,12 @@ mod tests {
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         let session_id = started.session.id().clone();
+        let target = HelpTargetIdentity {
+            browser_tab_id: 42,
+            page_id: 7,
+            target_id: "target-7".to_string(),
+            connection_epoch: 3,
+        };
 
         call.state
             .help
@@ -3458,7 +3464,7 @@ mod tests {
                     details: None,
                     resume_hint: None,
                     kind: None,
-                    browser_tab_id: None,
+                    target: Some(target.clone()),
                     url: None,
                     title: None,
                 },
@@ -3467,7 +3473,13 @@ mod tests {
         assert!(
             call.state
                 .help
-                .resolve(&session_id, Some("2fa done".to_string()))
+                .resolve(
+                    &session_id,
+                    "help-test",
+                    target.browser_tab_id,
+                    Some(&target),
+                    Some("2fa done".to_string()),
+                )
                 .await
         );
 
@@ -3619,7 +3631,7 @@ mod tests {
     /// Only new asks are refused: an agent already waiting when the switch flips keeps its
     /// request, and the human's hand-back still reaches it.
     #[tokio::test]
-    async fn tests_that_a_request_opened_while_on_still_resolves_after_turning_off()
+    async fn a_pinned_request_still_resolves_after_human_help_is_turned_off()
     -> anyhow::Result<()> {
         let call = crate::api::mcp::test_support::tool_call("tabs", json!({})).await?;
         let service = ClawMcpService::new(call.state.clone());
@@ -3628,13 +3640,29 @@ mod tests {
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         let session_id = started.session.id().clone();
-        // An ended call token returns the first wait chunk at once and leaves the request open.
-        let call_ended = CancellationToken::new();
-        call_ended.cancel();
-        let opened = service
-            .call_request_human_help(&started, &json!({ "reason": "Enter the code" }), call_ended)
+        let target = HelpTargetIdentity {
+            browser_tab_id: 52,
+            page_id: 9,
+            target_id: "target-9".to_string(),
+            connection_epoch: 4,
+        };
+        let entry = call
+            .state
+            .help
+            .open(
+                &session_id,
+                HelpOpenParams {
+                    request_id: "help-off-test".to_string(),
+                    reason: "Enter the code".to_string(),
+                    details: None,
+                    resume_hint: None,
+                    kind: None,
+                    target: Some(target.clone()),
+                    url: None,
+                    title: None,
+                },
+            )
             .await;
-        assert_eq!(status_of(&opened), Some("waiting"));
 
         call.state
             .agent_settings
@@ -3643,7 +3671,13 @@ mod tests {
         assert!(
             call.state
                 .help
-                .resolve(&session_id, Some("code entered".to_string()))
+                .resolve(
+                    &session_id,
+                    entry.request_id(),
+                    target.browser_tab_id,
+                    Some(&target),
+                    Some("code entered".to_string()),
+                )
                 .await
         );
         let result = service
