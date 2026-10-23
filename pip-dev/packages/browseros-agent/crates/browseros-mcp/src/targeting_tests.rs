@@ -333,7 +333,7 @@ impl FixtureConnection {
                     }) {
                     state.visual_observations.pop_front().unwrap_or_else(|| {
                         json!({
-                            "observationId": "v1:12:89abcdef",
+                            "layoutHash": "89abcdef",
                             "regions": [{
                                 "index": 0,
                                 "type": "canvas",
@@ -736,7 +736,7 @@ async fn visual_targets_exposes_crop_token_as_structured_mcp_output() -> anyhow:
         Some(json!({
             "page": page_id,
             "coordinateSpace": "visible-viewport-css-pixels",
-            "observationId": "v1:12:89abcdef",
+            "observationId": format!("v2:12:{page_id}:1:7461726765742d353031:89abcdef"),
             "regions": [{
                 "index": 0,
                 "type": "canvas",
@@ -792,9 +792,128 @@ async fn visual_targets_exposes_crop_token_as_structured_mcp_output() -> anyhow:
     Ok(())
 }
 
-fn visual_observation(observation_id: &str) -> Value {
+#[tokio::test]
+async fn visual_observation_from_identical_page_is_rejected_on_another_page() -> anyhow::Result<()>
+{
+    let connection = FixtureConnection::new().with_default_profile();
+    connection.change(|state| {
+        let url = state
+            .tabs
+            .iter()
+            .find(|tab| tab["tabId"] == 501)
+            .expect("default profile tab exists")["url"]
+            .clone();
+        let mut duplicate = tab(502, 50, "original");
+        duplicate["url"] = url;
+        state.tabs.push(duplicate);
+    });
+    // Both pages report the exact same layout fingerprint to model identical URL and bounds.
+    connection.set_visual_observations([
+        visual_observation("89abcdef"),
+        visual_observation("89abcdef"),
+    ]);
+    let session = BrowserSession::new_with_native(
+        connection.clone(),
+        BrowserSessionHooks::default(),
+        crate::tests::current_native(),
+    );
+    let pages = session.pages.list().await?;
+    let first = pages
+        .iter()
+        .find(|page| page.target_id.as_str() == "target-501")
+        .expect("first default-profile page exists");
+    let second = pages
+        .iter()
+        .find(|page| page.target_id.as_str() == "target-502")
+        .expect("second default-profile page exists");
+    assert_eq!(
+        first.url, second.url,
+        "fixture pages must share the same URL"
+    );
+    let first_id = first.page_id.0;
+    let second_id = second.page_id.0;
+    let service = BrowserMcpService::new(super::tests::service_options(session));
+
+    let first_targets = service
+        .call_tool_for_testing(
+            "visual_targets",
+            json!({ "page": first_id }),
+            CancellationToken::new(),
+        )
+        .await?;
+    let second_targets = service
+        .call_tool_for_testing(
+            "visual_targets",
+            json!({ "page": second_id }),
+            CancellationToken::new(),
+        )
+        .await?;
+    let first_observation = first_targets.structured_content.as_ref().unwrap()["observationId"]
+        .as_str()
+        .unwrap();
+    let second_observation = second_targets.structured_content.as_ref().unwrap()["observationId"]
+        .as_str()
+        .unwrap();
+    assert_ne!(first_observation, second_observation);
+
+    let region = &first_targets.structured_content.as_ref().unwrap()["regions"][0];
+    let reused = service
+        .call_tool_for_testing(
+            "screenshot",
+            json!({
+                "page": second_id,
+                "region": {
+                    "x": region["x"],
+                    "y": region["y"],
+                    "width": region["width"],
+                    "height": region["height"],
+                    "observationId": first_observation
+                }
+            }),
+            CancellationToken::new(),
+        )
+        .await?;
+
+    assert_eq!(reused.is_error, Some(true), "{reused:?}");
+    let error = reused
+        .content
+        .iter()
+        .find_map(|content| content.as_text())
+        .map(|content| content.text.to_string())
+        .unwrap_or_default();
+    assert!(
+        error.contains("different page target or CDP connection"),
+        "{error}"
+    );
+    assert_eq!(
+        connection
+            .calls()
+            .iter()
+            .filter(|call| {
+                call.method == "Runtime.evaluate"
+                    && call.params["expression"]
+                        .as_str()
+                        .is_some_and(|expression| {
+                            expression.contains("const selectors = 'canvas,img,video,svg")
+                        })
+            })
+            .count(),
+        2,
+        "a token from another page must be rejected before re-observing it"
+    );
+    assert!(
+        connection
+            .calls()
+            .iter()
+            .all(|call| call.method != "Page.captureScreenshot"),
+        "a token from the other page reached screenshot capture"
+    );
+    Ok(())
+}
+
+fn visual_observation(layout_hash: &str) -> Value {
     json!({
-        "observationId": observation_id,
+        "layoutHash": layout_hash,
         "regions": [{
             "index": 0,
             "type": "canvas",
@@ -813,10 +932,10 @@ fn visual_observation(observation_id: &str) -> Value {
 async fn stale_visual_observation_token_is_rejected_before_capture() -> anyhow::Result<()> {
     // URL, viewport, scroll, and target-bound changes produce a different token in the page
     // snapshot; the fixture scripts that changed token between observation and crop request.
-    for changed_id in ["v1:12:00000002", "v1:12:00000003", "v1:12:00000004"] {
+    for changed_id in ["00000002", "00000003", "00000004"] {
         let connection = FixtureConnection::new().with_default_profile();
         connection.set_visual_observations([
-            visual_observation("v1:12:00000001"),
+            visual_observation("00000001"),
             visual_observation(changed_id),
         ]);
         let session = BrowserSession::new_with_native(
@@ -882,9 +1001,9 @@ async fn stale_visual_observation_token_is_rejected_before_capture() -> anyhow::
 async fn visual_crop_changed_during_capture_is_discarded() -> anyhow::Result<()> {
     let connection = FixtureConnection::new().with_default_profile();
     connection.set_visual_observations([
-        visual_observation("v1:12:00000001"),
-        visual_observation("v1:12:00000001"),
-        visual_observation("v1:12:00000002"),
+        visual_observation("00000001"),
+        visual_observation("00000001"),
+        visual_observation("00000002"),
     ]);
     let session = BrowserSession::new_with_native(
         connection.clone(),
@@ -2536,3 +2655,4 @@ async fn one_run_without_a_default_window_opens_one_window_for_all_pages() -> an
     );
     Ok(())
 }
+
