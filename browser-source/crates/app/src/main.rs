@@ -7243,9 +7243,8 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                 }
                 "Ctrl+H" | "Ctrl+Shift+O" => {
                     if let Some(target) = shortcut_library_target(&shortcut) {
-                        // Chrome opens these internal managers in the current tab. Replacing
-                        // the active WebView also keeps the tab count and session slot stable.
-                        self.handle_navigate(win_id, target);
+                        // Keep the current page open, matching Chrome's History and Bookmarks shortcuts.
+                        self.handle_create_tab(win_id, Some(target.to_owned()));
                     }
                 }
                 "Ctrl+D" => {
