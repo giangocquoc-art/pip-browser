@@ -42,8 +42,8 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
-      - name: Install locked extension dependencies
-        run: bun install --filter '@browseros/claw-app' --frozen-lockfile
+      - name: Install locked codegen and extension dependencies
+        run: bun install --filter browseros-monorepo --filter '@browseros/claw-app' --frozen-lockfile
 
       - name: Run BrowserOS MCP and server tests
         run: cargo test -p browseros-core -p browseros-mcp -p claw-server --locked
