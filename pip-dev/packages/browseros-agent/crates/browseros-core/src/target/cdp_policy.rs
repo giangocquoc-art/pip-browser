@@ -979,4 +979,3 @@ impl BrowserView {
         Ok(json!({"targetId":id}))
     }
 }
-

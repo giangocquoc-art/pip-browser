@@ -289,4 +289,3 @@ impl ProtocolAdmission for PageProtocol {
         })
     }
 }
-

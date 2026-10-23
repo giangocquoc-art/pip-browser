@@ -3184,4 +3184,3 @@ async fn one_admitted_default_view_opens_at_most_one_window() -> TestResult {
     );
     Ok(())
 }
-
