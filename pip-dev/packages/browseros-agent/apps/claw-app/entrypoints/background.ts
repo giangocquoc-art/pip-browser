@@ -231,10 +231,7 @@ export default defineBackground(() => {
             // A help-only session may not appear in agentControlForTab; the
             // validated request still pins its exact session to this sender tab.
             const owners = context?.sessionIds ?? [sessionId]
-            const status = await nativeInputLocks.sync(tabId, owners)
-            if (status !== 'locked') {
-              throw new Error('native input lock was not acknowledged before hand-back')
-            }
+            await requireAcknowledgedNativeInputLock(nativeInputLocks, tabId, owners)
           },
           () => reconcileInputLockIfFinalStop(tabId),
         )
