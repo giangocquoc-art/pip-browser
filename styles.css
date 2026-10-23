@@ -10,7 +10,7 @@
 
 /* Real Pip application previews and product information */
 .app-preview{border:1px solid var(--line);border-radius:18px;padding:14px;background:linear-gradient(135deg,#fff8f1,#f8f1ea);box-shadow:var(--shadow);overflow:hidden}
-.app-preview img{display:block;width:100%;height:clamp(300px,58vw,650px);object-fit:contain;object-position:center;border-radius:10px;background:#fff}
+.app-preview img{display:block;width:100%;height:auto;max-height:clamp(300px,58vw,650px);object-fit:contain;object-position:center;border-radius:10px;background:#fff}
 .demo-caption{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .preview-zoom{flex:none;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--deep-orange);padding:7px 11px;font:inherit;font-size:11px;font-weight:700;cursor:pointer}
 .preview-zoom:hover{background:#fff2e8}
