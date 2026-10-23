@@ -155,8 +155,10 @@ impl LiveSessionState {
 /// ResolveHelpRequest : Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResolveHelpRequest {
+    /// The requestId from the current live HelpRequest.
     #[serde(rename = "requestId")]
     pub request_id: String,
+    /// The browser tab that sent the hand-back action and is pinned to the current HelpRequest.
     #[serde(rename = "browserTabId")]
     pub browser_tab_id: i64,
     #[serde(rename = "note", skip_serializing_if = "Option::is_none")]
