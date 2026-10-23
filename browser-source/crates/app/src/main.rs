@@ -1324,14 +1324,14 @@ fn profile_download_patch_field<'a>(
 fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
     PROFILE_DOWNLOAD_SETTING_KEYS
         .iter()
-        .any(|key| value.as_object().is_some_and(|object| object.contains_key(key)))
+        .any(|key| value.as_object().is_some_and(|object| object.contains_key(*key)))
         || value
             .get("downloads")
             .and_then(serde_json::Value::as_object)
             .is_some_and(|downloads| {
                 PROFILE_DOWNLOAD_SETTING_KEYS
                     .iter()
-                    .any(|key| downloads.contains_key(key))
+                    .any(|key| downloads.contains_key(*key))
             })
 }
 
