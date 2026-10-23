@@ -979,7 +979,10 @@ mod profile_permission_settings_tests {
     fn legacy_profiles_inherit_global_permission_policies_until_overridden() {
         let mut legacy = serde_json::to_value(Settings::default()).unwrap();
         for profile in legacy["profiles"].as_array_mut().unwrap() {
-            profile.as_object_mut().unwrap().remove("permission_settings");
+            profile
+                .as_object_mut()
+                .unwrap()
+                .remove("permission_settings");
         }
         legacy["permissions"] = serde_json::json!({
             "location": "allow",
@@ -990,7 +993,10 @@ mod profile_permission_settings_tests {
 
         let mut settings: Settings = serde_json::from_value(legacy).unwrap();
         assert_eq!(settings.profiles[0].permission_settings, None);
-        assert_eq!(settings.for_profile("Default").permissions, settings.permissions);
+        assert_eq!(
+            settings.for_profile("Default").permissions,
+            settings.permissions
+        );
 
         let mut work = settings.profiles[0].clone();
         work.id = "Work".into();
@@ -1014,7 +1020,11 @@ mod profile_permission_settings_tests {
         assert_eq!(reloaded.permissions.camera, "ask");
         assert_eq!(reloaded.permissions.notifications, "allow");
         assert_eq!(
-            reloaded.profiles[0].permission_settings.as_ref().unwrap().location,
+            reloaded.profiles[0]
+                .permission_settings
+                .as_ref()
+                .unwrap()
+                .location,
             None
         );
     }

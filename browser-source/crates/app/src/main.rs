@@ -8819,7 +8819,10 @@ mod profile_permission_settings_patch_tests {
         assert_eq!(active.permissions.camera, "block");
         assert_eq!(active.permissions.microphone, "block");
         assert_eq!(active.permissions.notifications, "ask");
-        assert_eq!(settings.for_profile("Work").permissions, settings.permissions);
+        assert_eq!(
+            settings.for_profile("Work").permissions,
+            settings.permissions
+        );
         assert_eq!(settings.permissions.camera, "ask");
         assert_eq!(settings.permissions.notifications, "allow");
         assert_eq!(
@@ -8841,10 +8844,7 @@ mod profile_permission_settings_patch_tests {
             &patch
         ));
         assert_eq!(settings.permissions.camera, "ask");
-        assert_eq!(
-            settings.for_profile("Default").permissions.camera,
-            "ask"
-        );
+        assert_eq!(settings.for_profile("Default").permissions.camera, "ask");
     }
 
     #[test]
@@ -8857,22 +8857,31 @@ mod profile_permission_settings_patch_tests {
         let mut work = settings.profiles[0].clone();
         work.id = "Work".into();
         work.name = "Work".into();
-        work.permission_settings = Some(
-            evergreen_core::settings::ProfilePermissionSettings {
-                location: Some("block".into()),
-                camera: Some("allow".into()),
-                ..Default::default()
-            },
-        );
+        work.permission_settings = Some(evergreen_core::settings::ProfilePermissionSettings {
+            location: Some("block".into()),
+            camera: Some("allow".into()),
+            ..Default::default()
+        });
         settings.profiles.push(work);
 
         for (kind, personal, work) in [
-            ("Geolocation", PermissionPolicy::Allow, PermissionPolicy::Block),
+            (
+                "Geolocation",
+                PermissionPolicy::Allow,
+                PermissionPolicy::Block,
+            ),
             ("Camera", PermissionPolicy::Block, PermissionPolicy::Allow),
             ("Microphone", PermissionPolicy::Ask, PermissionPolicy::Ask),
-            ("Notifications", PermissionPolicy::Allow, PermissionPolicy::Allow),
+            (
+                "Notifications",
+                PermissionPolicy::Allow,
+                PermissionPolicy::Allow,
+            ),
         ] {
-            assert_eq!(permission_policy_for_profile(&settings, "Default", kind), personal);
+            assert_eq!(
+                permission_policy_for_profile(&settings, "Default", kind),
+                personal
+            );
             assert_eq!(permission_policy_for_profile(&settings, "Work", kind), work);
         }
         assert_eq!(
