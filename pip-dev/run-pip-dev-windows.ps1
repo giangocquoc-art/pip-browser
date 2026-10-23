@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $BrowserBinary,
   [switch] $InstallDependencies,
+  [switch] $UseExistingArtifacts,
   [ValidateRange(1, 32)]
   [int] $BuildJobs = 1,
   [ValidateRange(1024, 65535)]
@@ -13,6 +14,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'scripts/pip-dev-existing-artifacts.ps1')
+if ($UseExistingArtifacts -and $InstallDependencies) {
+  throw 'Use -UseExistingArtifacts or -InstallDependencies, not both.'
+}
 $repoRoot = $PSScriptRoot
 $projectRoot = Split-Path -Parent $repoRoot
 $agentRoot = Join-Path $repoRoot 'packages/browseros-agent'
@@ -72,48 +77,70 @@ try {
     throw "BrowserOS neo Bun lockfile was not found under $agentRoot"
   }
 
-  $bun = Get-Command bun -ErrorAction SilentlyContinue
-  $npm = Get-Command npm -ErrorAction SilentlyContinue
   $bunCommand = $null
   $bunInvocationPrefix = @()
-  if ($bun) {
+  if ($UseExistingArtifacts) {
+    $bun = Get-Command bun -ErrorAction SilentlyContinue
+    if (-not $bun) {
+      throw 'UseExistingArtifacts requires Bun 1.4.2 already installed on PATH; it will not invoke npm or download Bun.'
+    }
     $bunCommand = $bun.Source
     $bunVersion = (& $bunCommand --version).Trim()
     $bunExitCode = $LASTEXITCODE
-  }
-  if (-not $bun -or $bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
-    if (-not $npm) {
-      throw 'Bun 1.4.2 is required. Install Bun 1.4.2, or install Node.js/npm so this launcher can invoke the pinned Bun version.'
+    if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
+      throw "UseExistingArtifacts requires Bun 1.4.2 on PATH; found '$bunVersion'."
     }
-    $bunCommand = $npm.Source
-    $bunInvocationPrefix = @(
-      'exec', '--yes', '--cache', (Join-Path $stateRoot 'npm-cache'),
-      '--package', 'bun@1.4.2', '--', 'bun'
-    )
-    Write-Host 'Bun 1.4.2 is not on PATH; invoking the pinned version through npm.'
-    $bunVersion = (& $bunCommand @bunInvocationPrefix --version).Trim()
-    $bunExitCode = $LASTEXITCODE
+    Assert-PipDevExistingArtifacts `
+      -BunVersion $bunVersion `
+      -NodeModulesPath (Join-Path $agentRoot 'node_modules') `
+      -ServerExePath $serverExe `
+      -BrowserBinary $resolvedBinary
   }
-  if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
-    throw "This BrowserOS checkout pins Bun 1.4.2; found '$bunVersion'."
+  else {
+    $bun = Get-Command bun -ErrorAction SilentlyContinue
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($bun) {
+      $bunCommand = $bun.Source
+      $bunVersion = (& $bunCommand --version).Trim()
+      $bunExitCode = $LASTEXITCODE
+    }
+    if (-not $bun -or $bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
+      if (-not $npm) {
+        throw 'Bun 1.4.2 is required. Install Bun 1.4.2, or install Node.js/npm so this launcher can invoke the pinned Bun version.'
+      }
+      $bunCommand = $npm.Source
+      $bunInvocationPrefix = @(
+        'exec', '--yes', '--cache', (Join-Path $stateRoot 'npm-cache'),
+        '--package', 'bun@1.4.2', '--', 'bun'
+      )
+      Write-Host 'Bun 1.4.2 is not on PATH; invoking the pinned version through npm.'
+      $bunVersion = (& $bunCommand @bunInvocationPrefix --version).Trim()
+      $bunExitCode = $LASTEXITCODE
+    }
+    if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
+      throw "This BrowserOS checkout pins Bun 1.4.2; found '$bunVersion'."
+    }
   }
 
-  $cargo = Get-Command cargo -ErrorAction SilentlyContinue
-  if (-not $cargo) {
-    throw 'Rust/Cargo is required to build the BrowserOS neo MCP server.'
-  }
-  $rustc = Get-Command rustc -ErrorAction SilentlyContinue
-  if (-not $rustc) {
-    throw 'rustc is required to build the BrowserOS neo MCP server. Install Rust with the MSVC Windows target.'
-  }
-  $rustInfo = & $rustc.Source -vV
-  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the installed Rust target.' }
-  $hostLine = $rustInfo | Select-String '^host:'
-  if (-not $hostLine) { throw 'rustc -vV did not report its host target.' }
-  $rustTarget = $hostLine.ToString().Split(':', 2)[1].Trim()
-  if ($rustTarget -notmatch 'windows-msvc$') {
-    throw "BrowserOS neo Windows builds require the Rust MSVC target; current target is '$rustTarget'."
-  }
+  if (-not $UseExistingArtifacts) {
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    if (-not $cargo) {
+      throw 'Rust/Cargo is required to build the BrowserOS neo MCP server.'
+    }
+    $rustc = Get-Command rustc -ErrorAction SilentlyContinue
+    if (-not $rustc) {
+      throw 'rustc is required to build the BrowserOS neo MCP server. Install Rust with the MSVC Windows target.'
+    }
+    $rustInfo = & $rustc.Source -vV
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the installed Rust target.' }
+    $hostLine = $rustInfo | Select-String '^host:'
+    if (-not $hostLine) { throw 'rustc -vV did not report its host target.' }
+    $rustTarget = $hostLine.ToString().Split(':', 2)[1].Trim()
+    if ($rustTarget -notmatch 'windows-msvc$') {
+      throw "BrowserOS neo Windows builds require the Rust MSVC target; current target is '$rustTarget'."
+    }
+  
+    }
 
   foreach ($port in @($ServerPort, $CdpPort) | Select-Object -Unique) {
     if (Test-LocalTcpPortInUse $port) {
@@ -121,37 +148,46 @@ try {
     }
   }
 
-  New-Item -ItemType Directory -Path @(
-    $stateRoot, $profileDir, $browserClawDir, $cargoHome, $cargoBuildDir, $buildTempDir
-  ) -Force | Out-Null
+  $runtimeDirectories = @($stateRoot, $profileDir, $browserClawDir, $buildTempDir)
+  if (-not $UseExistingArtifacts) {
+    $runtimeDirectories += @($cargoHome, $cargoBuildDir)
+  }
+  New-Item -ItemType Directory -Path $runtimeDirectories -Force | Out-Null
   $buildEnvironmentConfigured = $true
-  $env:CARGO_HOME = $cargoHome
+  if (-not $UseExistingArtifacts) {
+    $env:CARGO_HOME = $cargoHome
+  }
   $env:TEMP = $buildTempDir
   $env:TMP = $buildTempDir
 
   Push-Location $agentRoot
   try {
-    if ($InstallDependencies -or -not (Test-Path -LiteralPath (Join-Path $agentRoot 'node_modules'))) {
-      Write-Host 'Installing the locked BrowserOS neo JavaScript dependencies...'
-      & $bunCommand @bunInvocationPrefix install --filter '@browseros/claw-app' --frozen-lockfile
-      if ($LASTEXITCODE -ne 0) { throw "bun install failed with exit code $LASTEXITCODE" }
+    if ($UseExistingArtifacts) {
+      Write-Host 'Using validated existing artifacts; skipping bun install and Cargo build.'
     }
-
-    New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
-    $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\', '/')
-    $originalCargoBuildJobs = $env:CARGO_BUILD_JOBS
-    try {
-      $env:CARGO_BUILD_JOBS = [string] $BuildJobs
-      Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows with up to $BuildJobs Cargo jobs (cache: $cargoBuildDir)..."
-      & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
-      if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
-    }
-    finally {
-      if ($null -eq $originalCargoBuildJobs) {
-        Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
+    else {
+      if ($InstallDependencies -or -not (Test-Path -LiteralPath (Join-Path $agentRoot 'node_modules'))) {
+        Write-Host 'Installing the locked BrowserOS neo JavaScript dependencies...'
+        & $bunCommand @bunInvocationPrefix install --filter '@browseros/claw-app' --frozen-lockfile
+        if ($LASTEXITCODE -ne 0) { throw "bun install failed with exit code $LASTEXITCODE" }
       }
-      else {
-        $env:CARGO_BUILD_JOBS = $originalCargoBuildJobs
+
+      New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
+      $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\\', '/')
+      $originalCargoBuildJobs = $env:CARGO_BUILD_JOBS
+      try {
+        $env:CARGO_BUILD_JOBS = [string] $BuildJobs
+        Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows with up to $BuildJobs Cargo jobs (cache: $cargoBuildDir)..."
+        & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
+        if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
+      }
+      finally {
+        if ($null -eq $originalCargoBuildJobs) {
+          Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
+        }
+        else {
+          $env:CARGO_BUILD_JOBS = $originalCargoBuildJobs
+        }
       }
     }
   }
