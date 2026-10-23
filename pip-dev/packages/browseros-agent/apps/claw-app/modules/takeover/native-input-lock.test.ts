@@ -91,6 +91,7 @@ describe('NativeInputLockManager', () => {
       helpRequest: {
         mode: 'help' as const,
         sessionId: 'session-help',
+        requestId: 'help-1',
         agentLabel: 'Claude',
         reason: 'Enter the one-time code',
         requestedAt: 2,
