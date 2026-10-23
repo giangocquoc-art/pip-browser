@@ -17,6 +17,10 @@ const DESCRIPTION: &str = "\
 Act on the page using refs from the last snapshot. \
 kinds: click, type (into focused element), fill (ref+value, or many via fields[]), \
 press (key/combo), hover, focus, check, uncheck, select (option value), scroll, drag. \
+Coordinate kinds click_at/type_at/hover_at/drag_at require the fresh observationId \
+from visual_targets and every point must lie inside one of its visible regions; use refs for ordinary DOM controls. \
+Page, target, CDP connection, visual-node replacement, or layout changes reject stale tokens, \
+and hit testing rejects points covered by another element. \
 dialog_accept/dialog_dismiss handle pending JavaScript dialogs. \
 ALWAYS fill a whole form in one call via fields[], never field-by-field. \
 Fill replaces text by default (clear=false appends) and verifies the field value; \
@@ -151,6 +155,9 @@ struct ActArgs {
     x: Option<f64>,
     /// Viewport y coordinate for *_at kinds.
     y: Option<f64>,
+    /// Fresh token returned by visual_targets for coordinate-based actions.
+    #[serde(rename = "observationId")]
+    observation_id: Option<String>,
     /// Target ref for kind=drag.
     #[serde(rename = "targetRef")]
     target_ref: Option<String>,
@@ -195,7 +202,7 @@ fn handler<'a>(
         let console_start = ctx.browser.signals().console_mark(&page_id);
         let input = ctx.browser.input(page_id.clone()).await?;
         if args.kind.is_dialog() {
-            if let Some(err) = run_kind(&args, &input).await? {
+            if let Some(err) = run_kind(&args, &input, ctx, &page_id).await? {
                 return Ok(Some(err));
             }
             ctx.browser.signals().clear_dialog(&page_id);
@@ -214,7 +221,7 @@ fn handler<'a>(
             };
             tokio::select! {
                 biased;
-                result = run_kind(&args, &input) => {
+                result = run_kind(&args, &input, ctx, &page_id) => {
                     if let Some(err) = result? {
                         return Ok(Some(err));
                     }
@@ -246,6 +253,8 @@ fn handler<'a>(
 async fn run_kind(
     args: &ActArgs,
     input: &browseros_core::input::Input,
+    ctx: &ToolCtx,
+    page_id: &PageId,
 ) -> ToolExecResult<Option<ToolResult>> {
     match args.kind {
         ActKind::Click => {
@@ -260,6 +269,9 @@ async fn run_kind(
             let Some(point) = point_from_args(args, "click_at")? else {
                 return Ok(Some(error_result("act click_at: x and y are required.")));
             };
+            if let Some(result) = validate_coordinate_observation(args, ctx, page_id).await? {
+                return Ok(Some(result));
+            }
             input
                 .click_at(point.x, point.y, click_options(args))
                 .await?;
@@ -277,6 +289,9 @@ async fn run_kind(
             let Some(text) = args.text.as_deref() else {
                 return Ok(Some(error_result("act type_at: text is required.")));
             };
+            if let Some(result) = validate_coordinate_observation(args, ctx, page_id).await? {
+                return Ok(Some(result));
+            }
             input
                 .type_at(point.x, point.y, text, args.clear.unwrap_or(false))
                 .await?;
@@ -320,6 +335,9 @@ async fn run_kind(
             let Some(point) = point_from_args(args, "hover_at")? else {
                 return Ok(Some(error_result("act hover_at: x and y are required.")));
             };
+            if let Some(result) = validate_coordinate_observation(args, ctx, page_id).await? {
+                return Ok(Some(result));
+            }
             input.hover_at(point.x, point.y).await?;
         }
         ActKind::Focus => {
@@ -378,6 +396,9 @@ async fn run_kind(
                     "act drag_at: startX, startY, endX, and endY are required.",
                 )));
             };
+            if let Some(result) = validate_coordinate_observation(args, ctx, page_id).await? {
+                return Ok(Some(result));
+            }
             input
                 .drag_at(
                     Point {
@@ -394,6 +415,61 @@ async fn run_kind(
         ActKind::DialogDismiss => {
             input.handle_dialog(false, None).await?;
         }
+    }
+    Ok(None)
+}
+
+/// Coordinates are meaningful only against the exact page layout observed by
+/// visual_targets. Recompute its token immediately before dispatch so stale
+/// page/target/connection/layout data fails closed instead of sending old input.
+async fn validate_coordinate_observation(
+    args: &ActArgs,
+    ctx: &ToolCtx,
+    page_id: &PageId,
+) -> ToolExecResult<Option<ToolResult>> {
+    let Some(observation_id) = args.observation_id.as_deref() else {
+        return Ok(Some(error_result(
+            "coordinate action requires observationId from visual_targets; call visual_targets again and pass its returned observationId",
+        )));
+    };
+    let page = ctx.browser.page_session(page_id.clone()).await?;
+    let action_points = match &args.kind {
+        ActKind::ClickAt | ActKind::TypeAt | ActKind::HoverAt => {
+            let Some(point) = args.x.zip(args.y) else {
+                return Ok(Some(error_result(
+                    "coordinate action requires both x and y coordinates",
+                )));
+            };
+            vec![point]
+        }
+        ActKind::DragAt => {
+            let (Some(start_x), Some(start_y), Some(end_x), Some(end_y)) =
+                (args.start_x, args.start_y, args.end_x, args.end_y)
+            else {
+                return Ok(Some(error_result(
+                    "drag_at requires startX, startY, endX, and endY coordinates",
+                )));
+            };
+            vec![(start_x, start_y), (end_x, end_y)]
+        }
+        _ => Vec::new(),
+    };
+    let current = super::visual_targets::current_observation_at_points(
+        page_id.clone(),
+        &page,
+        observation_id,
+        &action_points,
+    )
+    .await?;
+    if current.observation_id != observation_id {
+        return Ok(Some(error_result(
+            "page layout changed since visual_targets; call visual_targets again and pass its fresh observationId",
+        )));
+    }
+    if current.action_point_valid.iter().any(|valid| !valid) {
+        return Ok(Some(error_result(
+            "coordinate action points must be within a current observed visual target and not covered by another element; use an element reference for ordinary DOM controls, or choose a visible point and call visual_targets again",
+        )));
     }
     Ok(None)
 }
@@ -465,5 +541,21 @@ mod tests {
             serde_json::from_value(json!({ "page": 1, "kind": "focus", "ref": "e1", "diff": 500 }))
                 .unwrap_or_else(|err| panic!("numeric diff arg should parse: {err}"));
         assert!(matches!(numeric.diff, Some(ActDiff::MaxChars(_))));
+    }
+
+    #[test]
+    fn coordinate_actions_parse_the_camel_case_observation_token() {
+        for kind in ["click_at", "type_at", "hover_at", "drag_at"] {
+            let args: ActArgs = serde_json::from_value(json!({
+                "page": 1,
+                "kind": kind,
+                "observationId": "v2:12:1:3:746172676574:0123abcd"
+            }))
+            .unwrap_or_else(|err| panic!("{kind} should parse observationId: {err}"));
+            assert_eq!(
+                args.observation_id.as_deref(),
+                Some("v2:12:1:3:746172676574:0123abcd")
+            );
+        }
     }
 }
