@@ -77,6 +77,34 @@ jobs:
         # test specifically assumes an unelevated interactive user process.
         run: cargo test --workspace --locked -- --skip test_is_process_elevated_returns_false_unelevated
 
+      - name: Verify native WebView2 interactions
+        run: cargo run --locked -p evergreen-browser -- --verify-native-ui
+
+      - name: Validate native UI verification report
+        shell: pwsh
+        run: |
+          $reportPath = "./target/native-ui-verification.json"
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            throw "Native UI verification did not create $reportPath"
+          }
+          $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+          if ($report.status -ne "passed") {
+            throw "Native UI verification did not pass: $($report.status)"
+          }
+          $popupCheck = $report.checks | Where-Object {
+            $_ -eq "Known ad88vip6.com and local gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
+          }
+          if (-not $popupCheck) {
+            throw "The native UI report is missing the ad88vip6 WebView2 popup check."
+          }
+          Write-Host "Verified $($report.checks.Count) native UI checks, including the ad88vip6 popup."
+
+      - name: Verify YouTube through Pip's Google DNS proxy
+        env:
+          PIP_VERIFY_DOH_TARGET: youtube
+        run: cargo run --locked -p evergreen-browser -- --verify-google-dns-webview
+
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
