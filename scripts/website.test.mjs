@@ -219,3 +219,14 @@ test("feature page only reveals features included in the public version", async 
   assert.deepEqual(nextRelease.sections.map(({ hidden }) => hidden), [false, false, false]);
   assert.equal(nextRelease.status.hidden, true);
 });
+
+test("app preview images retain their intrinsic proportions on mobile", async () => {
+  const styles = await readFile(path.join(root, "styles.css"), "utf8");
+  const previewRules = [...styles.matchAll(/\.app-preview img\{([^}]+)\}/g)]
+    .map((match) => match[1]);
+  assert.ok(previewRules.length > 0, "app preview image styles are missing");
+  for (const declarations of previewRules) {
+    assert.match(declarations, /(?:^|;)height:auto(?:;|$)/);
+    assert.doesNotMatch(declarations, /(?:^|;)aspect-ratio\s*:/);
+  }
+});
