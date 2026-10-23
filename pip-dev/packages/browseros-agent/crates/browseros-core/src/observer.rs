@@ -9,9 +9,9 @@ use crate::{
     },
     target::page_access::PageAccess,
 };
+use browseros_cdp::CdpError;
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
-use browseros_cdp::CdpError;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::Mutex;
@@ -754,7 +754,7 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let mut entry = match refs.get(&ref_id).cloned() {
+        let entry = match refs.get(&ref_id).cloned() {
             Some(entry) => entry,
             None => return Err(CoreError::Message("missing ref".to_string())),
         };
@@ -788,6 +788,13 @@ mod tests {
         });
         let session = ProtocolSession::root(connection);
         let mut refs = crate::snapshot::RefMap::new();
+        refs.mint(MintRef {
+            backend_node_id: 10,
+            role: "button",
+            name: "OK",
+            document_id: None,
+            frame_id: None,
+        });
         let ref_id = refs.mint(MintRef {
             backend_node_id: 11,
             role: "button",
@@ -862,7 +869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_ref_errors_when_stale_ref_cannot_be_refound() -> Result<(), CoreError> {
+    async fn resolve_ref_errors_when_stale_ref_requires_new_snapshot() -> Result<(), CoreError> {
         let connection = Arc::new(MockConnection {
             live: HashSet::new(),
             ax_tree: Vec::new(),
@@ -878,7 +885,7 @@ mod tests {
             document_id: None,
             frame_id: None,
         });
-        let mut entry = match refs.get(&ref_id).cloned() {
+        let entry = match refs.get(&ref_id).cloned() {
             Some(entry) => entry,
             None => return Err(CoreError::Message("missing ref".to_string())),
         };
