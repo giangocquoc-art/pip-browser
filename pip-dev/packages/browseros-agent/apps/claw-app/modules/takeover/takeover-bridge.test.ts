@@ -163,7 +163,7 @@ describe('takeover bridge', () => {
         helpRequest: {
           mode: 'help',
           sessionId: 'session-help',
-          requestId: 'help-1',
+          requestId: 'help-2',
           agentLabel: 'Claude-code',
           reason: 'Enter the login',
           resumeHint: undefined,
