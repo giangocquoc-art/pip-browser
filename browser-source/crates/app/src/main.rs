@@ -1293,32 +1293,85 @@ fn sync_settings_patch_present(value: &serde_json::Value) -> bool {
             })
 }
 
-fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    object.contains_key("askWhereToSave")
-        || object.contains_key("ask_where_to_save")
-        || object
-            .get("downloads")
-            .and_then(|value| value.as_object())
-            .is_some_and(|downloads| downloads.contains_key("ask_where_to_save"))
+fn profile_download_patch_field<'a>(
+    value: &'a serde_json::Value,
+    snake_case: &str,
+    camel_case: &str,
+) -> Option<&'a serde_json::Value> {
+    let object = value.as_object()?;
+    object
+        .get(camel_case)
+        .or_else(|| object.get(snake_case))
+        .or_else(|| {
+            object
+                .get("downloads")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|downloads| downloads.get(snake_case).or_else(|| downloads.get(camel_case)))
+        })
 }
 
-/// Strip the local-only download preference before updating shared settings.
+fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
+    ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"]
+        .iter()
+        .any(|key| value.as_object().is_some_and(|object| object.contains_key(key)))
+        || value
+            .get("downloads")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|downloads| {
+                ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"]
+                    .iter()
+                    .any(|key| downloads.contains_key(key))
+            })
+}
+
+/// Strip local-only download preferences before updating shared settings.
 fn without_profile_download_settings_patch(value: &serde_json::Value) -> serde_json::Value {
     let mut clean = value.clone();
     if let Some(object) = clean.as_object_mut() {
-        object.remove("askWhereToSave");
-        object.remove("ask_where_to_save");
+        for key in ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"] {
+            object.remove(key);
+        }
         if let Some(downloads) = object
             .get_mut("downloads")
-            .and_then(|value| value.as_object_mut())
+            .and_then(serde_json::Value::as_object_mut)
         {
-            downloads.remove("ask_where_to_save");
+            for key in ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"] {
+                downloads.remove(key);
+            }
         }
     }
     clean
+}
+
+/// Apply the download fields present in a SaveSettings patch to one profile only.
+fn apply_profile_download_settings_patch(
+    settings: &mut evergreen_core::settings::Settings,
+    profile_id: &str,
+    value: &serde_json::Value,
+) -> bool {
+    let ask_where_to_save = profile_download_patch_field(
+        value,
+        "ask_where_to_save",
+        "askWhereToSave",
+    )
+    .and_then(serde_json::Value::as_bool);
+    let default_folder = profile_download_patch_field(value, "default_folder", "defaultFolder")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::PathBuf::from);
+    if ask_where_to_save.is_none() && default_folder.is_none() {
+        return false;
+    }
+
+    let Some(mut download_settings) = settings.profile_download_settings(profile_id) else {
+        return false;
+    };
+    if let Some(ask_where_to_save) = ask_where_to_save {
+        download_settings.ask_where_to_save = ask_where_to_save;
+    }
+    if let Some(default_folder) = default_folder {
+        download_settings.default_folder = default_folder;
+    }
+    settings.set_profile_download_settings(profile_id, download_settings)
 }
 
 fn update_profile_download_folder(
@@ -5915,10 +5968,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                     }
                 }
                 UiToHostMessage::ChangeDownloadFolder => {
-                    let profile_id = self
-                        .windows
-                        .get(&win_id)
-                        .map(|win| win.profile_id.clone());
+                    let profile_id = self.windows.get(&win_id).map(|win| win.profile_id.clone());
                     let result = self
                         .windows
                         .get(&win_id)
@@ -6002,14 +6052,7 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                         if has_profile_download_patch {
                             if let Some(profile_id) = profile_id.as_deref() {
-                                let mut effective = self.settings.for_profile(profile_id);
-                                effective.update_from_json(&val);
-                                let download_settings =
-                                    evergreen_core::settings::ProfileDownloadSettings::from_global(
-                                        &effective,
-                                    );
-                                settings
-                                    .set_profile_download_settings(profile_id, download_settings);
+                                apply_profile_download_settings_patch(&mut settings, profile_id, &val);
                             }
                         }
                         let path = get_settings_path();
@@ -8543,5 +8586,71 @@ mod google_dns_preferences_tests {
         assert_eq!(extract_host("http://[::1]:8000/"), Some("[::1]".into()));
         assert!(favicon_url("evergreen://newtab").is_none());
         assert!(extract_host("javascript:alert(1)").is_none());
+    }
+}
+
+#[cfg(test)]
+mod profile_download_settings_patch_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn all_download_preference_casings_are_detected_and_removed_from_shared_updates() {
+        let patches = [
+            json!({"askWhereToSave": false}),
+            json!({"ask_where_to_save": false}),
+            json!({"downloads": {"askWhereToSave": false}}),
+            json!({"downloads": {"ask_where_to_save": false}}),
+            json!({"defaultFolder": "profile-downloads"}),
+            json!({"default_folder": "profile-downloads"}),
+            json!({"downloads": {"defaultFolder": "profile-downloads"}}),
+            json!({"downloads": {"default_folder": "profile-downloads"}}),
+        ];
+
+        for patch in patches {
+            assert!(profile_download_settings_patch_present(&patch));
+            let shared = without_profile_download_settings_patch(&patch);
+            assert!(!profile_download_settings_patch_present(&shared));
+        }
+    }
+
+    #[test]
+    fn nested_download_preferences_update_the_active_profile_without_changing_global_fallback() {
+        let patch = json!({
+            "downloads": {
+                "askWhereToSave": false,
+                "default_folder": "profile-a-downloads",
+                "show_progress_toolbar": false
+            }
+        });
+        let mut settings = evergreen_core::settings::Settings::default();
+        settings.downloads.ask_where_to_save = true;
+        settings.downloads.default_folder = std::path::PathBuf::from("legacy-downloads");
+        let profile_id = settings.profiles[0].id.clone();
+
+        let shared = without_profile_download_settings_patch(&patch);
+        settings.update_from_json(&shared);
+        assert!(settings.downloads.ask_where_to_save);
+        assert_eq!(
+            settings.downloads.default_folder,
+            std::path::PathBuf::from("legacy-downloads")
+        );
+
+        assert!(apply_profile_download_settings_patch(
+            &mut settings,
+            &profile_id,
+            &patch
+        ));
+        let active = settings.for_profile(&profile_id);
+        assert!(!active.downloads.ask_where_to_save);
+        assert_eq!(
+            active.downloads.default_folder,
+            std::path::PathBuf::from("profile-a-downloads")
+        );
+        assert!(settings.downloads.ask_where_to_save);
+        assert_eq!(
+            settings.downloads.default_folder,
+            std::path::PathBuf::from("legacy-downloads")
+        );
     }
 }
