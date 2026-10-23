@@ -3,7 +3,7 @@ param(
   [string] $BrowserBinary,
   [switch] $InstallDependencies,
   [ValidateRange(1, 32)]
-  [int] $BuildJobs = 2,
+  [int] $BuildJobs = 1,
   [ValidateRange(1024, 65535)]
   [int] $ServerPort = 9200,
   [ValidateRange(1024, 65535)]
