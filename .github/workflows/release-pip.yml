@@ -69,6 +69,11 @@ jobs:
         # specifically assumes an unelevated interactive user process.
         run: cargo test --workspace --locked -- --skip test_is_process_elevated_returns_false_unelevated
 
+      - name: Verify ad blocking with synthetic WebView2 fixtures
+        # Exercises local filter-engine and scriptlet fixtures only; it does not test live YouTube ad removal.
+        # The fixture's popup listener is its own harness and does not prove production popup callback wiring.
+        run: cargo run --locked -p evergreen-browser --example adblock_smoke --release
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
