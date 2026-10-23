@@ -1293,6 +1293,13 @@ fn sync_settings_patch_present(value: &serde_json::Value) -> bool {
             })
 }
 
+const PROFILE_DOWNLOAD_SETTING_KEYS: [&str; 4] = [
+    "ask_where_to_save",
+    "askWhereToSave",
+    "default_folder",
+    "defaultFolder",
+];
+
 fn profile_download_patch_field<'a>(
     value: &'a serde_json::Value,
     snake_case: &str,
@@ -1306,19 +1313,23 @@ fn profile_download_patch_field<'a>(
             object
                 .get("downloads")
                 .and_then(serde_json::Value::as_object)
-                .and_then(|downloads| downloads.get(snake_case).or_else(|| downloads.get(camel_case)))
+                .and_then(|downloads| {
+                    downloads
+                        .get(snake_case)
+                        .or_else(|| downloads.get(camel_case))
+                })
         })
 }
 
 fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
-    ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"]
+    PROFILE_DOWNLOAD_SETTING_KEYS
         .iter()
         .any(|key| value.as_object().is_some_and(|object| object.contains_key(key)))
         || value
             .get("downloads")
             .and_then(serde_json::Value::as_object)
             .is_some_and(|downloads| {
-                ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"]
+                PROFILE_DOWNLOAD_SETTING_KEYS
                     .iter()
                     .any(|key| downloads.contains_key(key))
             })
@@ -1328,14 +1339,14 @@ fn profile_download_settings_patch_present(value: &serde_json::Value) -> bool {
 fn without_profile_download_settings_patch(value: &serde_json::Value) -> serde_json::Value {
     let mut clean = value.clone();
     if let Some(object) = clean.as_object_mut() {
-        for key in ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"] {
+        for key in PROFILE_DOWNLOAD_SETTING_KEYS {
             object.remove(key);
         }
         if let Some(downloads) = object
             .get_mut("downloads")
             .and_then(serde_json::Value::as_object_mut)
         {
-            for key in ["ask_where_to_save", "askWhereToSave", "default_folder", "defaultFolder"] {
+            for key in PROFILE_DOWNLOAD_SETTING_KEYS {
                 downloads.remove(key);
             }
         }
@@ -1349,12 +1360,9 @@ fn apply_profile_download_settings_patch(
     profile_id: &str,
     value: &serde_json::Value,
 ) -> bool {
-    let ask_where_to_save = profile_download_patch_field(
-        value,
-        "ask_where_to_save",
-        "askWhereToSave",
-    )
-    .and_then(serde_json::Value::as_bool);
+    let ask_where_to_save =
+        profile_download_patch_field(value, "ask_where_to_save", "askWhereToSave")
+            .and_then(serde_json::Value::as_bool);
     let default_folder = profile_download_patch_field(value, "default_folder", "defaultFolder")
         .and_then(serde_json::Value::as_str)
         .map(std::path::PathBuf::from);
@@ -6052,7 +6060,11 @@ impl ApplicationHandler<BrowserEvent> for BrowserApp {
                         }
                         if has_profile_download_patch {
                             if let Some(profile_id) = profile_id.as_deref() {
-                                apply_profile_download_settings_patch(&mut settings, profile_id, &val);
+                                apply_profile_download_settings_patch(
+                                    &mut settings,
+                                    profile_id,
+                                    &val,
+                                );
                             }
                         }
                         let path = get_settings_path();
