@@ -3631,8 +3631,8 @@ mod tests {
     /// Only new asks are refused: an agent already waiting when the switch flips keeps its
     /// request, and the human's hand-back still reaches it.
     #[tokio::test]
-    async fn a_pinned_request_still_resolves_after_human_help_is_turned_off()
-    -> anyhow::Result<()> {
+    async fn a_pinned_request_still_resolves_after_human_help_is_turned_off() -> anyhow::Result<()>
+    {
         let call = crate::api::mcp::test_support::tool_call("tabs", json!({})).await?;
         let service = ClawMcpService::new(call.state.clone());
         let started = service
