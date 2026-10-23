@@ -129,7 +129,8 @@ fn handler<'a>(
             let page = ctx.browser.page_session(PageId(args.page)).await?;
             if let Some(region) = args.region.as_ref() {
                 let current = super::visual_targets::current_observation(
-                    &page.session,
+                    PageId(args.page),
+                    &page,
                     &region.observation_id,
                 )
                 .await?;
@@ -160,7 +161,11 @@ fn handler<'a>(
         if let Some(region) = args.region.as_ref() {
             let page = ctx.browser.page_session(PageId(args.page)).await?;
             let current =
-                super::visual_targets::current_observation(&page.session, &region.observation_id)
+                super::visual_targets::current_observation(
+                PageId(args.page),
+                &page,
+                &region.observation_id,
+            )
                     .await?;
             if current.observation_id != region.observation_id {
                 return Ok(Some(crate::framework::error_result(

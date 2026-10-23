@@ -2,7 +2,7 @@ name: Verify Pip Dev
 
 on:
   push:
-    branches: [main, codex/pipdev-coordinate-target-guard]
+    branches: [main]
     paths:
       - 'pip-dev/**'
       - 'PIP_PRODUCT_REQUIREMENTS.md'

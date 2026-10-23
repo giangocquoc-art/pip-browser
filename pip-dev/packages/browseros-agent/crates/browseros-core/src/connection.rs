@@ -219,6 +219,16 @@ impl ProtocolSession {
         self.session_id.as_ref()
     }
 
+    /// Connection incarnation captured by this session. Bound sessions keep the epoch from
+    /// their admission guard; unbound sessions follow the live transport epoch.
+    #[must_use]
+    pub fn connection_epoch(&self) -> u64 {
+        self.epoch_guard.as_ref().map_or_else(
+            || self.connection.connection_epoch(),
+            |guard| guard.expected,
+        )
+    }
+
     #[must_use]
     pub fn same_session(&self, other: &Self) -> bool {
         self.session_id == other.session_id
