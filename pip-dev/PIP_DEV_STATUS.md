@@ -116,7 +116,7 @@ launcher from a future packaged release.
 
 ## Windows development
 
-Run `run-pip-dev-windows.ps1 -BrowserBinary "D:\\path\\to\\BrowserOS.exe"` with a Windows Pip Dev/BrowserOS Chromium executable. The default launcher builds the BrowserOS neo Rust server, installs dependencies when needed, and starts the extension through WXT with a dedicated profile. It uses Bun 1.4.2 from PATH or invokes that pinned version through npm; Rust MSVC is required for this default build. `-InstallDependencies` forces a frozen-lockfile install, and `-BuildJobs` defaults to one to limit concurrent Cargo disk activity.
+Run `run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\BrowserOS.exe"` with a Windows Pip Dev/BrowserOS Chromium executable. The default launcher builds the BrowserOS neo Rust server, installs dependencies when needed, and starts the extension through WXT with a dedicated profile. It uses Bun 1.4.2 from PATH or invokes that pinned version through npm; Rust MSVC is required for this default build. `-InstallDependencies` forces a frozen-lockfile install, and `-BuildJobs` defaults to one to limit concurrent Cargo disk activity.
 
 After a successful full launch, `-UseExistingArtifacts` is an explicit fast-start option. It requires Bun 1.4.2 directly on PATH, the existing `node_modules` directory, the browser `.exe`, and `packages/browseros-agent/target/debug/browseros-claw-server-rs.exe`. It checks their presence and skips Bun dependency installation, Rust/Cargo prerequisite checks, and Cargo compilation. It cannot verify that the server binary matches current source, so rerun the default launcher after Rust source or dependency changes to avoid a stale server. The option cannot be combined with `-InstallDependencies`.
 
