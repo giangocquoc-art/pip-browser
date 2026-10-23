@@ -1,3 +1,14 @@
+# Pip Dev
+
+**Pip Dev does not have a public browser installer yet.** This repository contains Pip Dev source and a Windows development launcher. The launcher requires a compatible Pip Dev/BrowserOS Chromium executable; it does not build that browser executable or create a distributable installer. The Codex plugin and MCP configuration connect an agent to a running Pip Dev browser; they do not install or start the browser.
+
+See the [Windows installation guide](docs/INSTALL_WINDOWS.md), [agent setup guide](docs/PIP_DEV_AGENT_SETUP.md), and [implementation status](PIP_DEV_STATUS.md).
+
+> **The upstream downloads below are not Pip Dev.** The BrowserOS neo screenshots, download links, and setup instructions below describe the upstream BrowserOS neo project. Files from cdn.browseros.com are BrowserOS neo installers, not Pip Dev packages.
+
+---
+
+## Upstream BrowserOS neo reference (not Pip Dev download links)
 <div align="center">
 <img width="693" height="415" alt="BrowserOS neo: the missing browser for your AI agents" src="https://github.com/user-attachments/assets/8129f9c8-e8f4-4afe-834a-91397121d833" />
 
@@ -30,9 +41,9 @@ A second browser, just for your AI agents. Import your logins from Chrome in one
 
 BrowserOS neo is not a Chrome replacement. It is a secondary browser that sits next to Chrome, made friendly to agents.
 
-## Get started
+## Upstream BrowserOS neo setup (not Pip Dev)
 
-### 1. Install BrowserOS neo
+### 1. Install upstream BrowserOS neo (not Pip Dev)
 
 ```sh
 brew tap browseros-ai/tap
