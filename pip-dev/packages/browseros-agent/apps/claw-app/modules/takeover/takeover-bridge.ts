@@ -30,6 +30,7 @@ export interface TakeoverBridge {
   resolve: (
     tabId: number,
     sessionId: string,
+    requestId: string,
     note?: string,
     beforeResume?: (context: AgentControlContext | null) => Promise<void>,
     afterResumeFailure?: () => Promise<void>,
@@ -96,10 +97,14 @@ export function createTakeoverBridge(
     async refreshForTab(tabId) {
       return contextForTab(await freshLiveSessions(), tabId)
     },
-    async resolve(tabId, sessionId, note, beforeResume, afterResumeFailure) {
+    async resolve(tabId, sessionId, requestId, note, beforeResume, afterResumeFailure) {
       const sessions = await freshLiveSessions()
       const helpRequest = takeoverForTab(sessions, tabId)
-      if (!helpRequest || helpRequest.sessionId !== sessionId) return false
+      if (
+        !helpRequest ||
+        helpRequest.sessionId !== sessionId ||
+        helpRequest.requestId !== requestId
+      ) return false
 
       const reconcileAfterFailedHandBack = async () => {
         // A response can be lost after the server has resumed the agent. Read
@@ -119,7 +124,12 @@ export function createTakeoverBridge(
       let result: { resolved: boolean }
       try {
         await beforeResume?.(agentControlForTab(sessions, tabId))
-        result = await (await client()).resolveHelp({ sessionId, note })
+        result = await (await client()).resolveHelp({
+          sessionId,
+          requestId,
+          browserTabId: tabId,
+          note,
+        })
       } catch (error) {
         await reconcileAfterFailedHandBack()
         throw error

@@ -40,8 +40,18 @@ HelpRequest:
 ResolveHelpRequest:
   type: object
   additionalProperties: false
-  description: Hand control back to the waiting agent, optionally with a note for it.
+  required: [requestId, browserTabId]
+  description: Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
   properties:
+    requestId:
+      type: string
+      minLength: 1
+      description: The requestId from the current live HelpRequest.
+    browserTabId:
+      type: integer
+      format: int64
+      minimum: 1
+      description: The browser tab that sent the hand-back action and is pinned to the current HelpRequest.
     note:
       type: string
 ResolveHelpResponse:

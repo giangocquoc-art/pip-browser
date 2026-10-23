@@ -152,17 +152,27 @@ impl LiveSessionState {
     }
 }
 
-/// ResolveHelpRequest : Hand control back to the waiting agent, optionally with a note for it.
+/// ResolveHelpRequest : Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResolveHelpRequest {
+    /// The requestId from the current live HelpRequest.
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    /// The browser tab that sent the hand-back action and is pinned to the current HelpRequest.
+    #[serde(rename = "browserTabId")]
+    pub browser_tab_id: i64,
     #[serde(rename = "note", skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
 impl ResolveHelpRequest {
-    /// Hand control back to the waiting agent, optionally with a note for it.
-    pub fn new() -> ResolveHelpRequest {
-        ResolveHelpRequest { note: None }
+    /// Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
+    pub fn new(request_id: String, browser_tab_id: i64) -> ResolveHelpRequest {
+        ResolveHelpRequest {
+            request_id,
+            browser_tab_id,
+            note: None,
+        }
     }
 }
 

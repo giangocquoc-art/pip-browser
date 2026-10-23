@@ -9,7 +9,12 @@ import { nativeInputLockSessionIds } from './native-input-lock'
 let sessions: SessionSummary[] = []
 let sessionsUnavailable = false
 let listCalls = 0
-const resolveCalls: Array<{ sessionId: string; note?: string }> = []
+const resolveCalls: Array<{
+  sessionId: string
+  requestId: string
+  browserTabId: number
+  note?: string
+}> = []
 const resolveOrder: string[] = []
 let resolveResult = true
 let resolveDeferred: Promise<{ resolved: boolean }> | null = null
@@ -23,7 +28,12 @@ mock.module('@browseros/claw-api-client', () => ({
       if (sessionsUnavailable) throw new Error('session service unavailable')
       return { items: sessions }
     }
-    async resolveHelp(request: { sessionId: string; note?: string }) {
+    async resolveHelp(request: {
+      sessionId: string
+      requestId: string
+      browserTabId: number
+      note?: string
+    }) {
       resolveCalls.push(request)
       resolveOrder.push('server-resolve')
       onResolveStarted?.()
@@ -108,6 +118,7 @@ describe('takeover bridge', () => {
       context: {
         mode: 'help',
         sessionId: 'session-1',
+        requestId: 'help-1',
         agentLabel: 'Claude-code',
         reason: 'Enter the login',
         resumeHint: undefined,
@@ -152,6 +163,7 @@ describe('takeover bridge', () => {
         helpRequest: {
           mode: 'help',
           sessionId: 'session-help',
+          requestId: 'help-2',
           agentLabel: 'Claude-code',
           reason: 'Enter the login',
           resumeHint: undefined,
@@ -214,9 +226,14 @@ describe('takeover bridge', () => {
     })
 
     await bridge.pollForTab(77)
-    await expect(bridge.resolve(77, 'session-1', 'signed in')).resolves.toBe(true)
+    await expect(bridge.resolve(77, 'session-1', 'help-1', 'signed in')).resolves.toBe(true)
     expect(resolveCalls).toEqual([
-      { sessionId: 'session-1', note: 'signed in' },
+      {
+        sessionId: 'session-1',
+        requestId: 'help-1',
+        browserTabId: 77,
+        note: 'signed in',
+      },
     ])
 
     await bridge.pollForTab(77)
@@ -248,7 +265,7 @@ describe('takeover bridge', () => {
     })
 
     await expect(
-      bridge.resolve(77, 'session-1', 'signed in', async (control) => {
+      bridge.resolve(77, 'session-1', 'help-1', 'signed in', async (control) => {
         expect(control?.sessionIds).toEqual(['session-1'])
         resolveOrder.push('native-lock')
       }),
@@ -270,6 +287,7 @@ describe('takeover bridge', () => {
       bridge.resolve(
         77,
         'session-1',
+        'help-1',
         undefined,
         async () => {},
         async () => {
@@ -296,6 +314,7 @@ describe('takeover bridge', () => {
         bridge.resolve(
           77,
           'session-1',
+          'help-1',
           undefined,
           async () => {
             throw new Error(failure)
@@ -341,6 +360,7 @@ describe('takeover bridge', () => {
     const resolving = bridge.resolve(
       77,
       'session-help',
+      'help-1',
       undefined,
       async (control) => {
         expect(control?.sessionIds).toEqual(['session-active'])
@@ -362,13 +382,23 @@ describe('takeover bridge', () => {
     expect(lockOwners).toEqual(['session-active'])
   })
 
+  it('does not resolve a newer help request using a stale request ID', async () => {
+    sessions = [session(77, { requestId: 'help-2' })]
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+
+    await expect(bridge.resolve(77, 'session-1', 'help-1')).resolves.toBe(false)
+    expect(resolveCalls).toEqual([])
+  })
+
   it('does not resolve a help request from a different tab', async () => {
     sessions = [session(77)]
     const bridge = createTakeoverBridge({
       resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
     })
 
-    await expect(bridge.resolve(42, 'session-1')).resolves.toBe(false)
+    await expect(bridge.resolve(42, 'session-1', 'help-1')).resolves.toBe(false)
     expect(resolveCalls).toEqual([])
   })
 

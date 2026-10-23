@@ -12,7 +12,7 @@ use crate::{
         pursue::PursueOffering,
     },
     identity::{ClientIdentity, ClientInfo, ProfileView},
-    ids::{DispatchId, SessionId},
+    ids::{DispatchId, HelpTargetIdentity, SessionId},
     services::{
         agent_settings::HumanHelp,
         cockpit::LiveSessionFilters,
@@ -829,7 +829,7 @@ impl ClawMcpService {
         };
         // Pin the tab the agent is on right now, so takeover targets the blocked page even when the
         // agent has several tabs open and the poll-time attribution later drifts or empties.
-        let (browser_tab_id, url, title) = self.resolve_active_tab(started.session.id()).await;
+        let (target, url, title) = self.resolve_active_tab(started.session.id()).await;
         let params = HelpOpenParams {
             request_id: format!("help-{}", Ulid::new()),
             reason: reason.to_string(),
@@ -839,7 +839,7 @@ impl ClawMcpService {
                 .get("kind")
                 .and_then(Value::as_str)
                 .and_then(help_kind_from_str),
-            browser_tab_id,
+            target,
             url,
             title,
         };
@@ -847,13 +847,12 @@ impl ClawMcpService {
         self.run_help_wait(started, &entry, request_ct).await
     }
 
-    /// The session's most-recently-active owned tab, as the live projection sees it now. Captured at
-    /// request time so a help request pins the exact blocked tab. Returns all-None when the session
-    /// has no attributed tab, in which case the snapshot falls back to the poll-time pick.
+    /// The session's most-recently-active owned page, including its browser tab, page, target, and
+    /// CDP epoch. Captured at request time so later tab or connection reuse cannot move the request.
     async fn resolve_active_tab(
         &self,
         session_id: &SessionId,
-    ) -> (Option<i64>, Option<String>, Option<String>) {
+    ) -> (Option<HelpTargetIdentity>, Option<String>, Option<String>) {
         let filters = LiveSessionFilters {
             profile_id: None,
             slug: None,
@@ -875,7 +874,7 @@ impl ClawMcpService {
                     .max_by_key(|tab| tab.last_activity_at.unwrap_or(0))
             });
         match tab {
-            Some(tab) => (Some(tab.browser_tab_id), Some(tab.url), Some(tab.title)),
+            Some(tab) => (Some(tab.identity), Some(tab.url), Some(tab.title)),
             None => (None, None, None),
         }
     }
@@ -3448,6 +3447,12 @@ mod tests {
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         let session_id = started.session.id().clone();
+        let target = HelpTargetIdentity {
+            browser_tab_id: 42,
+            page_id: 7,
+            target_id: "target-7".to_string(),
+            connection_epoch: 3,
+        };
 
         call.state
             .help
@@ -3459,7 +3464,7 @@ mod tests {
                     details: None,
                     resume_hint: None,
                     kind: None,
-                    browser_tab_id: None,
+                    target: Some(target.clone()),
                     url: None,
                     title: None,
                 },
@@ -3468,7 +3473,13 @@ mod tests {
         assert!(
             call.state
                 .help
-                .resolve(&session_id, Some("2fa done".to_string()))
+                .resolve(
+                    &session_id,
+                    "help-test",
+                    target.browser_tab_id,
+                    Some(&target),
+                    Some("2fa done".to_string()),
+                )
                 .await
         );
 
@@ -3620,8 +3631,8 @@ mod tests {
     /// Only new asks are refused: an agent already waiting when the switch flips keeps its
     /// request, and the human's hand-back still reaches it.
     #[tokio::test]
-    async fn tests_that_a_request_opened_while_on_still_resolves_after_turning_off()
-    -> anyhow::Result<()> {
+    async fn a_pinned_request_still_resolves_after_human_help_is_turned_off() -> anyhow::Result<()>
+    {
         let call = crate::api::mcp::test_support::tool_call("tabs", json!({})).await?;
         let service = ClawMcpService::new(call.state.clone());
         let started = service
@@ -3629,13 +3640,29 @@ mod tests {
             .await
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         let session_id = started.session.id().clone();
-        // An ended call token returns the first wait chunk at once and leaves the request open.
-        let call_ended = CancellationToken::new();
-        call_ended.cancel();
-        let opened = service
-            .call_request_human_help(&started, &json!({ "reason": "Enter the code" }), call_ended)
+        let target = HelpTargetIdentity {
+            browser_tab_id: 52,
+            page_id: 9,
+            target_id: "target-9".to_string(),
+            connection_epoch: 4,
+        };
+        let entry = call
+            .state
+            .help
+            .open(
+                &session_id,
+                HelpOpenParams {
+                    request_id: "help-off-test".to_string(),
+                    reason: "Enter the code".to_string(),
+                    details: None,
+                    resume_hint: None,
+                    kind: None,
+                    target: Some(target.clone()),
+                    url: None,
+                    title: None,
+                },
+            )
             .await;
-        assert_eq!(status_of(&opened), Some("waiting"));
 
         call.state
             .agent_settings
@@ -3644,7 +3671,13 @@ mod tests {
         assert!(
             call.state
                 .help
-                .resolve(&session_id, Some("code entered".to_string()))
+                .resolve(
+                    &session_id,
+                    entry.request_id(),
+                    target.browser_tab_id,
+                    Some(&target),
+                    Some("code entered".to_string()),
+                )
                 .await
         );
         let result = service

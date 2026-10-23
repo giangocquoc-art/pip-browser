@@ -145,11 +145,23 @@ export interface LiveSessionState {
 }
 
 /**
- * Hand control back to the waiting agent, optionally with a note for it.
+ * Hand control back only for the current help request on its pinned browser tab; the server rejects a stale request or page incarnation.
  * @export
  * @interface ResolveHelpRequest
  */
 export interface ResolveHelpRequest {
+    /**
+     * The requestId from the current live HelpRequest.
+     * @type {string}
+     * @memberof ResolveHelpRequest
+     */
+    requestId: string;
+    /**
+     * The browser tab that sent the hand-back action and is pinned to the current HelpRequest.
+     * @type {number}
+     * @memberof ResolveHelpRequest
+     */
+    browserTabId: number;
     /**
      *
      * @type {string}
