@@ -120,15 +120,14 @@ Run `run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\BrowserOS.exe"` with a P
 Dev/BrowserOS Chromium executable built for Windows. The default launcher builds the BrowserOS neo
 Rust server and starts the extension through WXT with a dedicated profile. It uses Bun 1.4.2 from
 PATH, or invokes that pinned version through npm; Rust MSVC is required for the default build.
-`-InstallDependencies` installs the locked `@browseros/claw-app` workspace dependencies. This is a
-development loop, not an installer. To avoid dependency downloads and Cargo build I/O, pass
-`-UseExistingArtifacts`; it requires Bun 1.4.2 on PATH, existing `node_modules`, and a prebuilt MCP
-server, skips dependency installation and Cargo build, and avoids creating their cache/output
-directories. It reuses existing binaries, so it is only a lower-I/O smoke path and does not verify
-current source changes. It still runs the WXT dev server, which may compile the extension and write
-runtime cache/profile/log data to D; it is not a no-write mode. The extension build has been
-verified, but the full browser runtime has not because this checkout has no Pip Dev/BrowserOS
-Chromium executable.
+`-InstallDependencies` forces a frozen-lockfile install of the `@browseros/claw-app` workspace
+dependencies. Omit it after dependencies are installed; the launcher still runs Cargo build and
+starts WXT on every launch, though Cargo may reuse incremental outputs. The launcher does not
+support `-UseExistingArtifacts` or a no-write mode. Its `-BuildJobs` default of `1` limits
+concurrent Cargo work to reduce disk activity, but Cargo outputs, WXT caches, the browser profile,
+runtime state and logs still write to D. This is a development loop, not an installer. The extension
+build has been verified, but the full browser runtime has not because this checkout has no Pip
+Dev/BrowserOS Chromium executable.
 
 To create the migration file on Windows, run from the repository root:
 
