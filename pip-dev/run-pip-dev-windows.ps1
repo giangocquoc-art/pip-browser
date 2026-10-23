@@ -95,6 +95,7 @@ try {
       -NodeModulesPath (Join-Path $agentRoot 'node_modules') `
       -ServerExePath $serverExe `
       -BrowserBinary $resolvedBinary
+    Write-Warning 'Existing-artifacts mode checks file presence only; it cannot verify the server matches current Rust source. Rebuild without -UseExistingArtifacts after changing Rust code or dependencies.'
   }
   else {
     $bun = Get-Command bun -ErrorAction SilentlyContinue
@@ -139,8 +140,7 @@ try {
     if ($rustTarget -notmatch 'windows-msvc$') {
       throw "BrowserOS neo Windows builds require the Rust MSVC target; current target is '$rustTarget'."
     }
-  
-    }
+  }
 
   foreach ($port in @($ServerPort, $CdpPort) | Select-Object -Unique) {
     if (Test-LocalTcpPortInUse $port) {
@@ -173,7 +173,7 @@ try {
       }
 
       New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
-      $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\\', '/')
+      $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\', '/')
       $originalCargoBuildJobs = $env:CARGO_BUILD_JOBS
       try {
         $env:CARGO_BUILD_JOBS = [string] $BuildJobs
@@ -196,7 +196,7 @@ try {
   }
 
   if (-not (Test-Path -LiteralPath $serverExe -PathType Leaf)) {
-    throw "Cargo completed without producing the expected Windows server executable: $serverExe"
+    throw "The expected existing or newly built Windows server executable is missing: $serverExe"
   }
 
   $sidecar = @{
