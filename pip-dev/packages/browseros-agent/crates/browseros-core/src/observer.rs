@@ -526,15 +526,25 @@ async fn is_live(session: &ProtocolSession, backend_node_id: i64) -> Result<bool
         })) if message.contains("No node with given id") => return Ok(false),
         Err(error) => return Err(error),
     };
-    let object_id = resolved.object.and_then(|object| object.object_id);
-    if let Some(object_id) = object_id {
-        let _ = session
-            .send::<_, Value>("Runtime.releaseObject", json!({ "objectId": object_id }))
-            .await;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    let Some(object_id) = resolved.object.and_then(|object| object.object_id) else {
+        return Ok(false);
+    };
+
+    let connected = session
+        .send::<_, Value>(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id.clone(),
+                "functionDeclaration": "function(){return this.isConnected === true}",
+                "returnByValue": true
+            }),
+        )
+        .await;
+    let _ = session
+        .send::<_, Value>("Runtime.releaseObject", json!({ "objectId": object_id }))
+        .await;
+    let connected = connected?;
+    Ok(connected.pointer("/result/value").and_then(Value::as_bool) == Some(true))
 }
 
 fn known_main_frame_changed(before: &MainFrameState, after: &MainFrameState) -> bool {
@@ -648,6 +658,7 @@ mod tests {
 
     struct MockConnection {
         live: HashSet<i64>,
+        detached: HashSet<i64>,
         ax_tree: Vec<AxNode>,
         resolve_error: Option<CdpError>,
         releases: Mutex<Vec<String>>,
@@ -678,6 +689,14 @@ mod tests {
                                 message: "No node with given id".to_string(),
                             })
                         }
+                    }
+                    "Runtime.callFunctionOn" => {
+                        let backend = params
+                            .get("objectId")
+                            .and_then(Value::as_str)
+                            .and_then(|value| value.strip_prefix("obj-"))
+                            .and_then(|value| value.parse::<i64>().ok());
+                        Ok(json!({ "result": { "value": backend.is_some_and(|id| !self.detached.contains(&id)) } }))
                     }
                     "Accessibility.getFullAXTree" => Ok(json!({ "nodes": self.ax_tree })),
                     "Runtime.releaseObject" => {
@@ -741,6 +760,7 @@ mod tests {
     async fn resolve_ref_tier_one_returns_cached_backend_when_live() -> Result<(), CoreError> {
         let connection = Arc::new(MockConnection {
             live: HashSet::from([10]),
+            detached: HashSet::new(),
             ax_tree: Vec::new(),
             resolve_error: None,
             releases: Mutex::new(Vec::new()),
@@ -769,6 +789,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_ref_rejects_detached_but_resolvable_node() -> Result<(), CoreError> {
+        let connection = Arc::new(MockConnection {
+            live: HashSet::from([10]),
+            detached: HashSet::from([10]),
+            ax_tree: Vec::new(),
+            resolve_error: None,
+            releases: Mutex::new(Vec::new()),
+        });
+        let session = ProtocolSession::root(connection.clone());
+        let mut refs = crate::snapshot::RefMap::new();
+        let ref_id = refs.mint(MintRef {
+            backend_node_id: 10,
+            role: "button",
+            name: "Continue",
+            document_id: None,
+            frame_id: None,
+        });
+        let entry = refs.get(&ref_id).cloned().ok_or_else(|| {
+            CoreError::Message("missing ref".to_string())
+        })?;
+
+        let result = resolve_ref_entry(&session, &entry).await;
+
+        assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        let releases = match connection.releases.lock() {
+            Ok(releases) => releases.clone(),
+            Err(_error) => Vec::new(),
+        };
+        assert_eq!(releases, vec!["obj-10"]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn resolve_ref_does_not_rebind_to_same_role_name_duplicate() -> Result<(), CoreError> {
         let ax_tree = vec![
             AxNode {
@@ -782,6 +835,7 @@ mod tests {
         ];
         let connection = Arc::new(MockConnection {
             live: HashSet::from([20, 21]),
+            detached: HashSet::new(),
             ax_tree,
             resolve_error: None,
             releases: Mutex::new(Vec::new()),
@@ -816,6 +870,7 @@ mod tests {
     async fn resolve_ref_does_not_rebind_to_detached_replacement() -> Result<(), CoreError> {
         let connection = Arc::new(MockConnection {
             live: HashSet::from([20]),
+            detached: HashSet::new(),
             ax_tree: vec![ax_button("replacement", "Continue", 20)],
             resolve_error: None,
             releases: Mutex::new(Vec::new()),
@@ -872,6 +927,7 @@ mod tests {
     async fn resolve_ref_errors_when_stale_ref_requires_new_snapshot() -> Result<(), CoreError> {
         let connection = Arc::new(MockConnection {
             live: HashSet::new(),
+            detached: HashSet::new(),
             ax_tree: Vec::new(),
             resolve_error: None,
             releases: Mutex::new(Vec::new()),
