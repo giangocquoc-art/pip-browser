@@ -1452,4 +1452,3 @@ impl BrowserView {
 
 #[cfg(test)]
 mod tests;
-
