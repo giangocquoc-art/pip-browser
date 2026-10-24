@@ -42,6 +42,7 @@ interface LockLease {
   status: NativeInputLockStatus | 'locking' | 'releasing'
   sessionKey: string
   attached: boolean
+  retryAfterDetach: boolean
 }
 
 const debuggee = (tabId: number) => ({ tabId })
@@ -55,6 +56,7 @@ export class NativeInputLockManager {
       if (typeof source.tabId !== 'number') return
       const lease = this.leases.get(source.tabId)
       if (lease) {
+        lease.retryAfterDetach ||= lease.status === 'locked'
         lease.attached = false
         if (lease.status !== 'releasing') lease.status = 'unavailable'
       }
@@ -79,11 +81,24 @@ export class NativeInputLockManager {
         existing.sessionKey = sessionKey
         return 'locked'
       }
-      if (existing?.status === 'unavailable' && existing.sessionKey === sessionKey) {
+      const retryDetachedLease =
+        existing?.status === 'unavailable' &&
+        existing.sessionKey === sessionKey &&
+        existing.retryAfterDetach
+      if (
+        existing?.status === 'unavailable' &&
+        existing.sessionKey === sessionKey &&
+        !retryDetachedLease
+      ) {
         return 'unavailable'
       }
 
-      const lease: LockLease = { status: 'locking', sessionKey, attached: false }
+      const lease: LockLease = {
+        status: 'locking',
+        sessionKey,
+        attached: false,
+        retryAfterDetach: Boolean(retryDetachedLease),
+      }
       this.leases.set(tabId, lease)
       let attached = false
       try {
@@ -99,6 +114,7 @@ export class NativeInputLockManager {
           throw new Error('debugger detached while enabling the input lock')
         }
         lease.status = 'locked'
+        lease.retryAfterDetach = false
         return 'locked'
       } catch {
         if (attached) {
