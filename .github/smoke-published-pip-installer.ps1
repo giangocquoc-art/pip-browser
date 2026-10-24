@@ -306,15 +306,28 @@ try {
     if ($userSid) {
         try {
             $profile = Get-CimInstance -ClassName Win32_UserProfile |
-                Where-Object { $_.SID -eq $userSid -and -not $_.Special -and -not $_.Loaded } |
+                Where-Object { $_.SID -eq $userSid -and -not $_.Special } |
                 Select-Object -First 1
             if ($profile) {
-                $resolvedProfile = [System.IO.Path]::GetFullPath([string]$profile.LocalPath)
-                if ($profilePath) {
-                    $expectedProfile = [System.IO.Path]::GetFullPath($profilePath).TrimEnd('\')
-                    if (-not $resolvedProfile.StartsWith($expectedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
-                        throw 'Refusing to remove a profile outside the temporary Pip smoke user.'
+                if ($profile.Loaded) {
+                    throw 'The temporary Pip smoke profile is still loaded; refusing to remove it.'
+                }
+                $expectedProfile = $profilePath
+                if (-not $expectedProfile) {
+                    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+                    if (Test-Path -LiteralPath $profileKey) {
+                        $expectedProfile = [Environment]::ExpandEnvironmentVariables(
+                            (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
+                        )
                     }
+                }
+                if (-not $expectedProfile) {
+                    throw 'The expected temporary smoke profile path is unavailable; refusing to remove a profile by SID alone.'
+                }
+                $resolvedProfile = [System.IO.Path]::GetFullPath([string]$profile.LocalPath)
+                $expectedProfile = [System.IO.Path]::GetFullPath([string]$expectedProfile)
+                if (-not [string]::Equals($resolvedProfile, $expectedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Refusing to remove a profile whose canonical path does not exactly match the temporary Pip smoke user.'
                 }
                 Remove-CimInstance -InputObject $profile -ErrorAction Stop
             }
