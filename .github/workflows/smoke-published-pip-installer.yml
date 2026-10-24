@@ -1,0 +1,30 @@
+name: Smoke published Pip installer
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/smoke-published-pip-installer.yml'
+      - '.github/smoke-published-pip-installer.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pip-published-installer-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-smoke:
+    name: Install exact v0.1.16 release and load YouTube with Google DNS
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out smoke harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and exercise the published installer
+        shell: pwsh
+        run: ./.github/smoke-published-pip-installer.ps1
