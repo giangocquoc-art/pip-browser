@@ -5,6 +5,7 @@ $version = '0.1.16'
 $expectedSha256 = '3ffd295cd68e8d65b096cd538946be46238ece143c1fc5ecfaa26badb41be7c2'
 $installerUrl = "https://github.com/giangocquoc-art/pip-browser/releases/download/v$version/Pip-Setup-$version-Windows-x64.exe"
 $debugPort = 9222
+$firewallRuleNames = @()
 $createdUser = $false
 $userSid = $null
 $userName = $null
@@ -19,6 +20,7 @@ $report = [ordered]@{
     installerSha256 = $expectedSha256
     installed = $false
     googleDnsProxyConfigured = $false
+    systemDnsFallbackBlocked = $false
     hostResolverDirectDnsBlocked = $false
     youtubeLoaded = $false
     offlineUiDetected = $null
@@ -157,6 +159,14 @@ try {
     $encodedWrapper = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapper))
     $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
 
+    Write-Host 'Blocking outbound system DNS so a successful page load proves Google DoH handled hostname resolution.'
+    foreach ($protocol in @('UDP', 'TCP')) {
+        $ruleName = "PipReleaseSmoke-$userName-$protocol"
+        New-NetFirewallRule -DisplayName $ruleName -Direction Outbound -Action Block -Profile Any -Protocol $protocol -RemotePort 53 | Out-Null
+        $firewallRuleNames += $ruleName
+    }
+    $report.systemDnsFallbackBlocked = $true
+
     Write-Host 'Starting the installed Pip executable under the same standard user with Google DNS enabled.'
     $launcher = Start-Process -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWrapper) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
     if ($launcher.ExitCode -ne 0) {
@@ -276,6 +286,12 @@ try {
             }
         } catch {}
         $webSocket.Dispose()
+    }
+
+    foreach ($ruleName in $firewallRuleNames) {
+        try { Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop } catch {
+            Write-Warning "Temporary DNS firewall rule cleanup could not complete: $($_.Exception.Message)"
+        }
     }
 
     if ($userName) {
