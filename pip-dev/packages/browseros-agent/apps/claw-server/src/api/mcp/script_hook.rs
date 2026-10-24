@@ -579,17 +579,20 @@ mod tests {
 
         // This callback is the host's post-handler completion hook. It releases
         // the per-invocation Stop barrier before requesting the normal action cleanup.
-        hook.record(InnerCallRecord {
-            method: "input.click",
-            page: Some(page_id),
-            args: &json!({"target":"button"}),
-            from_helper: false,
-            is_error: false,
-            duration_ms: 5,
-            output_token_estimate: 0,
-        })
-        .await;
-        stop.await.map_err(anyhow::Error::msg)?.map_err(anyhow::Error::msg)?;
+        let completion_hook = hook.clone();
+        let completion = tokio::spawn(async move {
+            completion_hook
+                .record(InnerCallRecord {
+                    method: "input.click",
+                    page: Some(page_id),
+                    args: &json!({"target":"button"}),
+                    from_helper: false,
+                    is_error: false,
+                    duration_ms: 5,
+                    output_token_estimate: 0,
+                })
+                .await;
+        });
 
         let unlocking = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -614,6 +617,11 @@ mod tests {
                 LeaseAck::Unlocked,
             )
             .await
+            .map_err(anyhow::Error::msg)?;
+        completion.await.map_err(anyhow::Error::msg)?;
+        stop
+            .await
+            .map_err(anyhow::Error::msg)?
             .map_err(anyhow::Error::msg)?;
         assert!(service.leases_for_extension().await.is_empty());
         Ok(())
