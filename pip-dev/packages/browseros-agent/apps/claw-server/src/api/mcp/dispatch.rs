@@ -492,10 +492,33 @@ async fn wait_for_agent_control_lock(
     }
 }
 
+pub(crate) async fn finish_agent_control_action(
+    call: &ToolCall,
+    owner: &str,
+    ticket: &LeaseTicket,
+) -> Result<(), &'static str> {
+    call.state
+        .agent_control
+        .finish_action_and_wait_with_cancellation(
+            owner,
+            ticket,
+            &call.cancel,
+            &call.client_cancel,
+            &call.dispatch_cancel,
+        )
+        .await
+}
+
 async fn begin_action_control(
     call: &ToolCall,
 ) -> Result<Option<LeaseTicket>, &'static str> {
     if !call.state.agent_control.is_enabled() {
+        return Ok(None);
+    }
+    if ARBITRARY_SCRIPT_TOOLS.contains(&call.tool().name) {
+        if call.identity.is_none() {
+            return Err("agent-control lease requires a session identity; the script action was not dispatched");
+        }
         return Ok(None);
     }
     if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true) {
@@ -567,15 +590,8 @@ async fn execute_with_agent_control(call: &ToolCall) -> DispatchExecution {
 
     let mut execution = execute_with_cancellation(call).await;
     if let (Some(ticket), Some(identity)) = (ticket.as_ref(), call.identity.as_ref())
-        && let Err(error) = call
-            .state
-            .agent_control
-            .finish_action_and_wait(
-                identity.session.id().as_str(),
-                ticket,
-                &call.cancel,
-            )
-            .await
+        && let Err(error) =
+            finish_agent_control_action(call, identity.session.id().as_str(), ticket).await
     {
         if let DispatchExecution::Completed(outcome) = &mut execution {
             outcome.result = ToolResult::error(format!(
@@ -829,6 +845,50 @@ mod tests {
         assert_eq!(
             result.err(),
             Some("agent-control lease requires a session identity; the page action was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_control_fails_closed_when_script_has_no_identity() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("run", serde_json::json!({})).await?;
+        call.identity = None;
+        call.state.agent_control = Arc::new(AgentControlService::new(Some(
+            "test-secret".to_string(),
+        )));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("agent-control lease requires a session identity; the script action was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn script_inner_action_fails_closed_when_identity_is_missing() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+        use browseros_mcp::InnerCallHook;
+
+        let mut call = tool_call("run", serde_json::json!({})).await?;
+        call.identity = None;
+        call.state.agent_control = Arc::new(AgentControlService::new(Some(
+            "test-secret".to_string(),
+        )));
+
+        let hook = super::super::script_hook::ScriptInnerCallHook::new(call);
+        let result = hook.authorize(Some(1)).await;
+        assert_eq!(
+            result,
+            Err("agent-control lease requires a session identity; the script action was not dispatched".to_string()),
         );
         Ok(())
     }

@@ -229,8 +229,27 @@ impl AgentControlService {
         ticket: &LeaseTicket,
         cancel: &CancellationToken,
     ) -> Result<(), &'static str> {
+        self.finish_action_and_wait_with_cancellation(owner, ticket, cancel, cancel, cancel)
+            .await
+    }
+
+    pub async fn finish_action_and_wait_with_cancellation(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+        cancel: &CancellationToken,
+        client_cancel: &CancellationToken,
+        dispatch_cancel: &CancellationToken,
+    ) -> Result<(), &'static str> {
         if self.finish_action_request_unlock(owner, ticket).await {
-            self.wait_unlocked(owner, &ticket.lease_id, cancel).await
+            self.wait_unlocked(
+                owner,
+                &ticket.lease_id,
+                cancel,
+                client_cancel,
+                dispatch_cancel,
+            )
+            .await
         } else {
             Ok(())
         }
@@ -278,7 +297,7 @@ impl AgentControlService {
         cancel: &CancellationToken,
     ) -> Result<(), &'static str> {
         self.abort(owner, lease_id).await?;
-        self.wait_unlocked(owner, lease_id, cancel).await
+        self.wait_unlocked(owner, lease_id, cancel, cancel, cancel).await
     }
 
     async fn wait_unlocked(
@@ -286,6 +305,8 @@ impl AgentControlService {
         owner: &str,
         lease_id: &str,
         cancel: &CancellationToken,
+        client_cancel: &CancellationToken,
+        dispatch_cancel: &CancellationToken,
     ) -> Result<(), &'static str> {
         let deadline = Instant::now() + ACK_TIMEOUT;
         loop {
@@ -309,6 +330,8 @@ impl AgentControlService {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Err("agent tab unlock wait was cancelled"),
+                () = client_cancel.cancelled() => return Err("agent tab unlock wait was cancelled by the client"),
+                () = dispatch_cancel.cancelled() => return Err("agent tab unlock wait was cancelled by the operator"),
                 () = tokio::time::sleep_until(deadline) => return Err("timed out waiting for native tab unlock acknowledgement"),
                 () = notified => {}
             }
@@ -446,7 +469,9 @@ impl AgentControlService {
         };
         let cancel = CancellationToken::new();
         for lease_id in ids {
-            let _ = self.wait_unlocked(owner, &lease_id, &cancel).await;
+            let _ = self
+                .wait_unlocked(owner, &lease_id, &cancel, &cancel, &cancel)
+                .await;
         }
     }
 
@@ -814,6 +839,55 @@ mod tests {
             .await?;
         finishing.await??;
         assert!(service.status("owner", &ticket.lease_id).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unlock_wait_honors_client_and_operator_cancellation() -> anyhow::Result<()> {
+        for cancel_client in [true, false] {
+            let service = service();
+            let ticket = service.begin("owner", 1, 42, "target-a", false).await?;
+            service
+                .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
+                .await?;
+            service.finish_action("owner", &ticket).await;
+
+            let session_cancel = CancellationToken::new();
+            let client_cancel = CancellationToken::new();
+            let dispatch_cancel = CancellationToken::new();
+            let finishing = {
+                let service = service.clone();
+                let ticket = ticket.clone();
+                let session_cancel = session_cancel.clone();
+                let client_cancel = client_cancel.clone();
+                let dispatch_cancel = dispatch_cancel.clone();
+                tokio::spawn(async move {
+                    service
+                        .finish_action_and_wait_with_cancellation(
+                            "owner",
+                            &ticket,
+                            &session_cancel,
+                            &client_cancel,
+                            &dispatch_cancel,
+                        )
+                        .await
+                })
+            };
+            tokio::task::yield_now().await;
+            assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
+
+            if cancel_client {
+                client_cancel.cancel();
+            } else {
+                dispatch_cancel.cancel();
+            }
+            let error = finishing.await?.unwrap_err();
+            assert!(
+                error.contains("cancelled by the client")
+                    || error.contains("cancelled by the operator")
+            );
+            assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
+        }
         Ok(())
     }
 

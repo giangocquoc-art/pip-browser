@@ -1,5 +1,7 @@
 use crate::{
-    api::mcp::dispatch::{ToolCall, ToolIdentity},
+    api::mcp::dispatch::{
+        finish_agent_control_action, wait_for_agent_control_lock, ToolCall, ToolIdentity,
+    },
     api::mcp::effects::{ownership_claims, tab_groups, tabs_list_view},
     clock::now_epoch_ms,
     db::audit_log::{RecordToolDispatchInput, bounded_args_json, result_meta},
@@ -67,7 +69,11 @@ impl InnerCallHook for ScriptInnerCallHook {
                 return Ok(());
             };
             let Some(identity) = self.identity() else {
-                return Ok(());
+                return if self.call.state.agent_control.is_enabled() {
+                    Err("agent-control lease requires a session identity; the script action was not dispatched".to_string())
+                } else {
+                    Ok(())
+                };
             };
             if self.call.state.agent_control.is_enabled() {
                 let Some(browser) = &self.call.browser_session else {
@@ -90,12 +96,8 @@ impl InnerCallHook for ScriptInnerCallHook {
                     )
                     .await
                     .map_err(str::to_string)?;
-                if let Err(error) = self
-                    .call
-                    .state
-                    .agent_control
-                    .wait_locked(owner, &ticket.lease_id, &self.call.cancel)
-                    .await
+                if let Err(error) =
+                    wait_for_agent_control_lock(&self.call, owner, &ticket.lease_id).await
                 {
                     let _ = self
                         .call
@@ -173,16 +175,12 @@ impl InnerCallHook for ScriptInnerCallHook {
             };
             if let Some(ticket) = action_ticket
                 && let Some(identity) = self.identity()
-                && let Err(error) = self
-                    .call
-                    .state
-                    .agent_control
-                    .finish_action_and_wait(
-                        identity.session.id().as_str(),
-                        &ticket,
-                        &self.call.cancel,
-                    )
-                    .await
+                && let Err(error) = finish_agent_control_action(
+                    &self.call,
+                    identity.session.id().as_str(),
+                    &ticket,
+                )
+                .await
                 && let Ok(mut cleanup_error) = self.call.agent_control_cleanup_error.lock()
             {
                 *cleanup_error = Some(error.to_string());
