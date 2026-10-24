@@ -16,13 +16,14 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     if state.agent_control.authorized(bearer) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
 }
 
-/// Returns only exact lease records awaiting a native lock/unlock acknowledgement.
+/// Returns exact lease incarnations and terminal states to the bundled extension.
+/// The extension acts only on Locking/Unlocking; Failed remains visible for Stop/Retry.
 pub(super) async fn leases(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
     authorized(&state, &headers)?;
-    Ok(Json(json!({ "leases": state.agent_control.pending_for_extension().await })))
+    Ok(Json(json!({ "leases": state.agent_control.leases_for_extension().await })))
 }
 
 #[derive(Deserialize)]
@@ -31,6 +32,13 @@ pub(super) struct AckRequest {
     tab_id: i64,
     target_id: String,
     status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ReleaseRequest {
+    tab_id: i64,
+    target_id: String,
 }
 
 /// Acknowledges only the exact target incarnation named by the lease.
@@ -49,6 +57,21 @@ pub(super) async fn acknowledge(
         _ => return Err((StatusCode::BAD_REQUEST, Json(json!({"error":"invalid acknowledgement"})))),
     };
     state.agent_control.acknowledge(&lease_id, body.tab_id, &body.target_id, ack)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Lets the explicit extension Stop control request cleanup without borrowing an
+/// MCP owner identity. The random bearer and exact tuple are both required.
+pub(super) async fn release(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(lease_id): Path<String>,
+    Json(body): Json<ReleaseRequest>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    authorized(&state, &headers).map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
+    state.agent_control.request_release(&lease_id, body.tab_id, &body.target_id)
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)

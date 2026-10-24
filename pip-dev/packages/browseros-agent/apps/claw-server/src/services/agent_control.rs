@@ -298,6 +298,14 @@ impl AgentControlService {
         Ok(view(lease))
     }
 
+    /// Returns every lease to the authenticated bundled extension so it can
+    /// surface terminal failures and preserve Stop/Retry cleanup affordances.
+    pub async fn leases_for_extension(&self) -> Vec<LeaseView> {
+        self.sweep().await;
+        let inner = self.inner.lock().await;
+        inner.leases.values().map(view).collect()
+    }
+
     /// Only pending locks and pending unlocks are handed to the extension. A
     /// terminal failure stays visible to the owning MCP caller but is no longer
     /// polled forever; explicit end/abort can start a bounded cleanup retry.
