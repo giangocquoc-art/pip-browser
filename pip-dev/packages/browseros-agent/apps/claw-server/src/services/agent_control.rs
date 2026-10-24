@@ -175,7 +175,17 @@ impl AgentControlService {
         lease_id: &str,
         cancel: &CancellationToken,
     ) -> Result<(), &'static str> {
-        let deadline = Instant::now() + ACK_TIMEOUT;
+        self.wait_locked_for(owner, lease_id, cancel, ACK_TIMEOUT).await
+    }
+
+    async fn wait_locked_for(
+        &self,
+        owner: &str,
+        lease_id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), &'static str> {
+        let deadline = Instant::now() + timeout;
         loop {
             let notified = self.changed.notified();
             {
@@ -201,7 +211,7 @@ impl AgentControlService {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Err("agent tab lock wait was cancelled"),
-                () = tokio::time::sleep_until(deadline) => return Err("timed out waiting for native tab lock acknowledgement"),
+                () = tokio::time::sleep_until(deadline) => return Err("Pip Dev could not wake the extension to lock this tab within 8 seconds, so no page input was sent. Keep a visible Pip Dev page or popup open, then retry."),
                 () = notified => {}
             }
         }
@@ -617,6 +627,30 @@ mod tests {
             .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
             .await?;
         assert!(service.begin("owner", 1, 42, "target-a", true).await.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn missing_extension_wakeup_times_out_before_any_lock_ack() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service.begin("owner", 1, 42, "target-a", false).await?;
+
+        let error = service
+            .wait_locked_for(
+                "owner",
+                &ticket.lease_id,
+                &CancellationToken::new(),
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Pip Dev could not wake the extension to lock this tab within 8 seconds, so no page input was sent. Keep a visible Pip Dev page or popup open, then retry."
+        );
+        assert_eq!(service.status("owner", &ticket.lease_id).await?.status, "locking");
+        service.abort("owner", &ticket.lease_id).await?;
+        assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
         Ok(())
     }
 

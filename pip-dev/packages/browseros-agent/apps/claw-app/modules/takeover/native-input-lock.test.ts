@@ -18,19 +18,23 @@ function deferred<T>() {
 function makeDebugger() {
   const calls: Array<[string, number, string?]> = []
   const targetIds = new Map<number, string>()
+  const attached = new Set<number>()
   let onDetach: ((source: { tabId?: number }, reason: string) => void) | undefined
   const api: NativeInputDebugger = {
     async attach({ tabId }) {
       calls.push(['attach', tabId])
+      attached.add(tabId)
     },
     async sendCommand({ tabId }, method) {
       calls.push([method, tabId])
+      if (!attached.has(tabId)) throw new Error('debugger is not attached')
       if (method === 'Target.getTargetInfo') {
         return { targetInfo: { targetId: targetIds.get(tabId) ?? `target-${tabId}` } }
       }
     },
     async detach({ tabId }) {
       calls.push(['detach', tabId])
+      attached.delete(tabId)
     },
     onDetach: {
       addListener(listener) {
@@ -433,6 +437,110 @@ describe('NativeInputLockManager', () => {
     expect(locks.status(7)).toBe('unlocked')
     expect(calls.slice(-2)).toEqual([
       ['Input.setAgentInputLock', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('does not confirm unlock when the worker has no owner snapshot', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock'),
+    ).toBe('unavailable')
+    expect(calls).toEqual([])
+  })
+
+  it('rehydrates and explicitly unlocks the exact lease after worker restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['Target.getTargetInfo', 7],
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('keeps a takeover owner locked when an MCP lease is released after restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        {
+          agentLeaseIds: ['lease-1'],
+          takeoverSessionIds: ['takeover-session'],
+        },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(calls.filter(([method]) => method === 'Input.setAgentInputLock')).toEqual([
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('preserves a peer MCP lease when recovering another lease after restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        { agentLeaseIds: ['lease-1', 'lease-peer'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(calls.filter(([method]) => method === 'Input.setAgentInputLock')).toEqual([
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('does not clear a replacement target while recovering an unknown lease', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(7, 'replacement-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'expected-target',
+        'unlock',
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(calls.some(([method]) => method === 'Input.setAgentInputLock')).toBe(false)
+    expect(calls).toEqual([
+      ['Target.getTargetInfo', 7],
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
       ['detach', 7],
     ])
   })

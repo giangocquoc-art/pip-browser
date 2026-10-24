@@ -61,6 +61,19 @@ export default defineBackground(() => {
     resolveServerBaseUrl: resolveBrowserOSServerBaseUrl,
   })
   const nativeInputLocks = new NativeInputLockManager(chrome.debugger)
+  const readTakeoverOwners = async (tabId: number): Promise<string[] | null> => {
+    try {
+      const response = await takeover.refreshForTab(tabId)
+      if (!response.active) {
+        return 'unavailable' in response && response.unavailable ? null : []
+      }
+      return response.context.mode === 'agent-control'
+        ? nativeInputLockSessionIds(response.context)
+        : []
+    } catch {
+      return null
+    }
+  }
   const inputLockGate = new TakeoverInputLockGate()
   // Revisions close races among observed stop/help transitions. The server
   // cannot atomically reserve a tab with this CDP update, so a new owner created
@@ -131,10 +144,10 @@ export default defineBackground(() => {
         },
         pollForTab: async (tabId) => {
           const response = await takeover.pollForTab(tabId)
-          let agentControlLeases = []
+          let agentControlLeases: Awaited<ReturnType<typeof pollAgentControlLeases>> = []
           let agentControlError = false
           try {
-            agentControlLeases = (await pollAgentControlLeases(nativeInputLocks))
+            agentControlLeases = (await pollAgentControlLeases(nativeInputLocks, readTakeoverOwners))
               .filter((lease) => lease.tabId === tabId)
           } catch {
             agentControlError = true
@@ -159,7 +172,7 @@ export default defineBackground(() => {
         stopForTab: (tabId) => takeover.stopForTab(tabId),
         stopAgentControlForTab: async (tabId) => {
           try {
-            const result = await stopAgentControlForTab(tabId, nativeInputLocks)
+            const result = await stopAgentControlForTab(tabId, nativeInputLocks, readTakeoverOwners)
             return {
               confirmed: result.confirmed,
               pending: result.leases.length,
@@ -188,7 +201,7 @@ export default defineBackground(() => {
         return false
       }
       const pollRevision = inputLockGate.beginPoll(tabId)
-      void pollAgentControlLeases(nativeInputLocks).catch(() => [])
+      void pollAgentControlLeases(nativeInputLocks, readTakeoverOwners).catch(() => [])
       void takeover
         .pollForTab(tabId)
         .then(async (response) => {

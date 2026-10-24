@@ -3,6 +3,7 @@ import {
   resolveBrowserOSServerBaseUrl,
 } from '@/modules/api/browseros-ports'
 import type {
+  AgentControlOwnerSnapshot,
   AgentLeaseLockStatus,
   NativeInputLockManager,
 } from './native-input-lock'
@@ -26,11 +27,16 @@ export interface ReconcileSummary {
   unavailable: number
 }
 
-/** Runs only the exact pending tuples returned by the authenticated lease API. */
+export type TakeoverOwnerReader = (
+  tabId: number,
+) => Promise<string[] | null>
+
+/** Runs only exact pending tuples and reconstructs shared owners from server state. */
 export async function reconcilePendingAgentControlLeases(
   leases: AgentControlLeaseView[],
   locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
   acknowledge: LeaseAcknowledge,
+  readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<ReconcileSummary> {
   let processed = 0
   let unavailable = 0
@@ -48,12 +54,32 @@ export async function reconcilePendingAgentControlLeases(
     const operation = lease.operation === 'lock' ? 'lock' : 'unlock'
     let result: AgentLeaseLockStatus
     try {
-      result = await locks.syncAgentControlLease(
-        lease.tabId,
-        lease.leaseId,
-        lease.targetId,
-        operation,
-      )
+      const takeoverSessionIds = await readTakeoverOwners(lease.tabId)
+      if (takeoverSessionIds === null) {
+        result = 'unavailable'
+      } else {
+        const agentLeaseIds = leases
+          .filter(
+            (candidate) =>
+              candidate.tabId === lease.tabId &&
+              candidate.targetId === lease.targetId,
+          )
+          .map((candidate) => candidate.leaseId)
+        if (!agentLeaseIds.includes(lease.leaseId)) {
+          agentLeaseIds.push(lease.leaseId)
+        }
+        const ownerSnapshot: AgentControlOwnerSnapshot = {
+          agentLeaseIds,
+          takeoverSessionIds,
+        }
+        result = await locks.syncAgentControlLease(
+          lease.tabId,
+          lease.leaseId,
+          lease.targetId,
+          operation,
+          ownerSnapshot,
+        )
+      }
     } catch {
       result = 'unavailable'
     }
@@ -67,7 +93,9 @@ export async function reconcilePendingAgentControlLeases(
             : 'unavailable'
         : result === 'unlocked'
           ? 'unlocked'
-          : 'unavailable'
+          : result === 'stale'
+            ? 'stale'
+            : 'unavailable'
 
     // Do not ACK until CDP has completed and the manager reports the result.
     try {
@@ -149,6 +177,7 @@ async function acknowledgeLease(
 /** Reconciles one pending batch and returns a fresh status snapshot for UI. */
 export async function pollAgentControlLeases(
   locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
+  readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<AgentControlLeaseView[]> {
   const { baseUrl, token } = await credentials()
   const leases = await listLeases(baseUrl, token)
@@ -156,6 +185,7 @@ export async function pollAgentControlLeases(
     leases,
     locks,
     (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
+    readTakeoverOwners,
   )
   return listLeases(baseUrl, token)
 }
@@ -172,6 +202,7 @@ export interface StopAgentControlResult {
 export async function stopAgentControlForTab(
   tabId: number,
   locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
+  readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<StopAgentControlResult> {
   const { baseUrl, token } = await credentials()
   const current = await listLeases(baseUrl, token)
@@ -194,10 +225,12 @@ export async function stopAgentControlForTab(
   let latest = owned
   do {
     latest = await listLeases(baseUrl, token)
+    // A stop request is scoped to this tab; it must not reconcile another tab's lease.
     await reconcilePendingAgentControlLeases(
-      latest,
+      latest.filter((lease) => lease.tabId === tabId),
       locks,
       (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
+      readTakeoverOwners,
     )
     latest = (await listLeases(baseUrl, token)).filter(
       (lease) => lease.tabId === tabId,

@@ -5,6 +5,8 @@ import {
 } from './agent-control-bridge'
 import type { AgentLeaseLockStatus } from './native-input-lock'
 
+const noTakeoverOwners = async (): Promise<string[]> => []
+
 const lease = (
   status: AgentControlLeaseView['status'],
   operation: AgentControlLeaseView['operation'],
@@ -44,6 +46,7 @@ describe('agent-control extension bridge', () => {
         order.push(`ack:${status}`)
         acknowledgements.push(status)
       },
+      noTakeoverOwners,
     )
 
     await Promise.resolve()
@@ -67,6 +70,7 @@ describe('agent-control extension bridge', () => {
       async (_lease, status) => {
         acknowledged.push(status)
       },
+      noTakeoverOwners,
     )
 
     expect(acknowledged).toEqual(['stale'])
@@ -86,10 +90,63 @@ describe('agent-control extension bridge', () => {
       async () => {
         calls += 1
       },
+      noTakeoverOwners,
     )
 
     expect(calls).toBe(0)
     expect(result).toEqual({ processed: 0, unavailable: 0 })
+  })
+
+  it('reconstructs the exact shared owner snapshot for a hidden target lease', async () => {
+    const sameTargetPeer = { ...lease('locked', 'lock'), leaseId: 'lease-peer' }
+    const otherTarget = {
+      ...lease('locked', 'lock'),
+      leaseId: 'lease-other-target',
+      targetId: 'replacement-target',
+    }
+    let observed:
+      | { agentLeaseIds: string[]; takeoverSessionIds: string[] }
+      | undefined
+    await reconcilePendingAgentControlLeases(
+      [lease('unlocking', 'unlock'), sameTargetPeer, otherTarget],
+      {
+        syncAgentControlLease: async (_tabId, _id, _target, _operation, owners) => {
+          observed = owners
+          return 'unlocked'
+        },
+      },
+      async () => {},
+      async (tabId) => {
+        expect(tabId).toBe(17)
+        return ['takeover-session']
+      },
+    )
+
+    expect(observed).toEqual({
+      agentLeaseIds: ['lease-exact', 'lease-peer'],
+      takeoverSessionIds: ['takeover-session'],
+    })
+  })
+
+  it('fails closed when takeover ownership cannot be refreshed', async () => {
+    let nativeCalls = 0
+    const acknowledged: string[] = []
+    await reconcilePendingAgentControlLeases(
+      [lease('unlocking', 'unlock')],
+      {
+        syncAgentControlLease: async () => {
+          nativeCalls += 1
+          return 'unlocked'
+        },
+      },
+      async (_lease, status) => {
+        acknowledged.push(status)
+      },
+      async () => null,
+    )
+
+    expect(nativeCalls).toBe(0)
+    expect(acknowledged).toEqual(['unavailable'])
   })
 
   it('reports unlock unavailable until CDP cleanup is confirmed', async () => {
@@ -102,6 +159,7 @@ describe('agent-control extension bridge', () => {
       async (_lease, status) => {
         acknowledged.push(status)
       },
+      noTakeoverOwners,
     )
 
     expect(acknowledged).toEqual(['unavailable'])

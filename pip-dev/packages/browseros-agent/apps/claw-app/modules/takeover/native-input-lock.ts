@@ -39,6 +39,12 @@ export function nativeInputLockSessionIds(
 export type NativeInputLockStatus = 'locked' | 'unavailable' | 'unlocked'
 export type AgentLeaseLockStatus = NativeInputLockStatus | 'stale'
 
+/** Complete same-tab ownership state read from the authenticated local services. */
+export interface AgentControlOwnerSnapshot {
+  agentLeaseIds: string[]
+  takeoverSessionIds: string[]
+}
+
 interface LockLease {
   status: NativeInputLockStatus | 'locking' | 'releasing'
   sessionKey: string
@@ -95,21 +101,44 @@ export class NativeInputLockManager {
     leaseId: string,
     targetId: string,
     operation: 'lock' | 'unlock',
+    ownerSnapshot?: AgentControlOwnerSnapshot,
   ): Promise<AgentLeaseLockStatus> {
     return this.exclusive(tabId, async () => {
+      if (ownerSnapshot) {
+        const takeoverOwners = new Set(ownerSnapshot.takeoverSessionIds.filter(Boolean))
+        if (takeoverOwners.size) this.takeoverOwners.set(tabId, takeoverOwners)
+        else this.takeoverOwners.delete(tabId)
+
+        const agentOwners = new Map<string, string>()
+        for (const id of new Set(ownerSnapshot.agentLeaseIds.filter(Boolean))) {
+          agentOwners.set(id, targetId)
+        }
+        if (agentOwners.size) this.agentLeases.set(tabId, agentOwners)
+        else this.agentLeases.delete(tabId)
+      }
+
       const agentOwners = this.agentLeases.get(tabId) ?? new Map<string, string>()
       const existingTargetId = agentOwners.get(leaseId)
       if (existingTargetId && existingTargetId !== targetId) return 'stale'
 
       if (operation === 'unlock') {
-        if (!existingTargetId) return 'unlocked'
+        // The authenticated server snapshot is required to rehydrate an owner
+        // after worker restart. Without it, an absent map is not proof of release.
+        if (!existingTargetId) return 'unavailable'
         agentOwners.delete(leaseId)
         if (agentOwners.size) this.agentLeases.set(tabId, agentOwners)
         else this.agentLeases.delete(tabId)
-        const status = await this.syncCombined(tabId)
-        // This particular owner is gone even when a separate takeover session
-        // continues to hold the same native tab lock.
-        return status === 'unavailable' ? 'unavailable' : 'unlocked'
+
+        const hasOtherOwners =
+          agentOwners.size > 0 || (this.takeoverOwners.get(tabId)?.size ?? 0) > 0
+        if (!hasOtherOwners && !this.leases.has(tabId)) {
+          return this.unlockExactTarget(tabId, targetId)
+        }
+
+        const status = await this.syncCombined(tabId, targetId)
+        // Removing one owner must preserve and verify every other owner.
+        if (status === 'unavailable' || status === 'stale') return status
+        return 'unlocked'
       }
 
       if (!targetId) return 'stale'
@@ -271,6 +300,57 @@ export class NativeInputLockManager {
         }
       }
       lease.status = 'unavailable'
+      return 'unavailable'
+    }
+  }
+
+  /**
+   * Recovers cleanup after the extension worker lost its in-memory lock record.
+   * The caller has already reconciled the complete server/takeover owner snapshot;
+   * this path is used only when that snapshot leaves no remaining owner.
+   */
+  private async unlockExactTarget(
+    tabId: number,
+    expectedTargetId: string,
+  ): Promise<AgentLeaseLockStatus> {
+    let attachedHere = false
+    try {
+      let actualTargetId: string | null
+      try {
+        actualTargetId = await this.currentTargetId(tabId)
+      } catch {
+        await this.debuggerApi.attach(debuggee(tabId), '1.3')
+        attachedHere = true
+        actualTargetId = await this.currentTargetId(tabId)
+      }
+      if (!actualTargetId || actualTargetId !== expectedTargetId) {
+        if (attachedHere) await this.debuggerApi.detach(debuggee(tabId))
+        return 'stale'
+      }
+
+      await this.debuggerApi.sendCommand(
+        debuggee(tabId),
+        'Input.setAgentInputLock',
+        { locked: false },
+      )
+      // Explicit release plus a successful detach confirms both the native
+      // lock command and browser-owned debugger lease are gone.
+      await this.debuggerApi.detach(debuggee(tabId))
+      this.leases.delete(tabId)
+      return 'unlocked'
+    } catch {
+      if (attachedHere) {
+        try {
+          await this.debuggerApi.detach(debuggee(tabId))
+        } catch {
+          this.leases.set(tabId, {
+            status: 'unavailable',
+            sessionKey: '',
+            attached: true,
+            retryAfterDetach: false,
+          })
+        }
+      }
       return 'unavailable'
     }
   }
