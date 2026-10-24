@@ -681,7 +681,10 @@ mod tests {
                 .get("functionDeclaration")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if function.contains("this.isConnected") {
+            if function.contains("browserosPrepareFill") {
+                return Ok(json!({ "result": { "value": true } }));
+            }
+            if function.contains("function(){return this.isConnected === true}") {
                 let connected = match self.state.lock() {
                     Ok(mut state) => {
                         state.connectivity_checks += 1;
@@ -829,6 +832,19 @@ mod tests {
         let result = input.hover(&ref_id).await;
 
         assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        assert_eq!(connection.mouse_events(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_stops_when_ref_detaches_before_click_dispatch() -> Result<(), CoreError> {
+        let (connection, input, ref_id) =
+            input_harness_for_target(HitTestResponse::Clear, "textbox", "Email", None, true)
+                .await?;
+
+        let result = input.fill(&ref_id, "pip@example.com", true).await;
+
+        assert!(result.is_err());
         assert_eq!(connection.mouse_events(), 0);
         Ok(())
     }
