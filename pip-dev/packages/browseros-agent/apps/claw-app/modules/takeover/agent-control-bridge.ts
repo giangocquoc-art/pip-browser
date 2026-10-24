@@ -44,6 +44,8 @@ export async function reconcilePendingAgentControlLeases(
   for (const lease of leases) {
     if (
       (lease.status !== 'locking' && lease.status !== 'unlocking') ||
+      !Number.isSafeInteger(lease.generation) ||
+      lease.generation < 1 ||
       !Number.isSafeInteger(lease.tabId) ||
       lease.tabId < 0 ||
       !lease.targetId
@@ -166,6 +168,7 @@ async function acknowledgeLease(
     {
       method: 'POST',
       body: JSON.stringify({
+        generation: lease.generation,
         tabId: lease.tabId,
         targetId: lease.targetId,
         status,
@@ -214,6 +217,7 @@ export async function stopAgentControlForTab(
       {
         method: 'POST',
         body: JSON.stringify({
+          generation: lease.generation,
           tabId: lease.tabId,
           targetId: lease.targetId,
         }),

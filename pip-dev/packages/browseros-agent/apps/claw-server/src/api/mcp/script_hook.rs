@@ -125,13 +125,13 @@ impl InnerCallHook for ScriptInnerCallHook {
                     .await
                     .map_err(str::to_string)?;
                 if let Err(error) =
-                    wait_for_agent_control_lock(&self.call, owner, &ticket.lease_id).await
+                    wait_for_agent_control_lock(&self.call, owner, &ticket).await
                 {
                     let _ = self
                         .call
                         .state
                         .agent_control
-                        .abort(owner, &ticket.lease_id)
+                        .abort_action(owner, &ticket)
                         .await;
                     return Err(format!("native tab lock was not confirmed: {error}"));
                 }

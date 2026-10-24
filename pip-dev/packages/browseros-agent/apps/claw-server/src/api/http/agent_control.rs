@@ -37,6 +37,7 @@ pub(super) async fn leases(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct AckRequest {
+    generation: u64,
     tab_id: i64,
     target_id: String,
     status: String,
@@ -45,6 +46,7 @@ pub(super) struct AckRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReleaseRequest {
+    generation: u64,
     tab_id: i64,
     target_id: String,
 }
@@ -72,7 +74,7 @@ pub(super) async fn acknowledge(
     };
     state
         .agent_control
-        .acknowledge(&lease_id, body.tab_id, &body.target_id, ack)
+        .acknowledge(&lease_id, body.generation, body.tab_id, &body.target_id, ack)
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)
@@ -90,7 +92,7 @@ pub(super) async fn release(
         .map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
     state
         .agent_control
-        .request_release(&lease_id, body.tab_id, &body.target_id)
+        .request_release(&lease_id, body.generation, body.tab_id, &body.target_id)
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)

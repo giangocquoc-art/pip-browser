@@ -477,7 +477,7 @@ async fn run_observers(context: ToolObserverContext<'_>, observers: &[NamedToolO
 pub(crate) async fn wait_for_agent_control_lock(
     call: &ToolCall,
     owner: &str,
-    lease_id: &str,
+    ticket: &LeaseTicket,
 ) -> Result<(), &'static str> {
     let dispatch_cancel = call.dispatch_cancel.clone();
     let client_cancel = call.client_cancel.clone();
@@ -488,7 +488,12 @@ pub(crate) async fn wait_for_agent_control_lock(
         biased;
         () = dispatch_cancel.cancelled() => Err("agent-control lock wait was cancelled by the operator"),
         () = client_cancel.cancelled() => Err("agent-control lock wait was cancelled by the client"),
-        result = service.wait_locked(owner, lease_id, &session_cancel) => result,
+        result = service.wait_locked(
+            owner,
+            &ticket.lease_id,
+            ticket.generation,
+            &session_cancel,
+        ) => result,
     }
 }
 
@@ -579,11 +584,11 @@ async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'
             false,
         )
         .await?;
-    if let Err(error) = wait_for_agent_control_lock(call, owner, &ticket.lease_id).await {
+    if let Err(error) = wait_for_agent_control_lock(call, owner, &ticket).await {
         let _ = call
             .state
             .agent_control
-            .abort(owner, &ticket.lease_id)
+            .abort_action(owner, &ticket)
             .await;
         return Err(error);
     }
@@ -999,10 +1004,11 @@ mod tests {
         call.state.agent_control = service.clone();
         let ticket = service
             .begin("test-owner", 1, 42, "target-a", false)
-            .await.map_err(anyhow::Error::msg)?;
+            .await
+            .map_err(anyhow::Error::msg)?;
         let client_cancel = call.client_cancel.clone();
 
-        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket);
         tokio::pin!(waiting);
         tokio::task::yield_now().await;
         client_cancel.cancel();
@@ -1025,10 +1031,11 @@ mod tests {
         call.state.agent_control = service.clone();
         let ticket = service
             .begin("test-owner", 1, 42, "target-a", false)
-            .await.map_err(anyhow::Error::msg)?;
+            .await
+            .map_err(anyhow::Error::msg)?;
         let dispatch_cancel = call.dispatch_cancel.clone();
 
-        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket);
         tokio::pin!(waiting);
         tokio::task::yield_now().await;
         dispatch_cancel.cancel();

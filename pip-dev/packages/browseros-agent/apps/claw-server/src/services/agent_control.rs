@@ -43,6 +43,7 @@ struct Lease {
     page_id: u32,
     tab_id: i64,
     target_id: String,
+    generation: u64,
     phase: Phase,
     expires_at: Instant,
     persistent: bool,
@@ -55,6 +56,7 @@ struct Lease {
 #[serde(rename_all = "camelCase")]
 pub struct LeaseView {
     pub lease_id: String,
+    pub generation: u64,
     pub page_id: u32,
     pub tab_id: i64,
     pub target_id: String,
@@ -75,6 +77,7 @@ pub enum LeaseAck {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseTicket {
     pub lease_id: String,
+    pub generation: u64,
     pub action_ref: bool,
 }
 
@@ -163,18 +166,21 @@ impl AgentControlService {
             existing.persistent |= persistent;
             let action_ref = !persistent;
             if action_ref {
+                // Each action gets a distinct ACK generation. This invalidates
+                // any delayed result from an overlapping extension poll, even
+                // while the prior generation is still reported as Locking.
+                existing.generation = existing
+                    .generation
+                    .checked_add(1)
+                    .ok_or("agent tab lock generation exhausted")?;
                 existing.action_refs = existing.action_refs.saturating_add(1);
-                if matches!(existing.phase, Phase::Locked) {
-                    // Every mutating MCP call gets a fresh extension ACK. If
-                    // native CDP detached since the prior action, the extension
-                    // must reacquire before this call can pass wait_locked().
-                    existing.phase = Phase::Locking;
-                    existing.error = None;
-                    self.changed.notify_waiters();
-                }
+                existing.phase = Phase::Locking;
+                existing.error = None;
+                self.changed.notify_waiters();
             }
             return Ok(LeaseTicket {
                 lease_id: existing.id.clone(),
+                generation: existing.generation,
                 action_ref,
             });
         }
@@ -188,6 +194,7 @@ impl AgentControlService {
                 page_id,
                 tab_id,
                 target_id: target_id.to_string(),
+                generation: 1,
                 phase: Phase::Locking,
                 expires_at: Instant::now() + LEASE_TTL,
                 persistent,
@@ -199,6 +206,7 @@ impl AgentControlService {
         self.changed.notify_waiters();
         Ok(LeaseTicket {
             lease_id: id,
+            generation: 1,
             action_ref: !persistent,
         })
     }
@@ -209,9 +217,10 @@ impl AgentControlService {
         &self,
         owner: &str,
         lease_id: &str,
+        generation: u64,
         cancel: &CancellationToken,
     ) -> Result<(), &'static str> {
-        self.wait_locked_for(owner, lease_id, cancel, ACK_TIMEOUT)
+        self.wait_locked_for(owner, lease_id, generation, cancel, ACK_TIMEOUT)
             .await
     }
 
@@ -219,6 +228,7 @@ impl AgentControlService {
         &self,
         owner: &str,
         lease_id: &str,
+        generation: u64,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<(), &'static str> {
@@ -235,6 +245,9 @@ impl AgentControlService {
                 };
                 if lease.owner != owner {
                     return Err("agent tab lease owner mismatch");
+                }
+                if lease.generation != generation {
+                    return Err("agent tab lock generation changed; retry the action");
                 }
                 match lease.phase {
                     Phase::Locked => return Ok(()),
@@ -309,6 +322,38 @@ impl AgentControlService {
             }
         }
         unlock_requested
+    }
+
+    /// Aborts an action only while it still owns the current lock generation.
+    /// A stale action must never cancel a newer action's lease.
+    pub async fn abort_action(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+    ) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().await;
+        let Some(lease) = inner.leases.get_mut(&ticket.lease_id) else {
+            return Ok(());
+        };
+        if lease.owner != owner {
+            return Err("agent tab lease owner mismatch");
+        }
+        if lease.generation != ticket.generation {
+            lease.action_refs = lease.action_refs.saturating_sub(1);
+            if lease.action_refs == 0
+                && !lease.persistent
+                && matches!(lease.phase, Phase::Locking | Phase::Locked)
+            {
+                request_unlock(lease, None);
+            }
+            self.changed.notify_waiters();
+            return Ok(());
+        }
+        lease.persistent = false;
+        lease.action_refs = 0;
+        request_unlock(lease, lease.error);
+        self.changed.notify_waiters();
+        Ok(())
     }
 
     /// Requests cleanup for a cancelled action or an explicitly stopped lease.
@@ -419,6 +464,7 @@ impl AgentControlService {
     pub async fn request_release(
         &self,
         lease_id: &str,
+        generation: u64,
         tab_id: i64,
         target_id: &str,
     ) -> Result<(), &'static str> {
@@ -428,6 +474,9 @@ impl AgentControlService {
         };
         if lease.tab_id != tab_id || lease.target_id != target_id {
             return Err("lease release does not match the requested tab incarnation");
+        }
+        if lease.generation != generation {
+            return Err("lease release generation is stale");
         }
         lease.persistent = false;
         lease.action_refs = 0;
@@ -439,6 +488,7 @@ impl AgentControlService {
     pub async fn acknowledge(
         &self,
         lease_id: &str,
+        generation: u64,
         tab_id: i64,
         target_id: &str,
         ack: LeaseAck,
@@ -449,6 +499,9 @@ impl AgentControlService {
         };
         if lease.tab_id != tab_id || lease.target_id != target_id {
             return Err("lease acknowledgement does not match the requested tab incarnation");
+        }
+        if lease.generation != generation {
+            return Err("lease acknowledgement generation is stale");
         }
         if matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) && ack == LeaseAck::Unlocked {
             inner.leases.remove(lease_id);
@@ -592,6 +645,7 @@ fn view(lease: &Lease) -> LeaseView {
         .as_millis() as u64;
     LeaseView {
         lease_id: lease.id.clone(),
+        generation: lease.generation,
         page_id: lease.page_id,
         tab_id: lease.tab_id,
         target_id: lease.target_id.clone(),
@@ -651,33 +705,64 @@ mod tests {
     async fn acknowledgement_must_match_exact_tab_and_target_before_locking() -> anyhow::Result<()>
     {
         let service = service();
-        let ticket = service.begin("session-a", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("session-a", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
-                .acknowledge(&ticket.lease_id, 43, "target-a", LeaseAck::Locked)
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    43,
+                    "target-a",
+                    LeaseAck::Locked,
+                )
                 .await
                 .is_err()
         );
         assert!(
             service
-                .acknowledge(&ticket.lease_id, 42, "target-b", LeaseAck::Locked)
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-b",
+                    LeaseAck::Locked,
+                )
                 .await
                 .is_err()
         );
         assert_eq!(service.pending_for_extension().await.len(), 1);
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .wait_locked("session-a", &ticket.lease_id, &CancellationToken::new())
-            .await?;
+            .wait_locked(
+                "session-a",
+                &ticket.lease_id,
+                ticket.generation,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         Ok(())
     }
 
     #[tokio::test]
     async fn another_session_cannot_acquire_or_release_an_owned_tab() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("other", 1, 42, "target-a", true)
@@ -692,7 +777,11 @@ mod tests {
         );
         assert_eq!(service.pending_for_extension().await.len(), 1);
         assert_eq!(
-            service.status("owner", &ticket.lease_id).await?.status,
+            service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locking"
         );
         Ok(())
@@ -701,47 +790,135 @@ mod tests {
     #[tokio::test]
     async fn every_ephemeral_action_requires_a_fresh_lock_ack() -> anyhow::Result<()> {
         let service = service();
-        let persistent = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let persistent = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&persistent.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await.map_err(anyhow::Error::msg)?;
+            .acknowledge(
+                &persistent.lease_id,
+                persistent.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
 
-        let action = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
+        let previous_action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert_eq!(action.lease_id, persistent.lease_id);
+        assert!(action.generation > previous_action.generation);
         assert_eq!(
-            service.status("owner", &action.lease_id).await?.status,
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locking"
         );
-        assert_eq!(service.pending_for_extension().await[0].operation, "lock");
+        assert_eq!(
+            service.pending_for_extension().await[0].generation,
+            action.generation
+        );
+
+        // A native poll may lock before a detach but deliver its ACK after a
+        // later action has already requested a fresh generation.
+        assert!(
+            service
+                .acknowledge(
+                    &previous_action.lease_id,
+                    previous_action.generation,
+                    42,
+                    "target-a",
+                    LeaseAck::Locked,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .wait_locked(
+                    "owner",
+                    &previous_action.lease_id,
+                    previous_action.generation,
+                    &CancellationToken::new(),
+                )
+                .await
+                .is_err()
+        );
+        service
+            .abort_action("owner", &previous_action)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locking"
+        );
 
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert!(
             service
-                .wait_locked("owner", &action.lease_id, &cancelled)
+                .wait_locked(
+                    "owner",
+                    &action.lease_id,
+                    action.generation,
+                    &cancelled,
+                )
                 .await
                 .is_err()
         );
 
         service
-            .acknowledge(&action.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await?;
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .wait_locked("owner", &action.lease_id, &CancellationToken::new())
-            .await?;
+            .wait_locked(
+                "owner",
+                &action.lease_id,
+                action.generation,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service.finish_action("owner", &previous_action).await;
         service.finish_action("owner", &action).await;
         assert_eq!(
-            service.status("owner", &action.lease_id).await?.status,
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locked",
             "a persistent lease remains held after one acknowledged action"
         );
         Ok(())
     }
-
     #[tokio::test]
     async fn every_unresolved_phase_blocks_same_tab_reacquisition() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("owner", 1, 42, "target-a", true)
@@ -755,9 +932,19 @@ mod tests {
                 .is_err()
         );
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await.map_err(anyhow::Error::msg)?;
-        service.abort("owner", &ticket.lease_id).await?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .abort("owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("owner", 1, 42, "target-a", true)
@@ -766,12 +953,22 @@ mod tests {
         );
         for _ in 0..MAX_CLEANUP_FAILURES {
             service
-                .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unavailable)
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-a",
+                    LeaseAck::Unavailable,
+                )
                 .await
                 .unwrap_or_else(|_| panic!("unlock ACK should be accepted during cleanup"));
             // A failed cleanup can be retried only explicitly; this test advances it
             // through expiry via the private sweep path without sleeping.
-            if service.status("owner", &ticket.lease_id).await?.status == "failed" {
+            let status = service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if status.status == "failed" {
                 break;
             }
             {
@@ -781,7 +978,11 @@ mod tests {
             service.sweep().await;
         }
         assert_eq!(
-            service.status("owner", &ticket.lease_id).await?.status,
+            service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "failed"
         );
         assert!(
@@ -790,7 +991,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        service.abort("owner", &ticket.lease_id).await?;
+        service
+            .abort("owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("owner", 1, 42, "target-a", true)
@@ -798,8 +1002,15 @@ mod tests {
                 .is_err()
         );
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
-            .await.map_err(anyhow::Error::msg)?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("owner", 1, 42, "target-a", true)
@@ -812,12 +1023,16 @@ mod tests {
     #[tokio::test]
     async fn missing_extension_wakeup_times_out_before_any_lock_ack() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         let error = service
             .wait_locked_for(
                 "owner",
                 &ticket.lease_id,
+                ticket.generation,
                 &CancellationToken::new(),
                 Duration::from_millis(1),
             )
@@ -828,10 +1043,17 @@ mod tests {
             "Pip Dev could not wake the extension to lock this tab within 8 seconds, so no page input was sent. Keep a visible Pip Dev page or popup open, then retry."
         );
         assert_eq!(
-            service.status("owner", &ticket.lease_id).await?.status,
+            service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locking"
         );
-        service.abort("owner", &ticket.lease_id).await?;
+        service
+            .abort("owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
         Ok(())
     }
@@ -840,14 +1062,32 @@ mod tests {
     async fn cancellation_requests_exact_unlock_and_late_lock_never_wakes_waiter()
     -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
-        service.abort("owner", &ticket.lease_id).await?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await.map_err(anyhow::Error::msg)?;
+            .abort("owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
-                .wait_locked("owner", &ticket.lease_id, &CancellationToken::new())
+                .wait_locked(
+                    "owner",
+                    &ticket.lease_id,
+                    ticket.generation,
+                    &CancellationToken::new(),
+                )
                 .await
                 .is_err()
         );
@@ -857,8 +1097,15 @@ mod tests {
         assert_eq!(cleanup[0].tab_id, 42);
         assert_eq!(cleanup[0].target_id, "target-a");
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
-            .await?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(service.pending_for_extension().await.is_empty());
         Ok(())
     }
@@ -868,20 +1115,41 @@ mod tests {
     {
         for result in [LeaseAck::Unavailable, LeaseAck::Stale] {
             let service = service();
-            let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+            let ticket = service
+                .begin("owner", 1, 42, "target-a", true)
+                .await
+                .map_err(anyhow::Error::msg)?;
             service
-                .acknowledge(&ticket.lease_id, 42, "target-a", result)
-                .await.map_err(anyhow::Error::msg)?;
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-a",
+                    result,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
             assert!(
                 service
-                    .wait_locked("owner", &ticket.lease_id, &CancellationToken::new())
+                    .wait_locked(
+                        "owner",
+                        &ticket.lease_id,
+                        ticket.generation,
+                        &CancellationToken::new(),
+                    )
                     .await
                     .is_err()
             );
             assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
             for retry in 0..MAX_CLEANUP_FAILURES {
                 let _ = service
-                    .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unavailable)
+                    .acknowledge(
+                        &ticket.lease_id,
+                        ticket.generation,
+                        42,
+                        "target-a",
+                        LeaseAck::Unavailable,
+                    )
                     .await;
                 if retry + 1 < MAX_CLEANUP_FAILURES {
                     let mut inner = service.inner.lock().await;
@@ -891,7 +1159,11 @@ mod tests {
                 }
             }
             assert_eq!(
-                service.status("owner", &ticket.lease_id).await?.status,
+                service
+                    .status("owner", &ticket.lease_id)
+                    .await
+                    .map_err(anyhow::Error::msg)?
+                    .status,
                 "failed"
             );
             assert!(service.pending_for_extension().await.is_empty());
@@ -902,7 +1174,10 @@ mod tests {
     #[tokio::test]
     async fn expired_lock_lease_requires_unlock_before_reacquisition() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         {
             let mut inner = service.inner.lock().await;
             inner.leases.get_mut(&ticket.lease_id).unwrap().expires_at = Instant::now();
@@ -917,8 +1192,15 @@ mod tests {
                 .is_err()
         );
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
-            .await.map_err(anyhow::Error::msg)?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .begin("owner", 1, 42, "target-a", true)
@@ -931,8 +1213,14 @@ mod tests {
     #[tokio::test]
     async fn session_stop_releases_only_its_leases_and_waits_for_ack() -> anyhow::Result<()> {
         let service = service();
-        let owned = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
-        let other = service.begin("other", 2, 43, "target-b", true).await.map_err(anyhow::Error::msg)?;
+        let owned = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let other = service
+            .begin("other", 2, 43, "target-b", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         let stopping = {
             let service = service.clone();
             tokio::spawn(async move { service.release_session("owner").await })
@@ -951,11 +1239,22 @@ mod tests {
                 .any(|lease| lease.lease_id == other.lease_id && lease.operation == "lock")
         );
         service
-            .acknowledge(&owned.lease_id, 42, "target-a", LeaseAck::Unlocked)
-            .await?;
-        stopping.await?;
+            .acknowledge(
+                &owned.lease_id,
+                owned.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        stopping.await.map_err(anyhow::Error::msg)?;
         assert_eq!(
-            service.status("other", &other.lease_id).await?.status,
+            service
+                .status("other", &other.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locking"
         );
         Ok(())
@@ -964,28 +1263,66 @@ mod tests {
     #[tokio::test]
     async fn external_stop_release_requires_exact_tab_incarnation() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
-                .request_release(&ticket.lease_id, 43, "target-a")
+                .request_release(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    43,
+                    "target-a",
+                )
                 .await
                 .is_err()
         );
         assert!(
             service
-                .request_release(&ticket.lease_id, 42, "target-b")
+                .request_release(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-b",
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .request_release(
+                    &ticket.lease_id,
+                    ticket.generation + 1,
+                    42,
+                    "target-a",
+                )
                 .await
                 .is_err()
         );
         assert_eq!(
-            service.status("owner", &ticket.lease_id).await?.status,
+            service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locking"
         );
         service
-            .request_release(&ticket.lease_id, 42, "target-a")
-            .await?;
+            .request_release(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert_eq!(
-            service.status("owner", &ticket.lease_id).await?.operation,
+            service
+                .status("owner", &ticket.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .operation,
             "unlock"
         );
         Ok(())
@@ -994,22 +1331,40 @@ mod tests {
     #[tokio::test]
     async fn wrong_owner_tab_or_target_never_changes_lease() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(service.status("other", &ticket.lease_id).await.is_err());
         assert!(service.abort("other", &ticket.lease_id).await.is_err());
         assert!(
             service
-                .acknowledge(&ticket.lease_id, 99, "target-a", LeaseAck::Locked)
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    99,
+                    "target-a",
+                    LeaseAck::Locked,
+                )
                 .await
                 .is_err()
         );
         assert!(
             service
-                .acknowledge(&ticket.lease_id, 42, "target-z", LeaseAck::Locked)
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-z",
+                    LeaseAck::Locked,
+                )
                 .await
                 .is_err()
         );
-        let status = service.status("owner", &ticket.lease_id).await?;
+        let status = service
+            .status("owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert_eq!(status.status, "locking");
         assert_eq!(status.target_id, "target-a");
         Ok(())
@@ -1018,10 +1373,20 @@ mod tests {
     #[tokio::test]
     async fn ephemeral_action_waits_for_native_unlock_ack() -> anyhow::Result<()> {
         let service = service();
-        let ticket = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await.map_err(anyhow::Error::msg)?;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         let finishing = {
             let service = service.clone();
@@ -1039,9 +1404,16 @@ mod tests {
         assert!(!finishing.is_finished());
 
         service
-            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
-            .await?;
-        finishing.await??;
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        finishing.await.map_err(anyhow::Error::msg)??;
         assert!(service.status("owner", &ticket.lease_id).await.is_err());
         Ok(())
     }
@@ -1050,10 +1422,20 @@ mod tests {
     async fn unlock_wait_honors_client_and_operator_cancellation() -> anyhow::Result<()> {
         for cancel_client in [true, false] {
             let service = service();
-            let ticket = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
+            let ticket = service
+                .begin("owner", 1, 42, "target-a", false)
+                .await
+                .map_err(anyhow::Error::msg)?;
             service
-                .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
-                .await.map_err(anyhow::Error::msg)?;
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-a",
+                    LeaseAck::Locked,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
             service.finish_action("owner", &ticket).await;
 
             let session_cancel = CancellationToken::new();
@@ -1085,7 +1467,7 @@ mod tests {
             } else {
                 dispatch_cancel.cancel();
             }
-            let error = finishing.await?.unwrap_err();
+            let error = finishing.await.map_err(anyhow::Error::msg)?.unwrap_err();
             assert!(
                 error.contains("cancelled by the client")
                     || error.contains("cancelled by the operator")
@@ -1099,16 +1481,36 @@ mod tests {
     async fn action_references_unlock_after_last_action_but_not_while_persistent()
     -> anyhow::Result<()> {
         let service = service();
-        let persistent = service.begin("owner", 1, 42, "target-a", true).await.map_err(anyhow::Error::msg)?;
-        let action_a = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
-        let action_b = service.begin("owner", 1, 42, "target-a", false).await.map_err(anyhow::Error::msg)?;
+        let persistent = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let action_a = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let action_b = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&persistent.lease_id, 42, "target-a", LeaseAck::Locked)
-            .await.map_err(anyhow::Error::msg)?;
+            .acknowledge(
+                &persistent.lease_id,
+                action_b.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         service.finish_action("owner", &action_a).await;
         service.finish_action("owner", &action_b).await;
         assert_eq!(
-            service.status("owner", &persistent.lease_id).await?.status,
+            service
+                .status("owner", &persistent.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
             "locked"
         );
         Ok(())

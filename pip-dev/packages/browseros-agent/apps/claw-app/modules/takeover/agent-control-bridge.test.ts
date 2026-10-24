@@ -12,6 +12,7 @@ const lease = (
   operation: AgentControlLeaseView['operation'],
 ): AgentControlLeaseView => ({
   leaseId: 'lease-exact',
+  generation: 1,
   pageId: 3,
   tabId: 17,
   targetId: 'target-incarnation-a',
