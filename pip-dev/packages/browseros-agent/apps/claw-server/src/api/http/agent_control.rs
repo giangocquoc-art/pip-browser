@@ -74,7 +74,13 @@ pub(super) async fn acknowledge(
     };
     state
         .agent_control
-        .acknowledge(&lease_id, body.generation, body.tab_id, &body.target_id, ack)
+        .acknowledge(
+            &lease_id,
+            body.generation,
+            body.tab_id,
+            &body.target_id,
+            ack,
+        )
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)

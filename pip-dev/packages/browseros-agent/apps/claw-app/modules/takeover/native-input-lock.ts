@@ -62,6 +62,8 @@ export class NativeInputLockManager {
   private readonly leases = new Map<number, LockLease>()
   private readonly takeoverOwners = new Map<number, Set<string>>()
   private readonly agentLeases = new Map<number, Map<string, string>>()
+  private readonly agentSnapshotRevisions = new Map<number, number>()
+  private readonly agentLeaseGenerations = new Map<number, Map<string, number>>()
   private readonly queues = new Map<number, Promise<void>>()
 
   constructor(private readonly debuggerApi: NativeInputDebugger) {
@@ -93,17 +95,72 @@ export class NativeInputLockManager {
   }
 
   /**
+   * Records a complete server owner snapshot before asynchronous owner refreshes.
+   * This blocks an older poll from applying native side effects after a newer poll.
+   */
+  observeAgentControlLeaseSnapshot(
+    tabId: number,
+    snapshotRevision: number,
+    agentLeases: Array<{ leaseId: string; targetId: string }>,
+  ): boolean {
+    if (
+      !Number.isSafeInteger(tabId) ||
+      tabId < 0 ||
+      !Number.isSafeInteger(snapshotRevision) ||
+      snapshotRevision < 1
+    ) {
+      return false
+    }
+    const currentRevision = this.agentSnapshotRevisions.get(tabId) ?? 0
+    if (snapshotRevision < currentRevision) return false
+
+    const owners = new Map<string, string>()
+    for (const lease of agentLeases) {
+      if (lease.leaseId && lease.targetId) owners.set(lease.leaseId, lease.targetId)
+    }
+    this.agentSnapshotRevisions.set(tabId, snapshotRevision)
+    if (owners.size) this.agentLeases.set(tabId, owners)
+    else this.agentLeases.delete(tabId)
+    return true
+  }
+
+  /**
    * Acquires/releases one MCP lease without activating a tab. Lock acquisition
    * verifies the current CDP target id before issuing Input.setAgentInputLock.
+   * Snapshot revisions order complete server owner sets across lease-ID changes;
+   * per-lease generations still reject delayed work for a reused lease.
    */
   async syncAgentControlLease(
     tabId: number,
     leaseId: string,
     targetId: string,
     operation: 'lock' | 'unlock',
+    generation: number,
+    snapshotRevision: number,
     ownerSnapshot?: AgentControlOwnerSnapshot,
   ): Promise<AgentLeaseLockStatus> {
+    if (
+      !Number.isSafeInteger(generation) || generation < 1 ||
+      !Number.isSafeInteger(snapshotRevision) || snapshotRevision < 1
+    ) {
+      return 'stale'
+    }
+    const currentRevision = this.agentSnapshotRevisions.get(tabId) ?? 0
+    if (snapshotRevision < currentRevision) return 'stale'
+    this.agentSnapshotRevisions.set(tabId, snapshotRevision)
+    const generations = this.agentLeaseGenerations.get(tabId) ?? new Map<string, number>()
+    const currentGeneration = generations.get(leaseId) ?? 0
+    if (generation < currentGeneration) return 'stale'
+    if (generation > currentGeneration) generations.set(leaseId, generation)
+    this.agentLeaseGenerations.set(tabId, generations)
+
     return this.exclusive(tabId, async () => {
+      if (
+        this.agentSnapshotRevisions.get(tabId) !== snapshotRevision ||
+        this.agentLeaseGenerations.get(tabId)?.get(leaseId) !== generation
+      ) {
+        return 'stale'
+      }
       if (ownerSnapshot) {
         const takeoverOwners = new Set(ownerSnapshot.takeoverSessionIds.filter(Boolean))
         if (takeoverOwners.size) this.takeoverOwners.set(tabId, takeoverOwners)
@@ -200,6 +257,8 @@ export class NativeInputLockManager {
     await this.exclusive(tabId, async () => {
       this.takeoverOwners.delete(tabId)
       this.agentLeases.delete(tabId)
+      this.agentSnapshotRevisions.delete(tabId)
+      this.agentLeaseGenerations.delete(tabId)
       await this.releaseNative(tabId)
     })
   }

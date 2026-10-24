@@ -26,6 +26,7 @@ pub struct AgentControlService {
 #[derive(Default)]
 struct Inner {
     leases: BTreeMap<String, Lease>,
+    snapshot_revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +58,7 @@ struct Lease {
 pub struct LeaseView {
     pub lease_id: String,
     pub generation: u64,
+    pub snapshot_revision: u64,
     pub page_id: u32,
     pub tab_id: i64,
     pub target_id: String,
@@ -138,6 +140,7 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         if let Some(existing) = inner
             .leases
             .values_mut()
@@ -310,6 +313,7 @@ impl AgentControlService {
             return false;
         }
         let mut inner = self.inner.lock().await;
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         let mut unlock_requested = false;
         if let Some(lease) = inner.leases.get_mut(&ticket.lease_id)
             && lease.owner == owner
@@ -334,17 +338,17 @@ impl AgentControlService {
         if !ticket.action_ref {
             return Ok(());
         }
-
         let mut inner = self.inner.lock().await;
+        let Some(existing) = inner.leases.get(&ticket.lease_id) else {
+            return Ok(());
+        };
+        if existing.owner != owner {
+            return Err("agent tab lease owner mismatch");
+        }
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         let Some(lease) = inner.leases.get_mut(&ticket.lease_id) else {
             return Ok(());
         };
-        if lease.owner != owner {
-            return Err("agent tab lease owner mismatch");
-        }
-
-        // Each ticket owns one reference, regardless of which generation the
-        // tab has reached since it was issued. Preserve persistent ownership.
         lease.action_refs = lease.action_refs.saturating_sub(1);
         if lease.action_refs == 0
             && !lease.persistent
@@ -359,6 +363,7 @@ impl AgentControlService {
     /// Requests cleanup for a cancelled action or an explicitly stopped lease.
     pub async fn abort(&self, owner: &str, lease_id: &str) -> Result<(), &'static str> {
         let mut inner = self.inner.lock().await;
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         let Some(lease) = inner.leases.get_mut(lease_id) else {
             return Ok(());
         };
@@ -433,7 +438,7 @@ impl AgentControlService {
         if matches!(lease.phase, Phase::Locked | Phase::Locking) {
             lease.expires_at = Instant::now() + LEASE_TTL;
         }
-        Ok(view(lease))
+        Ok(view(lease, inner.snapshot_revision))
     }
 
     /// Returns every lease to the authenticated bundled extension so it can
@@ -441,7 +446,11 @@ impl AgentControlService {
     pub async fn leases_for_extension(&self) -> Vec<LeaseView> {
         self.sweep().await;
         let inner = self.inner.lock().await;
-        inner.leases.values().map(view).collect()
+        inner
+            .leases
+            .values()
+            .map(|lease| view(lease, inner.snapshot_revision))
+            .collect()
     }
 
     /// Only pending locks and pending unlocks are handed to the extension. A
@@ -454,7 +463,7 @@ impl AgentControlService {
             .leases
             .values()
             .filter(|lease| matches!(lease.phase, Phase::Locking | Phase::Unlocking))
-            .map(view)
+            .map(|lease| view(lease, inner.snapshot_revision))
             .collect()
     }
 
@@ -478,6 +487,7 @@ impl AgentControlService {
         if lease.generation != generation {
             return Err("lease release generation is stale");
         }
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         lease.persistent = false;
         lease.action_refs = 0;
         request_unlock(lease, lease.error);
@@ -504,10 +514,12 @@ impl AgentControlService {
             return Err("lease acknowledgement generation is stale");
         }
         if matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) && ack == LeaseAck::Unlocked {
+            inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
             inner.leases.remove(lease_id);
             self.changed.notify_waiters();
             return Ok(());
         }
+        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
         match (&lease.phase, ack) {
             (Phase::Locking, LeaseAck::Locked) => {
                 lease.phase = Phase::Locked;
@@ -566,6 +578,9 @@ impl AgentControlService {
                 request_unlock(lease, lease.error);
                 ids.push(lease.id.clone());
             }
+            if !ids.is_empty() {
+                inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+            }
             self.changed.notify_waiters();
             ids
         };
@@ -604,6 +619,9 @@ impl AgentControlService {
             }
             changed = true;
         }
+        if changed {
+            inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        }
         changed
     }
 }
@@ -630,7 +648,7 @@ fn record_cleanup_failure(lease: &mut Lease) {
     }
 }
 
-fn view(lease: &Lease) -> LeaseView {
+fn view(lease: &Lease, snapshot_revision: u64) -> LeaseView {
     let (operation, status) = match lease.phase {
         Phase::Locking => ("lock", "locking"),
         Phase::Locked => ("lock", "locked"),
@@ -646,6 +664,7 @@ fn view(lease: &Lease) -> LeaseView {
     LeaseView {
         lease_id: lease.id.clone(),
         generation: lease.generation,
+        snapshot_revision,
         page_id: lease.page_id,
         tab_id: lease.tab_id,
         target_id: lease.target_id.clone(),
@@ -870,12 +889,7 @@ mod tests {
         cancelled.cancel();
         assert!(
             service
-                .wait_locked(
-                    "owner",
-                    &action.lease_id,
-                    action.generation,
-                    &cancelled,
-                )
+                .wait_locked("owner", &action.lease_id, action.generation, &cancelled,)
                 .await
                 .is_err()
         );
@@ -899,7 +913,6 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        service.finish_action("owner", &previous_action).await;
         service.finish_action("owner", &action).await;
         assert_eq!(
             service
@@ -912,6 +925,165 @@ mod tests {
         );
         Ok(())
     }
+    #[tokio::test]
+    async fn aborting_one_overlapping_action_preserves_the_other_reference(
+    ) -> anyhow::Result<()> {
+        let service = service();
+        let action_a = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action_a.lease_id,
+                action_a.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let action_b = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action_b.lease_id,
+                action_b.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .abort_action("owner", &action_b)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action_b.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked",
+            "aborting B must not drop A's live reference"
+        );
+
+        service.finish_action("owner", &action_a).await;
+        assert_eq!(
+            service
+                .status("owner", &action_b.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "unlocking",
+            "the last completed action releases the temporary lease"
+        );
+        service
+            .acknowledge(
+                &action_b.lease_id,
+                action_b.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(service.status("owner", &action_b.lease_id).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aborting_an_action_does_not_release_a_persistent_tab_lease() -> anyhow::Result<()> {
+        let service = service();
+        let persistent = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &persistent.lease_id,
+                persistent.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(!action.action_ref);
+        service
+            .abort_action("owner", &action)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service.pending_for_extension().await[0].status,
+            "locking",
+            "failed persistent actions leave the lock held while awaiting their new ACK"
+        );
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked",
+            "the user's persistent control remains active"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn snapshot_revision_advances_across_lease_ids_on_one_tab() -> anyhow::Result<()> {
+        let service = service();
+        let old = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let old_revision = service.leases_for_extension().await[0].snapshot_revision;
+        service
+            .request_release(&old.lease_id, old.generation, 42, "target-a")
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &old.lease_id,
+                old.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let new = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let new_view = service.leases_for_extension().await.remove(0);
+        assert_ne!(old.lease_id, new.lease_id);
+        assert!(new_view.snapshot_revision > old_revision);
+        assert_eq!(new_view.lease_id, new.lease_id);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn every_unresolved_phase_blocks_same_tab_reacquisition() -> anyhow::Result<()> {
         let service = service();
@@ -1120,13 +1292,7 @@ mod tests {
                 .await
                 .map_err(anyhow::Error::msg)?;
             service
-                .acknowledge(
-                    &ticket.lease_id,
-                    ticket.generation,
-                    42,
-                    "target-a",
-                    result,
-                )
+                .acknowledge(&ticket.lease_id, ticket.generation, 42, "target-a", result)
                 .await
                 .map_err(anyhow::Error::msg)?;
             assert!(
@@ -1269,34 +1435,19 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
         assert!(
             service
-                .request_release(
-                    &ticket.lease_id,
-                    ticket.generation,
-                    43,
-                    "target-a",
-                )
+                .request_release(&ticket.lease_id, ticket.generation, 43, "target-a",)
                 .await
                 .is_err()
         );
         assert!(
             service
-                .request_release(
-                    &ticket.lease_id,
-                    ticket.generation,
-                    42,
-                    "target-b",
-                )
+                .request_release(&ticket.lease_id, ticket.generation, 42, "target-b",)
                 .await
                 .is_err()
         );
         assert!(
             service
-                .request_release(
-                    &ticket.lease_id,
-                    ticket.generation + 1,
-                    42,
-                    "target-a",
-                )
+                .request_release(&ticket.lease_id, ticket.generation + 1, 42, "target-a",)
                 .await
                 .is_err()
         );
@@ -1309,12 +1460,7 @@ mod tests {
             "locking"
         );
         service
-            .request_release(
-                &ticket.lease_id,
-                ticket.generation,
-                42,
-                "target-a",
-            )
+            .request_release(&ticket.lease_id, ticket.generation, 42, "target-a")
             .await
             .map_err(anyhow::Error::msg)?;
         assert_eq!(
@@ -1515,97 +1661,4 @@ mod tests {
         );
         Ok(())
     }
-    #[tokio::test]
-    async fn aborting_one_overlapping_action_preserves_the_other_reference() -> anyhow::Result<()> {
-        let service = service();
-        let action_a = service
-            .begin("owner", 1, 42, "target-a", false)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        let action_b = service
-            .begin("owner", 1, 42, "target-a", false)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        service
-            .acknowledge(
-                &action_b.lease_id,
-                action_b.generation,
-                42,
-                "target-a",
-                LeaseAck::Locked,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-
-        service
-            .abort_action("owner", &action_b)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        assert_eq!(
-            service
-                .status("owner", &action_a.lease_id)
-                .await
-                .map_err(anyhow::Error::msg)?
-                .status,
-            "locked"
-        );
-
-        service
-            .abort_action("owner", &action_a)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn aborting_an_action_preserves_persistent_tab_control() -> anyhow::Result<()> {
-        let service = service();
-        let persistent = service
-            .begin("owner", 1, 42, "target-a", true)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        service
-            .acknowledge(
-                &persistent.lease_id,
-                persistent.generation,
-                42,
-                "target-a",
-                LeaseAck::Locked,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-
-        let action = service
-            .begin("owner", 1, 42, "target-a", false)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        service
-            .acknowledge(
-                &action.lease_id,
-                action.generation,
-                42,
-                "target-a",
-                LeaseAck::Locked,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-        service
-            .abort_action("owner", &action)
-            .await
-            .map_err(anyhow::Error::msg)?;
-
-        assert_eq!(
-            service
-                .status("owner", &persistent.lease_id)
-                .await
-                .map_err(anyhow::Error::msg)?
-                .status,
-            "locked"
-        );
-        assert!(service.pending_for_extension().await.is_empty());
-        Ok(())
-    }
-
-
 }

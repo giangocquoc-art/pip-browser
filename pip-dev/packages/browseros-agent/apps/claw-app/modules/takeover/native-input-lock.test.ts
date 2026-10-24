@@ -422,7 +422,7 @@ describe('NativeInputLockManager', () => {
     expect(await locks.sync(7, ['takeover-session'])).toBe('locked')
 
     expect(
-      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'lock'),
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'lock', 1, 1),
     ).toBe('locked')
     expect(calls.some(([method, tabId]) => method === 'Target.getTargetInfo' && tabId === 7)).toBe(true)
 
@@ -432,7 +432,7 @@ describe('NativeInputLockManager', () => {
     expect(locks.status(7)).toBe('locked')
 
     expect(
-      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock'),
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock', 1, 1),
     ).toBe('unlocked')
     expect(locks.status(7)).toBe('unlocked')
     expect(calls.slice(-2)).toEqual([
@@ -446,7 +446,7 @@ describe('NativeInputLockManager', () => {
     const locks = new NativeInputLockManager(api)
 
     expect(
-      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock'),
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock', 1, 1),
     ).toBe('unavailable')
     expect(calls).toEqual([])
   })
@@ -461,6 +461,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'target-7',
         'unlock',
+        1,
+        1,
         { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
       ),
     ).toBe('unlocked')
@@ -483,6 +485,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'target-7',
         'unlock',
+        1,
+        1,
         {
           agentLeaseIds: ['lease-1'],
           takeoverSessionIds: ['takeover-session'],
@@ -509,6 +513,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'target-7',
         'unlock',
+        1,
+        1,
         { agentLeaseIds: ['lease-1', 'lease-peer'], takeoverSessionIds: [] },
       ),
     ).toBe('unlocked')
@@ -533,6 +539,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'expected-target',
         'unlock',
+        1,
+        1,
         { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
       ),
     ).toBe('stale')
@@ -555,7 +563,7 @@ describe('NativeInputLockManager', () => {
     targetIds.set(7, 'replacement-target')
 
     expect(
-      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock'),
+      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock', 1, 1),
     ).toBe('stale')
     expect(locks.status(7)).toBe('locked')
     expect(calls).toEqual([
@@ -576,6 +584,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'original-target',
         'lock',
+        1,
+        1,
       ),
     ).toBe('locked')
     targetIds.set(7, 'replacement-target')
@@ -586,6 +596,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'original-target',
         'unlock',
+        1,
+        1,
         { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
       ),
     ).toBe('stale')
@@ -604,6 +616,8 @@ describe('NativeInputLockManager', () => {
         'lease-1',
         'original-target',
         'unlock',
+        1,
+        1,
         { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
       ),
     ).toBe('unlocked')
@@ -616,7 +630,7 @@ describe('NativeInputLockManager', () => {
     const locks = new NativeInputLockManager(api)
 
     expect(
-      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock'),
+      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock', 1, 1),
     ).toBe('stale')
     expect(calls).toEqual([
       ['attach', 7],
@@ -634,7 +648,7 @@ describe('NativeInputLockManager', () => {
     const locks = new NativeInputLockManager(api)
 
     expect(
-      await locks.syncAgentControlLease(9, 'lease-1', 'hidden-target', 'lock'),
+      await locks.syncAgentControlLease(9, 'lease-1', 'hidden-target', 'lock', 1, 1),
     ).toBe('locked')
     expect(calls).toEqual([
       ['attach', 9],
@@ -643,6 +657,38 @@ describe('NativeInputLockManager', () => {
       ['Input.setAgentInputLock', 9],
     ])
     expect(locks.status(9)).toBe('locked')
+  })
+
+  it('rejects a delayed old-lease unlock after a newer lease ID owns the tab', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-b',
+        'target-7',
+        'lock',
+        1,
+        2,
+        { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+      ),
+    ).toBe('locked')
+    const callsAfterNewLock = [...calls]
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-a',
+        'target-7',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(calls).toEqual(callsAfterNewLock)
+    expect(locks.status(7)).toBe('locked')
   })
 
   it('reports browser debugger detachment instead of leaving a stale locked state', async () => {

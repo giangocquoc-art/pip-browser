@@ -585,11 +585,7 @@ async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'
         )
         .await?;
     if let Err(error) = wait_for_agent_control_lock(call, owner, &ticket).await {
-        let _ = call
-            .state
-            .agent_control
-            .abort_action(owner, &ticket)
-            .await;
+        let _ = call.state.agent_control.abort_action(owner, &ticket).await;
         return Err(error);
     }
     Ok(Some(ticket))

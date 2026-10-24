@@ -49,6 +49,7 @@ export type InPageControlContext = TakeoverContext | AgentControlContext
 export interface AgentControlLeaseSummary {
   leaseId: string
   generation: number
+  snapshotRevision: number
   pageId: number
   tabId: number
   targetId: string

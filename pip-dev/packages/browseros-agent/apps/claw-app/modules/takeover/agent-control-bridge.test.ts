@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import {
   reconcilePendingAgentControlLeases,
+  refreshStopLease,
   type AgentControlLeaseView,
 } from './agent-control-bridge'
-import type { AgentLeaseLockStatus } from './native-input-lock'
+import {
+  NativeInputLockManager,
+  type AgentLeaseLockStatus,
+  type NativeInputDebugger,
+} from './native-input-lock'
 
 const noTakeoverOwners = async (): Promise<string[]> => []
 
@@ -13,6 +18,7 @@ const lease = (
 ): AgentControlLeaseView => ({
   leaseId: 'lease-exact',
   generation: 1,
+  snapshotRevision: 1,
   pageId: 3,
   tabId: 17,
   targetId: 'target-incarnation-a',
@@ -20,6 +26,45 @@ const lease = (
   status,
   expiresAtMs: Date.now() + 10_000,
 })
+
+function makeLockDebugger(targetId: string) {
+  const calls: Array<{ method: string; params?: object }> = []
+  const attached = new Set<number>()
+  let detachListener:
+    | ((source: { tabId?: number }, reason: string) => void)
+    | undefined
+  const api: NativeInputDebugger = {
+    async attach({ tabId }) {
+      attached.add(tabId)
+      calls.push({ method: `attach:${tabId}` })
+    },
+    async sendCommand({ tabId }, method, params) {
+      calls.push({ method, params })
+      if (!attached.has(tabId)) throw new Error('debugger is not attached')
+      if (method === 'Target.getTargetInfo') {
+        return { targetInfo: { targetId } }
+      }
+    },
+    async detach({ tabId }) {
+      attached.delete(tabId)
+      calls.push({ method: `detach:${tabId}` })
+    },
+    onDetach: {
+      addListener(listener) {
+        detachListener = listener
+      },
+    },
+  }
+  return { api, calls, detach: (tabId: number) => detachListener?.({ tabId }, 'target_closed') }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((complete) => {
+    resolve = complete
+  })
+  return { promise, resolve }
+}
 
 describe('agent-control extension bridge', () => {
   it('acknowledges the exact tuple only after native lock confirmation', async () => {
@@ -98,6 +143,66 @@ describe('agent-control extension bridge', () => {
     expect(result).toEqual({ processed: 0, unavailable: 0 })
   })
 
+  it('ignores a delayed old lease snapshot after a newer lease locks the same tab', async () => {
+    const { api, calls } = makeLockDebugger('target-incarnation-a')
+    const locks = new NativeInputLockManager(api)
+    const delayedOwners = deferred<string[] | null>()
+    const acknowledgements: string[] = []
+    const oldLease = {
+      ...lease('unlocking', 'unlock'),
+      leaseId: 'lease-a',
+      snapshotRevision: 1,
+    }
+    const oldReconcile = reconcilePendingAgentControlLeases(
+      [oldLease],
+      locks,
+      async (_lease, status) => acknowledgements.push(`old:${status}`),
+      () => delayedOwners.promise,
+    )
+
+    const newLease = {
+      ...lease('locking', 'lock'),
+      leaseId: 'lease-b',
+      snapshotRevision: 2,
+    }
+    await reconcilePendingAgentControlLeases(
+      [newLease],
+      locks,
+      async (_lease, status) => acknowledgements.push(`new:${status}`),
+      noTakeoverOwners,
+    )
+    expect(acknowledgements).toEqual(['new:locked'])
+    const callsAfterNewLock = [...calls]
+
+    delayedOwners.resolve([])
+    await oldReconcile
+
+    expect(acknowledgements).toEqual(['new:locked', 'old:stale'])
+    expect(calls).toEqual(callsAfterNewLock)
+    expect(calls.some((call) => call.method === 'Input.setAgentInputLock' &&
+      (call.params as { locked?: boolean } | undefined)?.locked === false)).toBe(false)
+  })
+
+  it('refreshes a stale Stop generation only for the same lease incarnation', () => {
+    const initial = lease('unlocking', 'unlock')
+    const refreshed = {
+      ...initial,
+      generation: 2,
+      snapshotRevision: 9,
+    }
+    expect(refreshStopLease(initial, [refreshed])).toEqual(refreshed)
+    expect(
+      refreshStopLease(initial, [
+        { ...refreshed, leaseId: 'different-owner-lease' },
+      ]),
+    ).toBeUndefined()
+    expect(
+      refreshStopLease(initial, [
+        { ...refreshed, targetId: 'replacement-target' },
+      ]),
+    ).toBeUndefined()
+  })
+
   it('reconstructs the exact shared owner snapshot for a hidden target lease', async () => {
     const sameTargetPeer = { ...lease('locked', 'lock'), leaseId: 'lease-peer' }
     const otherTarget = {
@@ -111,7 +216,7 @@ describe('agent-control extension bridge', () => {
     await reconcilePendingAgentControlLeases(
       [lease('unlocking', 'unlock'), sameTargetPeer, otherTarget],
       {
-        syncAgentControlLease: async (_tabId, _id, _target, _operation, owners) => {
+        syncAgentControlLease: async (_tabId, _id, _target, _operation, _generation, _revision, owners) => {
           observed = owners
           return 'unlocked'
         },

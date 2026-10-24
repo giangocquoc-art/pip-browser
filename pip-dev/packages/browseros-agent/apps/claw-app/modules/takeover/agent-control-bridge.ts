@@ -16,6 +16,8 @@ const STOP_POLL_MS = 250
 
 export type AgentControlLeaseView = AgentControlLeaseSummary
 
+type AgentControlLocks = Pick<NativeInputLockManager, 'syncAgentControlLease'> &
+  Partial<Pick<NativeInputLockManager, 'observeAgentControlLeaseSnapshot'>>
 
 export type LeaseAcknowledge = (
   lease: AgentControlLeaseView,
@@ -31,13 +33,55 @@ export type TakeoverOwnerReader = (
   tabId: number,
 ) => Promise<string[] | null>
 
+function observeLeaseSnapshot(
+  leases: AgentControlLeaseView[],
+  locks: AgentControlLocks,
+): void {
+  const byTab = new Map<
+    number,
+    { snapshotRevision: number; agentLeases: Array<{ leaseId: string; targetId: string }> }
+  >()
+  for (const lease of leases) {
+    if (
+      !Number.isSafeInteger(lease.tabId) ||
+      lease.tabId < 0 ||
+      !Number.isSafeInteger(lease.snapshotRevision) ||
+      lease.snapshotRevision < 1 ||
+      !lease.leaseId ||
+      !lease.targetId
+    ) {
+      continue
+    }
+    const snapshot = byTab.get(lease.tabId)
+    if (!snapshot || lease.snapshotRevision > snapshot.snapshotRevision) {
+      byTab.set(lease.tabId, {
+        snapshotRevision: lease.snapshotRevision,
+        agentLeases: [{ leaseId: lease.leaseId, targetId: lease.targetId }],
+      })
+    } else if (lease.snapshotRevision === snapshot.snapshotRevision) {
+      snapshot.agentLeases.push({
+        leaseId: lease.leaseId,
+        targetId: lease.targetId,
+      })
+    }
+  }
+  for (const [tabId, snapshot] of byTab) {
+    locks.observeAgentControlLeaseSnapshot?.(
+      tabId,
+      snapshot.snapshotRevision,
+      snapshot.agentLeases,
+    )
+  }
+}
+
 /** Runs only exact pending tuples and reconstructs shared owners from server state. */
 export async function reconcilePendingAgentControlLeases(
   leases: AgentControlLeaseView[],
-  locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
+  locks: AgentControlLocks,
   acknowledge: LeaseAcknowledge,
   readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<ReconcileSummary> {
+  observeLeaseSnapshot(leases, locks)
   let processed = 0
   let unavailable = 0
 
@@ -46,6 +90,8 @@ export async function reconcilePendingAgentControlLeases(
       (lease.status !== 'locking' && lease.status !== 'unlocking') ||
       !Number.isSafeInteger(lease.generation) ||
       lease.generation < 1 ||
+      !Number.isSafeInteger(lease.snapshotRevision) ||
+      lease.snapshotRevision < 1 ||
       !Number.isSafeInteger(lease.tabId) ||
       lease.tabId < 0 ||
       !lease.targetId
@@ -79,6 +125,8 @@ export async function reconcilePendingAgentControlLeases(
           lease.leaseId,
           lease.targetId,
           operation,
+          lease.generation,
+          lease.snapshotRevision,
           ownerSnapshot,
         )
       }
@@ -121,6 +169,24 @@ async function credentials(): Promise<{ baseUrl: string; token: string }> {
   return { baseUrl: baseUrl.replace(/\/$/, ''), token }
 }
 
+class AgentControlHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`agent-control bridge returned HTTP ${status}`)
+  }
+}
+
+export function refreshStopLease(
+  initial: AgentControlLeaseView,
+  latest: AgentControlLeaseView[],
+): AgentControlLeaseView | undefined {
+  return latest.find(
+    (candidate) =>
+      candidate.leaseId === initial.leaseId &&
+      candidate.tabId === initial.tabId &&
+      candidate.targetId === initial.targetId,
+  )
+}
+
 async function requestJson<T>(
   url: string,
   token: string,
@@ -136,7 +202,7 @@ async function requestJson<T>(
     },
   })
   if (!response.ok) {
-    throw new Error(`agent-control bridge returned HTTP ${response.status}`)
+    throw new AgentControlHttpError(response.status)
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
@@ -179,18 +245,21 @@ async function acknowledgeLease(
 
 /** Reconciles one pending batch and returns a fresh status snapshot for UI. */
 export async function pollAgentControlLeases(
-  locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
+  locks: AgentControlLocks,
   readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<AgentControlLeaseView[]> {
   const { baseUrl, token } = await credentials()
   const leases = await listLeases(baseUrl, token)
+  observeLeaseSnapshot(leases, locks)
   await reconcilePendingAgentControlLeases(
     leases,
     locks,
     (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
     readTakeoverOwners,
   )
-  return listLeases(baseUrl, token)
+  const latest = await listLeases(baseUrl, token)
+  observeLeaseSnapshot(latest, locks)
+  return latest
 }
 
 export interface StopAgentControlResult {
@@ -204,31 +273,50 @@ export interface StopAgentControlResult {
  */
 export async function stopAgentControlForTab(
   tabId: number,
-  locks: Pick<NativeInputLockManager, 'syncAgentControlLease'>,
+  locks: AgentControlLocks,
   readTakeoverOwners: TakeoverOwnerReader,
 ): Promise<StopAgentControlResult> {
   const { baseUrl, token } = await credentials()
+  const deadline = Date.now() + ACK_DEADLINE_MS
   const current = await listLeases(baseUrl, token)
+  observeLeaseSnapshot(current, locks)
   const owned = current.filter((lease) => lease.tabId === tabId)
-  for (const lease of owned) {
-    await requestJson<void>(
-      `${baseUrl}${LEASES_PATH}/${encodeURIComponent(lease.leaseId)}/release`,
-      token,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          generation: lease.generation,
-          tabId: lease.tabId,
-          targetId: lease.targetId,
-        }),
-      },
-    )
+  for (const initial of owned) {
+    let candidate = initial
+    while (Date.now() < deadline) {
+      try {
+        await requestJson<void>(
+          `${baseUrl}${LEASES_PATH}/${encodeURIComponent(candidate.leaseId)}/release`,
+          token,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              generation: candidate.generation,
+              tabId: candidate.tabId,
+              targetId: candidate.targetId,
+            }),
+          },
+        )
+        break
+      } catch (error) {
+        if (!(error instanceof AgentControlHttpError) || error.status !== 409) {
+          throw error
+        }
+        const refreshed = await listLeases(baseUrl, token)
+        observeLeaseSnapshot(refreshed, locks)
+        const next = refreshStopLease(initial, refreshed)
+        if (!next || next.generation === candidate.generation) break
+        // Stop intent follows this exact lease ID across its action generation,
+        // but never releases a different lease that may have taken the tab later.
+        candidate = next
+      }
+    }
   }
 
-  const deadline = Date.now() + ACK_DEADLINE_MS
   let latest = owned
   do {
     latest = await listLeases(baseUrl, token)
+    observeLeaseSnapshot(latest, locks)
     // A stop request is scoped to this tab; it must not reconcile another tab's lease.
     await reconcilePendingAgentControlLeases(
       latest.filter((lease) => lease.tabId === tabId),
@@ -236,9 +324,9 @@ export async function stopAgentControlForTab(
       (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
       readTakeoverOwners,
     )
-    latest = (await listLeases(baseUrl, token)).filter(
-      (lease) => lease.tabId === tabId,
-    )
+    latest = await listLeases(baseUrl, token)
+    observeLeaseSnapshot(latest, locks)
+    latest = latest.filter((lease) => lease.tabId === tabId)
     if (latest.length === 0) return { confirmed: true, leases: [] }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS))
