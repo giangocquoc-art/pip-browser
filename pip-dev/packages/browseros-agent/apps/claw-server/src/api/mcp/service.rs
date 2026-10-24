@@ -21,7 +21,7 @@ use crate::{
         skills::{CreateSkill, SkillOrigin},
     },
 };
-use browseros_core::target::BrowserView;
+use browseros_core::{PageId, target::BrowserView};
 use browseros_mcp::{OutputFileAccess, TargetStore, ToolDef, ToolResult, catalog};
 use claw_api::models::HelpRequestKind;
 use rmcp::{
@@ -53,6 +53,7 @@ use uuid::Uuid;
 const SERVER_NAME: &str = "browseros-neo";
 const SERVER_TITLE: &str = "BrowserOS neo";
 const NAME_SESSION_TOOL_NAME: &str = "name_session";
+const AGENT_CONTROL_TOOL_NAME: &str = "agent_control";
 const NAME_SESSION_DESCRIPTION: &str = "Name this browser session at the start of a task: a small lowercase 2-3 word label for what it is doing, e.g. \"invoice processing\", a `category` for the kind of task, and a short `summary`. Tabs are grouped as <client>/<name>; the label stays on this machine, the summary powers audit search and is also recorded for analytics, and the category is used for anonymous aggregate analytics. Call again to update.";
 const NAME_SESSION_CATEGORY_DESCRIPTION: &str = "The kind of task, for anonymous aggregate analytics only; the free-form name is never sent. Pick the closest fit from the list.";
 const NAME_SESSION_SUMMARY_DESCRIPTION: &str = "One or two short lines saying what this task is, phrased so you can find it again by searching later. No names, emails, URLs, file paths, or account numbers.";
@@ -170,6 +171,7 @@ pub struct ClawMcpService {
     request_help_tool: Tool,
     await_help_tool: Tool,
     pursue_tool: Tool,
+    agent_control_tool: Tool,
     output_files: OutputFileAccess,
     lifecycle: Arc<Mutex<ServiceLifecycle>>,
     fallback_session_id: SessionId,
@@ -235,6 +237,7 @@ impl ClawMcpService {
             request_help_tool: request_help_tool(),
             await_help_tool: await_help_tool(),
             pursue_tool: pursue_tool(),
+            agent_control_tool: agent_control_tool(),
             output_files: browseros_mcp::output_file::create_browser_output_file_access(),
             lifecycle: Arc::new(Mutex::new(ServiceLifecycle::default())),
             fallback_session_id: SessionId::new(format!("stdio-{}", Ulid::new())),
@@ -302,6 +305,9 @@ impl ClawMcpService {
         tools.push(decorate(self.name_session_tool.clone()));
         tools.push(decorate(self.save_skill_tool.clone()));
         tools.push(decorate(self.mark_skill_run_tool.clone()));
+        if self.state.agent_control.is_enabled() {
+            tools.push(decorate(self.agent_control_tool.clone()));
+        }
         // Offered only when the server has a credential for the decision model.
         // A tool that can only fail is worse than one that is not there.
         if pursue.is_offered() {
@@ -312,6 +318,149 @@ impl ClawMcpService {
             tools.push(decorate(self.await_help_tool.clone()));
         }
         tools
+    }
+
+    async fn call_agent_control(
+        &self,
+        started: &StartedSession,
+        raw_args: &Value,
+        cancel: CancellationToken,
+    ) -> CallToolResult {
+        if !self.state.agent_control.is_enabled() {
+            return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                "Native tab control is unavailable in this Pip Dev build.",
+            )]);
+        }
+
+        let owner = started.session.id().as_str();
+        let action = raw_args.get("action").and_then(Value::as_str).unwrap_or("");
+        match action {
+            "begin" => {
+                let Some(page_id) = raw_args
+                    .get("page")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                else {
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        "agent_control begin requires a fresh page id from tabs list.",
+                    )]);
+                };
+                let Some(browser) = self.state.browser.session().await else {
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        "The browser session is not available for a native tab lock.",
+                    )]);
+                };
+                let binding = match self
+                    .state
+                    .targets
+                    .binding_for_execution(started.session.id())
+                    .await
+                {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                            format!("Could not resolve the browser target: {error}"),
+                        )]);
+                    }
+                };
+                let view = BrowserView::capture(browser, binding, None).await;
+                let page = match view.page(PageId(page_id)).await {
+                    Ok(page) => page,
+                    Err(error) => {
+                        return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                            format!("Could not verify page {page_id}: {error}"),
+                        )]);
+                    }
+                };
+                let ticket = match self
+                    .state
+                    .agent_control
+                    .begin(
+                        owner,
+                        page_id,
+                        page.tab_id.0,
+                        page.target_id.as_str(),
+                        true,
+                    )
+                    .await
+                {
+                    Ok(ticket) => ticket,
+                    Err(error) => {
+                        return CallToolResult::error(vec![rmcp::model::ContentBlock::text(error)]);
+                    }
+                };
+                if let Err(error) = self
+                    .state
+                    .agent_control
+                    .wait_locked(owner, &ticket.lease_id, &cancel)
+                    .await
+                {
+                    let _ = self
+                        .state
+                        .agent_control
+                        .abort(owner, &ticket.lease_id)
+                        .await;
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        format!(
+                            "Native tab lock was not confirmed; the action was not started. Cleanup is pending: {error}"
+                        ),
+                    )]);
+                }
+                CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                    json!({
+                        "leaseId": ticket.lease_id,
+                        "page": page_id,
+                        "tabId": page.tab_id.0,
+                        "targetId": page.target_id.as_str(),
+                        "status": "locked"
+                    })
+                    .to_string(),
+                )])
+            }
+            "status" | "end" => {
+                let Some(lease_id) = raw_args
+                    .get("leaseId")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                        format!("agent_control {action} requires leaseId from begin."),
+                    )]);
+                };
+                if action == "status" {
+                    return match self.state.agent_control.status(owner, lease_id).await {
+                        Ok(status) => CallToolResult::success(vec![
+                            rmcp::model::ContentBlock::text(
+                                serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string()),
+                            ),
+                        ]),
+                        Err(error) => CallToolResult::error(vec![
+                            rmcp::model::ContentBlock::text(error),
+                        ]),
+                    };
+                }
+                match self
+                    .state
+                    .agent_control
+                    .end(owner, lease_id, &cancel)
+                    .await
+                {
+                    Ok(()) => CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        "Native tab unlock was confirmed; control is returned.",
+                    )]),
+                    Err(error) => CallToolResult::error(vec![
+                        rmcp::model::ContentBlock::text(format!(
+                            "Native tab unlock is not confirmed; keep the tab stopped and retry cleanup: {error}"
+                        )),
+                    ]),
+                }
+            }
+            _ => CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                "action must be begin, status, or end.",
+            )]),
+        }
     }
 
     /// Pursues a whole outcome on one page, deciding each step here.
@@ -1377,6 +1526,9 @@ impl ServerHandler for ClawMcpService {
         if name == MARK_SKILL_RUN_TOOL_NAME {
             return Some(with_session_arg(self.mark_skill_run_tool.clone()));
         }
+        if name == AGENT_CONTROL_TOOL_NAME && self.state.agent_control.is_enabled() {
+            return Some(with_session_arg(self.agent_control_tool.clone()));
+        }
         if name == PURSUE_TOOL_NAME && self.pursue_offering().is_offered() {
             return Some(with_session_arg(self.pursue_tool.clone()));
         }
@@ -1400,6 +1552,7 @@ impl ServerHandler for ClawMcpService {
         let is_name_session = request.name == NAME_SESSION_TOOL_NAME;
         let is_save_skill = request.name == SAVE_SKILL_TOOL_NAME;
         let is_mark_skill_run = request.name == MARK_SKILL_RUN_TOOL_NAME;
+        let is_agent_control = request.name == AGENT_CONTROL_TOOL_NAME;
         let is_request_help = request.name == REQUEST_HELP_TOOL_NAME;
         let is_await_help = request.name == AWAIT_HELP_TOOL_NAME;
         let is_pursue = request.name == PURSUE_TOOL_NAME && self.pursue_offering().is_offered();
@@ -1407,6 +1560,7 @@ impl ServerHandler for ClawMcpService {
         if !is_name_session
             && !is_save_skill
             && !is_mark_skill_run
+            && !is_agent_control
             && !is_request_help
             && !is_await_help
             && !is_pursue
@@ -1488,6 +1642,8 @@ impl ServerHandler for ClawMcpService {
             Ok(self.call_save_skill(&started, &raw_args).await)
         } else if is_mark_skill_run {
             Ok(self.call_mark_skill_run(&started, &raw_args).await)
+        } else if is_agent_control {
+            Ok(self.call_agent_control(&started, &raw_args, context.ct.clone()).await)
         } else if is_request_help {
             Ok(self
                 .call_request_human_help(&started, &raw_args, context.ct.clone())
@@ -1688,6 +1844,42 @@ fn is_pii_token(token: &str) -> bool {
             && suffix.chars().all(|c| c.is_ascii_alphabetic());
     }
     false
+}
+
+fn agent_control_tool() -> Tool {
+    let Value::Object(input_schema) = json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["begin", "status", "end"],
+                "description": "Begin a persistent native input lock for one exact page incarnation, inspect its status, or end it and wait for unlock acknowledgement."
+            },
+            "page": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Required for begin. Use the page id from a fresh tabs list."
+            },
+            "leaseId": {
+                "type": "string",
+                "description": "Required for status and end; returned by begin."
+            }
+        },
+        "required": ["action"]
+    }) else {
+        unreachable!();
+    };
+    Tool::new(
+        AGENT_CONTROL_TOOL_NAME,
+        "Lock one Pip Dev tab while you control it. Use begin before a multi-step task, then status as needed and end when finished. Every page mutation is also guarded by an acknowledged short native lock. Stop in the Pip toolbar releases this lease; session disconnect triggers cleanup.",
+        input_schema,
+    )
+    .with_annotations(
+        ToolAnnotations::with_title("Agent tab control")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false),
+    )
 }
 
 fn name_session_tool() -> Tool {
