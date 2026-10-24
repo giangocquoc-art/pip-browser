@@ -19,6 +19,7 @@ $report = [ordered]@{
     release = "v$version"
     installerSha256 = $expectedSha256
     installed = $false
+    webview2RuntimePrepared = $false
     googleDnsProxyConfigured = $false
     systemDnsFallbackBlocked = $false
     hostResolverDirectDnsBlocked = $false
@@ -122,7 +123,7 @@ try {
     $systemWebViewRoots = @()
     foreach ($programFilesRoot in @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), $env:ProgramFiles)) {
         if ($programFilesRoot) {
-            $systemWebViewRoots += Join-Path $programFilesRoot 'Microsoft\\EdgeWebView\\Application'
+            $systemWebViewRoots += Join-Path $programFilesRoot 'Microsoft\EdgeWebView\Application'
         }
     }
 
@@ -131,7 +132,7 @@ try {
         foreach ($root in $Roots) {
             if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
             foreach ($directory in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
-                if ($directory.Name -match '^\\d+(\\.\\d+){1,3}$' -and (Test-Path -LiteralPath (Join-Path $directory.FullName 'msedgewebview2.exe') -PathType Leaf)) {
+                if ($directory.Name -match '^\d+(\.\d+){1,3}$' -and (Test-Path -LiteralPath (Join-Path $directory.FullName 'msedgewebview2.exe') -PathType Leaf)) {
                     return $directory.FullName
                 }
             }
@@ -154,7 +155,7 @@ try {
             throw "The Microsoft WebView2 bootstrapper exited with code $($runtimeInstaller.ExitCode)."
         }
 
-        $profileKey = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\$userSid"
+        $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
         $profileDeadline = [DateTime]::UtcNow.AddSeconds(45)
         while (-not (Test-Path -LiteralPath $profileKey) -and [DateTime]::UtcNow -lt $profileDeadline) {
             Start-Sleep -Milliseconds 250
@@ -163,7 +164,7 @@ try {
             throw 'The WebView2 bootstrapper did not create the temporary standard-user profile.'
         }
         $profilePath = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath)
-        $perUserWebViewRoot = Join-Path $profilePath 'AppData\\Local\\Microsoft\\EdgeWebView\\Application'
+        $perUserWebViewRoot = Join-Path $profilePath 'AppData\Local\Microsoft\EdgeWebView\Application'
         $webViewRoots = @($perUserWebViewRoot) + $systemWebViewRoots
 
         $runtimeDeadline = [DateTime]::UtcNow.AddSeconds(120)
