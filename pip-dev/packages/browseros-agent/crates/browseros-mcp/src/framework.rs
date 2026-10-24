@@ -154,6 +154,13 @@ impl ToolCtx {
     }
 }
 
+/// A guard for a host-authorized script primitive. The runner retains it while the
+/// primitive executes, then finishes it before recording the child audit row. Dropping
+/// the runner future also drops this guard, so hosts can release cancellation-owned state.
+pub trait InnerCallActionGuard: Send {
+    fn finish(self: Box<Self>) -> BoxFuture<'static, ()>;
+}
+
 /// Host capabilities for script ownership/audit and optional tool-operation ordering.
 /// The script bridge records each primitive; the central executor retains a host guard
 /// only for operations the host selects. `browseros-mcp` cannot reach the host's guards
@@ -164,6 +171,18 @@ pub trait InnerCallHook: Send + Sync {
     /// `Err(reason)` rejects the primitive and the reason is surfaced to the
     /// script as a thrown error.
     fn authorize<'a>(&'a self, page: Option<u32>) -> BoxFuture<'a, Result<(), String>>;
+
+    /// Authorize a primitive and optionally return invocation-scoped cleanup.
+    /// The default preserves existing hosts that only need the authorization callback.
+    fn authorize_with_guard<'a>(
+        &'a self,
+        page: Option<u32>,
+    ) -> BoxFuture<'a, Result<Option<Box<dyn InnerCallActionGuard>>, String>> {
+        Box::pin(async move {
+            self.authorize(page).await?;
+            Ok(None)
+        })
+    }
 
     /// Authorize raw CDP calls that have no page identity. Hosts with native
     /// tab control should reject this escape hatch and require page-scoped CDP.

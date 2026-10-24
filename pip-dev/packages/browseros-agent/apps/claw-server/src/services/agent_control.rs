@@ -144,10 +144,14 @@ impl AgentControlService {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
         if inner.stopped_tabs.contains(&tab_id) {
-            return Err("agent control was stopped for this tab; restart Pip Dev before reacquiring control");
+            return Err(
+                "agent control was stopped for this tab; restart Pip Dev before reacquiring control",
+            );
         }
         if inner.draining_tabs.contains(&tab_id) {
-            return Err("the current page document changed; native unlock is still being confirmed");
+            return Err(
+                "the current page document changed; native unlock is still being confirmed",
+            );
         }
         if let Some(existing_id) = inner
             .leases
@@ -544,7 +548,9 @@ impl AgentControlService {
         }
         if inner.draining_tabs.contains(&lease.tab_id) {
             cancel.cancel();
-            return Err("the page changed and native unlock is still being confirmed; the action was not dispatched");
+            return Err(
+                "the page changed and native unlock is still being confirmed; the action was not dispatched",
+            );
         }
         inner
             .active_dispatches
@@ -568,6 +574,80 @@ impl AgentControlService {
             inner.active_dispatches.remove(lease_id);
         }
         self.changed.notify_waiters();
+    }
+
+    /// Atomically unregisters and finishes one uniquely identified action.
+    /// Repeated cleanup after cancellation is harmless and cannot decrement a
+    /// sibling action reference.
+    pub async fn finish_action_dispatch(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+        dispatch_id: &str,
+    ) -> bool {
+        let mut inner = self.inner.lock().await;
+        let (removed, remove_entry) = match inner.active_dispatches.get_mut(&ticket.lease_id) {
+            Some(active) => {
+                let removed = active.remove(dispatch_id).is_some();
+                (removed, removed && active.is_empty())
+            }
+            None => (false, false),
+        };
+        if remove_entry {
+            inner.active_dispatches.remove(&ticket.lease_id);
+        }
+        if !removed {
+            self.changed.notify_waiters();
+            return false;
+        }
+        let tab_id = inner
+            .leases
+            .get(&ticket.lease_id)
+            .filter(|lease| lease.owner == owner && lease.generation == ticket.generation)
+            .map(|lease| lease.tab_id);
+        let Some(tab_id) = tab_id else {
+            self.changed.notify_waiters();
+            return false;
+        };
+        let mut unlock_requested = false;
+        if ticket.action_ref {
+            bump_snapshot_revision(&mut inner, tab_id);
+            if let Some(lease) = inner.leases.get_mut(&ticket.lease_id) {
+                lease.action_refs = lease.action_refs.saturating_sub(1);
+                if lease.action_refs == 0 && !lease.persistent {
+                    request_unlock(lease, None);
+                    unlock_requested = true;
+                }
+            }
+        }
+        self.changed.notify_waiters();
+        unlock_requested
+    }
+
+    pub async fn finish_action_dispatch_and_wait_with_cancellation(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+        dispatch_id: &str,
+        cancel: &CancellationToken,
+        client_cancel: &CancellationToken,
+        dispatch_cancel: &CancellationToken,
+    ) -> Result<(), &'static str> {
+        if self
+            .finish_action_dispatch(owner, ticket, dispatch_id)
+            .await
+        {
+            self.wait_unlocked(
+                owner,
+                &ticket.lease_id,
+                cancel,
+                client_cancel,
+                dispatch_cancel,
+            )
+            .await
+        } else {
+            Ok(())
+        }
     }
 
     pub async fn request_release(
@@ -642,7 +722,6 @@ impl AgentControlService {
         Ok(())
     }
 
-
     /// Stops dispatches for a page whose document identity changed while a native
     /// input lock was being acknowledged, then confirms native unlock before returning.
     pub async fn release_after_document_change(
@@ -709,7 +788,10 @@ impl AgentControlService {
             };
             lease.persistent = false;
             lease.action_refs = 0;
-            request_unlock(lease, Some("page document changed while the action was waiting for its native lock"));
+            request_unlock(
+                lease,
+                Some("page document changed while the action was waiting for its native lock"),
+            );
             self.changed.notify_waiters();
         }
 
@@ -1351,7 +1433,13 @@ mod tests {
             .await
             .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&tab_b.lease_id, tab_b.generation, 84, "target-b", LeaseAck::Locked)
+            .acknowledge(
+                &tab_b.lease_id,
+                tab_b.generation,
+                84,
+                "target-b",
+                LeaseAck::Locked,
+            )
             .await
             .map_err(anyhow::Error::msg)?;
         let views = service.leases_for_extension().await;
@@ -1369,7 +1457,13 @@ mod tests {
         assert!(revision_b > revision_a_before);
 
         service
-            .acknowledge(&tab_a.lease_id, tab_a.generation, 42, "target-a", LeaseAck::Locked)
+            .acknowledge(
+                &tab_a.lease_id,
+                tab_a.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
             .await
             .map_err(anyhow::Error::msg)?;
         let revision_a_after_same_tab_change = service
@@ -1384,25 +1478,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_locked_ack_does_not_advance_revision_without_mutation() -> anyhow::Result<()> {
+    async fn duplicate_locked_ack_does_not_advance_revision_without_mutation() -> anyhow::Result<()>
+    {
         let service = service();
         let ticket = service
             .begin("owner", 1, 42, "target-a", true)
             .await
             .map_err(anyhow::Error::msg)?;
         service
-            .acknowledge(&ticket.lease_id, ticket.generation, 42, "target-a", LeaseAck::Locked)
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
             .await
             .map_err(anyhow::Error::msg)?;
-        let revision_before = service.status("owner", &ticket.lease_id).await
+        let revision_before = service
+            .status("owner", &ticket.lease_id)
+            .await
             .map_err(anyhow::Error::msg)?
             .snapshot_revision;
 
         service
-            .acknowledge(&ticket.lease_id, ticket.generation, 42, "target-a", LeaseAck::Locked)
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
             .await
             .map_err(anyhow::Error::msg)?;
-        let revision_after = service.status("owner", &ticket.lease_id).await
+        let revision_after = service
+            .status("owner", &ticket.lease_id)
+            .await
             .map_err(anyhow::Error::msg)?
             .snapshot_revision;
         assert_eq!(revision_after, revision_before);
@@ -1825,6 +1936,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finishing_registered_dispatch_is_idempotent_for_sibling_actions()
+    -> anyhow::Result<()> {
+        let service = service();
+        let action_a = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action_a.lease_id,
+                action_a.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let action_b = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(action_a.lease_id, action_b.lease_id);
+        service
+            .register_action_dispatch(
+                "owner",
+                &action_a,
+                "dispatch-a",
+                CancellationToken::new(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .register_action_dispatch(
+                "owner",
+                &action_b,
+                "dispatch-b",
+                CancellationToken::new(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        assert!(
+            !service
+                .finish_action_dispatch("owner", &action_a, "dispatch-a")
+                .await
+        );
+        assert!(
+            !service
+                .finish_action_dispatch("owner", &action_a, "dispatch-a")
+                .await,
+            "retrying A cleanup must not decrement B's action reference"
+        );
+        assert_eq!(
+            service
+                .inner
+                .lock()
+                .await
+                .leases
+                .get(&action_a.lease_id)
+                .map(|lease| lease.action_refs),
+            Some(1)
+        );
+
+        assert!(
+            service
+                .finish_action_dispatch("owner", &action_b, "dispatch-b")
+                .await
+        );
+        assert_eq!(
+            service
+                .status("owner", &action_b.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "unlocking"
+        );
+        service
+            .acknowledge(
+                &action_b.lease_id,
+                action_b.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stopping_cancels_and_drains_in_flight_action_before_unlock() -> anyhow::Result<()> {
         let service = service();
         let persistent = service
@@ -1857,12 +2058,7 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
         let dispatch_cancel = CancellationToken::new();
         service
-            .register_action_dispatch(
-                "owner",
-                &action,
-                "dispatch-1",
-                dispatch_cancel.clone(),
-            )
+            .register_action_dispatch("owner", &action, "dispatch-1", dispatch_cancel.clone())
             .await
             .map_err(anyhow::Error::msg)?;
 
@@ -2053,7 +2249,10 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        finishing.await.map_err(anyhow::Error::msg)?.map_err(anyhow::Error::msg)?;
+        finishing
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
         assert!(service.status("owner", &ticket.lease_id).await.is_err());
         Ok(())
     }

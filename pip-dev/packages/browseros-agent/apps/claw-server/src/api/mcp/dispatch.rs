@@ -514,7 +514,6 @@ pub(crate) async fn finish_agent_control_action(
         .await
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PageDocumentCheckpoint {
     target_id: String,
@@ -547,11 +546,10 @@ async fn page_document_checkpoint(
         return Err("page URL, target, or tab changed; the action was not dispatched");
     }
 
-    let page = browser
-        .pages
-        .get_session(PageId(page_id))
-        .await
-        .map_err(|_| "page CDP session is unavailable; document identity could not be verified")?;
+    let page =
+        browser.pages.get_session(PageId(page_id)).await.map_err(
+            |_| "page CDP session is unavailable; document identity could not be verified",
+        )?;
     if page.target_id != live.target_id || page.url != live.url {
         return Err("page target or URL changed during document verification");
     }
@@ -693,8 +691,12 @@ async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'
             )
             .await;
         return Err(match unlock {
-            Ok(()) => "page document changed while waiting for native lock; action cancelled and native unlock confirmed",
-            Err(_) => "page document changed or could not be verified; action cancelled but native unlock is not confirmed; stop the tab and retry cleanup",
+            Ok(()) => {
+                "page document changed while waiting for native lock; action cancelled and native unlock confirmed"
+            }
+            Err(_) => {
+                "page document changed or could not be verified; action cancelled but native unlock is not confirmed; stop the tab and retry cleanup"
+            }
         });
     }
     Ok(Some(ticket))
@@ -997,11 +999,11 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
-    async fn changed_main_frame_loader_while_lock_ack_is_pending_cancels_and_unlocks() -> anyhow::Result<()> {
+    async fn changed_main_frame_loader_while_lock_ack_is_pending_cancels_and_unlocks()
+    -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::{current_session, tool_call, ProfileConnection},
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
             services::agent_control::{AgentControlService, LeaseAck},
         };
 
@@ -1087,7 +1089,10 @@ mod tests {
             .iter()
             .filter(|(method, _)| method == "Page.getFrameTree")
             .count();
-        assert_eq!(page_tree_reads, 2, "checkpoint runs both before and after ACK");
+        assert_eq!(
+            page_tree_reads, 2,
+            "checkpoint runs both before and after ACK"
+        );
         Ok(())
     }
 
@@ -1490,9 +1495,9 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("explicit group missing"))?;
         native.group_lookup_release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(3), grouping)
-                .await
-                .map_err(anyhow::Error::msg)?
-                .map_err(anyhow::Error::msg)?;
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
         let current = view.page(original.page_id.clone()).await?;
         assert_eq!(current.target_id, original.target_id);
         assert_eq!(current.tab_id, original.tab_id);

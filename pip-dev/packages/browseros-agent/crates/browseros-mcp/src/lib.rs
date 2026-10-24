@@ -21,7 +21,8 @@ mod targeting_tests;
 mod tests;
 
 pub use framework::{
-    BrowserToolDefaults, BrowserToolOptions, FeatureNote, InnerCallHook, InnerCallRecord,
+    BrowserToolDefaults, BrowserToolOptions, FeatureNote, InnerCallActionGuard, InnerCallHook,
+    InnerCallRecord,
     OutputFileAccess, StaticTargetStore, TargetStore, ToolCtx, ToolDef, ToolMetadata, ToolResult,
     catalog, execute_tool, extract_page_id, result_page_id, unapplied_target_note,
 };

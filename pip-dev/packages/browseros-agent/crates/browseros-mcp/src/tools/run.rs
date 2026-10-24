@@ -850,10 +850,17 @@ impl BrowserBridge {
                 hook.authorize_unscoped_cdp(cdp_method, has_session_id)
                     .await?;
             }
-            hook.authorize(page).await?;
         }
+        let action_guard = if let Some(hook) = &self.ctx.inner_call_hook {
+            hook.authorize_with_guard(page).await?
+        } else {
+            None
+        };
         let started = Instant::now();
         let outcome = self.dispatch(method, args).await;
+        if let Some(action_guard) = action_guard {
+            action_guard.finish().await;
+        }
         if let Some(hook) = &self.ctx.inner_call_hook {
             if method == "pages.newPage"
                 && let Ok(BrowserCallValue::Json(Value::Number(number))) = &outcome
