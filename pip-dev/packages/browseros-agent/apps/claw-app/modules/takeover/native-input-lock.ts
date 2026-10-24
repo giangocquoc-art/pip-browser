@@ -153,12 +153,12 @@ export class NativeInputLockManager {
     if (generation < currentGeneration) return 'stale'
     if (generation > currentGeneration) generations.set(leaseId, generation)
     this.agentLeaseGenerations.set(tabId, generations)
+    const isCurrent = () =>
+      this.agentSnapshotRevisions.get(tabId) === snapshotRevision &&
+      this.agentLeaseGenerations.get(tabId)?.get(leaseId) === generation
 
     return this.exclusive(tabId, async () => {
-      if (
-        this.agentSnapshotRevisions.get(tabId) !== snapshotRevision ||
-        this.agentLeaseGenerations.get(tabId)?.get(leaseId) !== generation
-      ) {
+      if (!isCurrent()) {
         return 'stale'
       }
       if (ownerSnapshot) {
@@ -189,10 +189,14 @@ export class NativeInputLockManager {
         const hasOtherOwners =
           agentOwners.size > 0 || (this.takeoverOwners.get(tabId)?.size ?? 0) > 0
         if (!hasOtherOwners && !this.leases.has(tabId)) {
-          return this.unlockExactTarget(tabId, targetId)
+          return this.unlockExactTarget(tabId, targetId, isCurrent)
         }
 
-        const status = await this.syncCombined(tabId, targetId)
+        const status = await this.syncCombined(tabId, targetId, isCurrent, false)
+        if (!isCurrent()) {
+          this.markAgentOperationStale(tabId)
+          return 'stale'
+        }
         // Removing one owner must preserve and verify every other owner.
         if (status === 'unavailable' || status === 'stale') return status
         return 'unlocked'
@@ -203,19 +207,42 @@ export class NativeInputLockManager {
       let attachedHere = false
       try {
         if (!currentLease?.attached) {
+          if (!isCurrent()) return 'stale'
           await this.debuggerApi.attach(debuggee(tabId), '1.3')
           attachedHere = true
+          if (!isCurrent()) {
+            this.markAgentOperationStale(tabId)
+            return 'stale'
+          }
         }
         const actualTargetId = await this.currentTargetId(tabId)
+        if (!isCurrent()) {
+          this.markAgentOperationStale(tabId)
+          return 'stale'
+        }
         if (!actualTargetId || actualTargetId !== targetId) {
-          if (attachedHere) await this.debuggerApi.detach(debuggee(tabId))
+          if (attachedHere) {
+            await this.debuggerApi.detach(debuggee(tabId))
+            if (!isCurrent()) {
+              this.markAgentOperationStale(tabId, false)
+              return 'stale'
+            }
+          }
           return 'stale'
         }
       } catch {
+        if (!isCurrent()) {
+          this.markAgentOperationStale(tabId, attachedHere)
+          return 'stale'
+        }
         if (attachedHere) {
           try {
             await this.debuggerApi.detach(debuggee(tabId))
           } catch {}
+          if (!isCurrent()) {
+            this.markAgentOperationStale(tabId, false)
+            return 'stale'
+          }
         }
         return 'unavailable'
       }
@@ -232,9 +259,13 @@ export class NativeInputLockManager {
       } else if (attachedHere && currentLease) {
         currentLease.attached = true
       }
+      if (!isCurrent()) {
+        this.markAgentOperationStale(tabId, Boolean(attachedHere || currentLease?.attached))
+        return 'stale'
+      }
       agentOwners.set(leaseId, targetId)
       this.agentLeases.set(tabId, agentOwners)
-      return this.syncCombined(tabId, targetId)
+      return this.syncCombined(tabId, targetId, isCurrent, false)
     })
   }
 
@@ -267,19 +298,29 @@ export class NativeInputLockManager {
     tabId: number,
     expectedTargetId?: string,
     mayRelease: () => boolean = () => true,
+    restoreOnSupersede = true,
   ): Promise<NativeInputLockStatus | 'stale'> {
     const owners = [
       ...(this.takeoverOwners.get(tabId) ?? []),
       ...[...(this.agentLeases.get(tabId)?.keys() ?? [])].map((id) => `agent:${id}`),
     ]
     const sessionKey = [...new Set(owners)].sort().join('\0')
+    if (!mayRelease()) return 'stale'
     if (!sessionKey) {
       if (expectedTargetId) {
         let actualTargetId: string | null
         try {
           actualTargetId = await this.currentTargetId(tabId)
         } catch {
+          if (!mayRelease()) {
+            this.markAgentOperationStale(tabId)
+            return 'stale'
+          }
           return 'unavailable'
+        }
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId)
+          return 'stale'
         }
         if (!actualTargetId || actualTargetId !== expectedTargetId) {
           const staleLease = this.leases.get(tabId)
@@ -287,7 +328,12 @@ export class NativeInputLockManager {
           return 'stale'
         }
       }
-      await this.releaseNative(tabId, mayRelease)
+      if (!mayRelease()) return 'stale'
+      await this.releaseNative(tabId, mayRelease, restoreOnSupersede)
+      if (!mayRelease()) {
+        if (!restoreOnSupersede) this.markAgentOperationStale(tabId, this.leases.get(tabId)?.attached ?? true)
+        return 'stale'
+      }
       return this.status(tabId)
     }
 
@@ -295,14 +341,24 @@ export class NativeInputLockManager {
     if (existing?.status === 'locked') {
       if (expectedTargetId) {
         try {
-          if (await this.currentTargetId(tabId) !== expectedTargetId) {
+          const actualTargetId = await this.currentTargetId(tabId)
+          if (!mayRelease()) {
+            this.markAgentOperationStale(tabId)
+            return 'stale'
+          }
+          if (actualTargetId !== expectedTargetId) {
             existing.status = 'unavailable'
             return 'stale'
           }
         } catch {
+          if (!mayRelease()) {
+            this.markAgentOperationStale(tabId)
+            return 'stale'
+          }
           return 'unavailable'
         }
       }
+      if (!mayRelease()) return 'stale'
       existing.sessionKey = sessionKey
       return 'locked'
     }
@@ -330,16 +386,33 @@ export class NativeInputLockManager {
     let attachedHere = false
     try {
       if (!lease.attached) {
+        if (!mayRelease()) return 'stale'
         await this.debuggerApi.attach(debuggee(tabId), '1.3')
         attachedHere = true
         lease.attached = true
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId, true)
+          return 'stale'
+        }
       }
       if (expectedTargetId) {
         const actualTargetId = await this.currentTargetId(tabId)
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId, lease.attached)
+          return 'stale'
+        }
         if (!actualTargetId || actualTargetId !== expectedTargetId) {
           if (attachedHere) {
+            if (!mayRelease()) {
+              this.markAgentOperationStale(tabId, true)
+              return 'stale'
+            }
             await this.debuggerApi.detach(debuggee(tabId))
             lease.attached = false
+            if (!mayRelease()) {
+              this.markAgentOperationStale(tabId, false)
+              return 'stale'
+            }
             if (this.leases.get(tabId) === lease && !lease.sessionKey) {
               this.leases.delete(tabId)
             }
@@ -347,11 +420,16 @@ export class NativeInputLockManager {
           return 'stale'
         }
       }
+      if (!mayRelease()) return 'stale'
       await this.debuggerApi.sendCommand(
         debuggee(tabId),
         'Input.setAgentInputLock',
         { locked: true },
       )
+      if (!mayRelease()) {
+        this.markAgentOperationStale(tabId, lease.attached)
+        return 'stale'
+      }
       if (this.leases.get(tabId) !== lease || this.leases.get(tabId)?.status === 'unavailable') {
         throw new Error('debugger detached while enabling the input lock')
       }
@@ -359,7 +437,15 @@ export class NativeInputLockManager {
       lease.retryAfterDetach = false
       return 'locked'
     } catch {
+      if (!mayRelease()) {
+        this.markAgentOperationStale(tabId, lease.attached)
+        return 'stale'
+      }
       if (attachedHere) {
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId, true)
+          return 'stale'
+        }
         try {
           await this.debuggerApi.sendCommand(
             debuggee(tabId),
@@ -367,11 +453,19 @@ export class NativeInputLockManager {
             { locked: false },
           )
         } catch {}
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId, lease.attached)
+          return 'stale'
+        }
         try {
           await this.debuggerApi.detach(debuggee(tabId))
           lease.attached = false
         } catch {
           lease.attached = true
+        }
+        if (!mayRelease()) {
+          this.markAgentOperationStale(tabId, lease.attached)
+          return 'stale'
         }
       }
       lease.status = 'unavailable'
@@ -387,36 +481,76 @@ export class NativeInputLockManager {
   private async unlockExactTarget(
     tabId: number,
     expectedTargetId: string,
+    mayProceed: () => boolean = () => true,
   ): Promise<AgentLeaseLockStatus> {
     let attachedHere = false
     try {
+      if (!mayProceed()) return 'stale'
       let actualTargetId: string | null
       try {
         actualTargetId = await this.currentTargetId(tabId)
       } catch {
+        if (!mayProceed()) {
+          this.markAgentOperationStale(tabId)
+          return 'stale'
+        }
         await this.debuggerApi.attach(debuggee(tabId), '1.3')
         attachedHere = true
+        if (!mayProceed()) {
+          this.markAgentOperationStale(tabId, true)
+          return 'stale'
+        }
         actualTargetId = await this.currentTargetId(tabId)
       }
+      if (!mayProceed()) {
+        this.markAgentOperationStale(tabId, attachedHere)
+        return 'stale'
+      }
       if (!actualTargetId || actualTargetId !== expectedTargetId) {
-        if (attachedHere) await this.debuggerApi.detach(debuggee(tabId))
+        if (attachedHere) {
+          if (!mayProceed()) {
+            this.markAgentOperationStale(tabId, true)
+            return 'stale'
+          }
+          await this.debuggerApi.detach(debuggee(tabId))
+          attachedHere = false
+          if (!mayProceed()) {
+            this.markAgentOperationStale(tabId, false)
+            return 'stale'
+          }
+        }
         return 'stale'
       }
 
+      if (!mayProceed()) return 'stale'
       await this.debuggerApi.sendCommand(
         debuggee(tabId),
         'Input.setAgentInputLock',
         { locked: false },
       )
+      if (!mayProceed()) {
+        this.markAgentOperationStale(tabId, attachedHere)
+        return 'stale'
+      }
       // Explicit release plus a successful detach confirms both the native
       // lock command and browser-owned debugger lease are gone.
       await this.debuggerApi.detach(debuggee(tabId))
+      attachedHere = false
+      if (!mayProceed()) {
+        this.markAgentOperationStale(tabId, false)
+        return 'stale'
+      }
       this.leases.delete(tabId)
       return 'unlocked'
     } catch {
+      if (!mayProceed()) {
+        this.markAgentOperationStale(tabId, attachedHere)
+        return 'stale'
+      }
       if (attachedHere) {
         try {
           await this.debuggerApi.detach(debuggee(tabId))
+          attachedHere = false
         } catch {
           this.leases.set(tabId, {
             status: 'unavailable',
@@ -428,6 +562,22 @@ export class NativeInputLockManager {
       }
       return 'unavailable'
     }
+  }
+
+  private markAgentOperationStale(tabId: number, attached = true): void {
+    const lease = this.leases.get(tabId)
+    if (lease) {
+      lease.status = 'unavailable'
+      lease.attached = attached
+      lease.retryAfterDetach = true
+      return
+    }
+    this.leases.set(tabId, {
+      status: 'unavailable',
+      sessionKey: '',
+      attached,
+      retryAfterDetach: true,
+    })
   }
 
   private async currentTargetId(tabId: number): Promise<string | null> {
@@ -447,6 +597,7 @@ export class NativeInputLockManager {
   private async releaseNative(
     tabId: number,
     mayRelease: () => boolean = () => true,
+    restoreOnSupersede = true,
   ): Promise<void> {
     const lease = this.leases.get(tabId)
     if (lease?.status === 'unavailable') {
@@ -464,7 +615,12 @@ export class NativeInputLockManager {
         lease.status = 'unavailable'
       }
       if (!mayRelease()) {
-        await this.restoreAfterSupersededDetach(tabId, lease)
+        if (restoreOnSupersede) {
+          await this.restoreAfterSupersededDetach(tabId, lease)
+        } else {
+          lease.status = 'unavailable'
+          lease.retryAfterDetach = true
+        }
         return
       }
       if (!lease.attached && this.leases.get(tabId) === lease) {
@@ -485,7 +641,13 @@ export class NativeInputLockManager {
       // command is unavailable or the target is already gone.
     }
     if (!mayRelease()) {
-      await this.restoreAfterSupersededRelease(tabId, lease)
+      if (restoreOnSupersede) {
+        await this.restoreAfterSupersededRelease(tabId, lease)
+      } else {
+        lease.status = 'unavailable'
+        lease.retryAfterDetach = true
+        lease.attached = true
+      }
       return
     }
     lease.status = 'releasing'
@@ -498,7 +660,12 @@ export class NativeInputLockManager {
       lease.status = 'unavailable'
     }
     if (!mayRelease()) {
-      await this.restoreAfterSupersededDetach(tabId, lease)
+      if (restoreOnSupersede) {
+        await this.restoreAfterSupersededDetach(tabId, lease)
+      } else {
+        lease.status = 'unavailable'
+        lease.retryAfterDetach = true
+      }
       return
     }
     if (!lease.attached && this.leases.get(tabId) === lease) {

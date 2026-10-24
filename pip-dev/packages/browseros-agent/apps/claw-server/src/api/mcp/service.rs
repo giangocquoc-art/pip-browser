@@ -387,7 +387,7 @@ impl ClawMcpService {
                 if let Err(error) = self
                     .state
                     .agent_control
-                    .wait_locked(owner, &ticket.lease_id, &cancel)
+                    .wait_locked(owner, &ticket.lease_id, ticket.generation, &cancel)
                     .await
                 {
                     let _ = self

@@ -691,6 +691,108 @@ describe('NativeInputLockManager', () => {
     expect(locks.status(7)).toBe('locked')
   })
 
+  it('does not send a delayed old unlock or detach after a newer snapshot arrives', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const targetLookupStarted = deferred<void>()
+    const finishTargetLookup = deferred<unknown>()
+    const inputCommands: boolean[] = []
+    let targetLookupCount = 0
+
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      if (method === 'Input.setAgentInputLock') {
+        inputCommands.push((params as { locked?: boolean } | undefined)?.locked === true)
+        return
+      }
+      if (method !== 'Target.getTargetInfo') return
+      targetLookupCount += 1
+      if (targetLookupCount === 1) throw new Error('debugger is not attached')
+      if (targetLookupCount === 2) {
+        targetLookupStarted.resolve(undefined)
+        return finishTargetLookup.promise
+      }
+      return { targetInfo: { targetId: 'target-7' } }
+    }
+
+    const oldRelease = locks.syncAgentControlLease(
+      7,
+      'lease-a',
+      'target-7',
+      'unlock',
+      1,
+      1,
+      { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+    )
+    await targetLookupStarted.promise
+    const newLock = locks.syncAgentControlLease(
+      7,
+      'lease-b',
+      'target-7',
+      'lock',
+      1,
+      2,
+      { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+    )
+    finishTargetLookup.resolve({ targetInfo: { targetId: 'target-7' } })
+
+    expect(await oldRelease).toBe('stale')
+    expect(await newLock).toBe('locked')
+    expect(inputCommands).toEqual([true])
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
+    expect(calls).toContainEqual(['Input.setAgentInputLock', 7])
+  })
+
+  it('does not send a delayed old lock after a newer snapshot arrives', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const targetLookupStarted = deferred<void>()
+    const finishTargetLookup = deferred<unknown>()
+    const inputCommands: boolean[] = []
+    let targetLookupCount = 0
+
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      if (method === 'Input.setAgentInputLock') {
+        inputCommands.push((params as { locked?: boolean } | undefined)?.locked === true)
+        return
+      }
+      if (method !== 'Target.getTargetInfo') return
+      targetLookupCount += 1
+      if (targetLookupCount === 1) {
+        targetLookupStarted.resolve(undefined)
+        return finishTargetLookup.promise
+      }
+      return { targetInfo: { targetId: 'target-7' } }
+    }
+
+    const oldLock = locks.syncAgentControlLease(
+      7,
+      'lease-a',
+      'target-7',
+      'lock',
+      1,
+      1,
+      { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+    )
+    await targetLookupStarted.promise
+    const newLock = locks.syncAgentControlLease(
+      7,
+      'lease-b',
+      'target-7',
+      'lock',
+      1,
+      2,
+      { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+    )
+    finishTargetLookup.resolve({ targetInfo: { targetId: 'target-7' } })
+
+    expect(await oldLock).toBe('stale')
+    expect(await newLock).toBe('locked')
+    expect(inputCommands).toEqual([true])
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
+  })
+
   it('reports browser debugger detachment instead of leaving a stale locked state', async () => {
     const { api, detach } = makeDebugger()
     const locks = new NativeInputLockManager(api)

@@ -31,6 +31,7 @@ export interface TakeoverActionDependencies {
   stopAgentControlForTab?: (tabId: number) => Promise<{
     confirmed: boolean
     pending: number
+    restartRequired: boolean
   }>
   beginStop: (tabId: number) => void
   finishStop: (tabId: number) => void
@@ -46,6 +47,7 @@ export type TakeoverActionResponse =
       stopped: number
       total: number
       agentControlConfirmed?: boolean
+      agentControlRestartRequired?: boolean
     }
   | {
       ok: false
@@ -75,6 +77,19 @@ export function isTakeoverActionRequest(
     Number.isSafeInteger(request.windowId) &&
     Number(request.windowId) >= 0
   )
+}
+
+export function takeoverStopSuccessMessage(result: {
+  stopped: number
+  total: number
+  agentControlRestartRequired?: boolean
+}): string {
+  const message = result.total === 0
+    ? 'Không còn phiên agent trên tab này; đã xác nhận trả quyền thao tác.'
+    : `Đã dừng ${result.stopped}/${result.total} phiên agent trên tab này; đã xác nhận mở khóa.`
+  return result.agentControlRestartRequired
+    ? `${message} Khởi động lại Pip Dev để cho phép agent điều khiển lại tab.`
+    : message
 }
 
 export async function handleTakeoverAction(
@@ -156,7 +171,12 @@ export async function handleTakeoverAction(
         action: 'stop',
         stopped,
         total,
-        ...(agentControl ? { agentControlConfirmed: true } : {}),
+        ...(agentControl
+          ? {
+              agentControlConfirmed: true,
+              agentControlRestartRequired: agentControl.restartRequired,
+            }
+          : {}),
       }
     } finally {
       try {

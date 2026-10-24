@@ -265,6 +265,7 @@ export async function pollAgentControlLeases(
 export interface StopAgentControlResult {
   confirmed: boolean
   leases: AgentControlLeaseView[]
+  restartRequired: boolean
 }
 
 /**
@@ -327,10 +328,10 @@ export async function stopAgentControlForTab(
     latest = await listLeases(baseUrl, token)
     observeLeaseSnapshot(latest, locks)
     latest = latest.filter((lease) => lease.tabId === tabId)
-    if (latest.length === 0) return { confirmed: true, leases: [] }
+    if (latest.length === 0) return { confirmed: true, leases: [], restartRequired: owned.length > 0 }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS))
   } while (true)
 
-  return { confirmed: false, leases: latest }
+  return { confirmed: false, leases: latest, restartRequired: owned.length > 0 }
 }

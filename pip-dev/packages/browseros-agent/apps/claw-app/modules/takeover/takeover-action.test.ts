@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   handleTakeoverAction,
+  takeoverStopSuccessMessage,
   type TakeoverActionDependencies,
 } from './takeover-action'
 
@@ -116,7 +117,7 @@ describe('takeover toolbar action', () => {
     const { calls, dependencies } = fixture({ stopped: 0, total: 0 })
     dependencies.stopAgentControlForTab = async (tabId) => {
       calls.push(`agent-release:${tabId}`)
-      return { confirmed: false, pending: 1 }
+      return { confirmed: false, pending: 1, restartRequired: true }
     }
 
     await expect(
@@ -137,6 +138,7 @@ describe('takeover toolbar action', () => {
     dependencies.stopAgentControlForTab = async () => ({
       confirmed: true,
       pending: 0,
+      restartRequired: false,
     })
 
     await expect(
@@ -146,6 +148,41 @@ describe('takeover toolbar action', () => {
       action: 'stop',
       agentControlConfirmed: true,
     })
+  })
+
+  it('shows the Pip Dev restart path after a confirmed MCP Stop', async () => {
+    const { dependencies } = fixture({ stopped: 0, total: 0 })
+    dependencies.stopAgentControlForTab = async () => ({
+      confirmed: true,
+      pending: 0,
+      restartRequired: true,
+    })
+
+    const result = await handleTakeoverAction(
+      stopRequest,
+      trustedPopup,
+      dependencies,
+    )
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'stop',
+      agentControlRestartRequired: true,
+    })
+    if (!result || result.action !== 'stop' || !result.ok) {
+      throw new Error('expected a successful stop result')
+    }
+    expect(takeoverStopSuccessMessage(result)).toBe(
+      'Không còn phiên agent trên tab này; đã xác nhận trả quyền thao tác. Khởi động lại Pip Dev để cho phép agent điều khiển lại tab.',
+    )
+    expect(
+      takeoverStopSuccessMessage({
+        stopped: 1,
+        total: 1,
+        agentControlRestartRequired: true,
+      }),
+    ).toBe(
+      'Đã dừng 1/1 phiên agent trên tab này; đã xác nhận mở khóa. Khởi động lại Pip Dev để cho phép agent điều khiển lại tab.',
+    )
   })
 
   it('reconciles current ownership after partial cancellation', async () => {

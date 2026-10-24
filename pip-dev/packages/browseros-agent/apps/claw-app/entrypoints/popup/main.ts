@@ -1,5 +1,8 @@
 import './style.css'
-import type { TakeoverActionResponse } from '@/modules/takeover/takeover-action'
+import {
+  takeoverStopSuccessMessage,
+  type TakeoverActionResponse,
+} from '@/modules/takeover/takeover-action'
 
 const targetLabel = document.querySelector<HTMLElement>('#target')
 const statusLabel = document.querySelector<HTMLElement>('#status')
@@ -93,9 +96,7 @@ if (targetLabel && statusLabel && stopButton) {
         ...target,
       })
       if (result.ok && result.action === 'stop') {
-        statusLabel.textContent = result.total === 0
-          ? 'Không còn phiên agent trên tab này; đã xác nhận trả quyền thao tác.'
-          : `Đã dừng ${result.stopped}/${result.total} phiên agent trên tab này; đã xác nhận trạng thái khóa.`
+        statusLabel.textContent = takeoverStopSuccessMessage(result)
       } else if ('reason' in result && result.reason === 'partial-stop') {
         statusLabel.textContent = result.agentControlConfirmed === false
           ? `Đã dừng ${result.stopped ?? 0}/${result.total ?? 0} phiên. Chưa xác nhận mở khóa native (${result.agentControlPending ?? 1} lease còn lại); bấm Dừng để thử lại.`

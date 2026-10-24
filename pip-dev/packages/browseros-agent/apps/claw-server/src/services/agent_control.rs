@@ -1,7 +1,7 @@
 //! Authenticated per-tab native input leases shared by MCP and the extension.
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -26,7 +26,10 @@ pub struct AgentControlService {
 #[derive(Default)]
 struct Inner {
     leases: BTreeMap<String, Lease>,
-    snapshot_revision: u64,
+    snapshot_revisions: BTreeMap<i64, u64>,
+    stopped_tabs: BTreeSet<i64>,
+    draining_tabs: BTreeSet<i64>,
+    active_dispatches: BTreeMap<String, BTreeMap<String, CancellationToken>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,52 +143,74 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
-        if let Some(existing) = inner
+        if inner.stopped_tabs.contains(&tab_id) {
+            return Err("agent control was stopped for this tab; restart Pip Dev before reacquiring control");
+        }
+        if inner.draining_tabs.contains(&tab_id) {
+            return Err("the current page document changed; native unlock is still being confirmed");
+        }
+        if let Some(existing_id) = inner
             .leases
-            .values_mut()
+            .values()
             .find(|lease| lease.tab_id == tab_id)
+            .map(|lease| lease.id.clone())
         {
-            match existing.phase {
-                Phase::Locking | Phase::Locked => {}
-                Phase::Unlocking => {
-                    return Err(
-                        "the previous tab lease is still being released; retry after native unlock",
-                    );
+            let ticket = {
+                let existing = inner
+                    .leases
+                    .get_mut(&existing_id)
+                    .expect("lease id was collected from this map");
+                match existing.phase {
+                    Phase::Locking | Phase::Locked => {}
+                    Phase::Unlocking => {
+                        return Err(
+                            "the previous tab lease is still being released; retry after native unlock",
+                        );
+                    }
+                    Phase::Failed(_) => {
+                        return Err(
+                            "the previous tab lease has an unresolved native lock; stop or retry cleanup before reacquiring",
+                        );
+                    }
                 }
-                Phase::Failed(_) => {
-                    return Err(
-                        "the previous tab lease has an unresolved native lock; stop or retry cleanup before reacquiring",
-                    );
+                if existing.owner != owner {
+                    return Err("this tab is already controlled by another agent session");
                 }
-            }
-            if existing.owner != owner {
-                return Err("this tab is already controlled by another agent session");
-            }
-            if existing.page_id != page_id || existing.target_id != target_id {
-                return Err("the leased page changed; reacquire from a fresh tab snapshot");
-            }
-            existing.expires_at = Instant::now() + LEASE_TTL;
-            existing.persistent |= persistent;
-            let action_ref = !persistent;
-            if action_ref {
-                // Each action gets a distinct ACK generation. This invalidates
-                // any delayed result from an overlapping extension poll, even
-                // while the prior generation is still reported as Locking.
-                existing.generation = existing
-                    .generation
-                    .checked_add(1)
-                    .ok_or("agent tab lock generation exhausted")?;
-                existing.action_refs = existing.action_refs.saturating_add(1);
-                existing.phase = Phase::Locking;
-                existing.error = None;
+                if existing.page_id != page_id || existing.target_id != target_id {
+                    return Err("the leased page changed; reacquire from a fresh tab snapshot");
+                }
+                let action_ref = !persistent;
+                let next_generation = if action_ref {
+                    Some(
+                        existing
+                            .generation
+                            .checked_add(1)
+                            .ok_or("agent tab lock generation exhausted")?,
+                    )
+                } else {
+                    None
+                };
+                existing.expires_at = Instant::now() + LEASE_TTL;
+                existing.persistent |= persistent;
+                if let Some(generation) = next_generation {
+                    // Each action gets a distinct ACK generation. This invalidates
+                    // delayed results from overlapping extension polls.
+                    existing.generation = generation;
+                    existing.action_refs = existing.action_refs.saturating_add(1);
+                    existing.phase = Phase::Locking;
+                    existing.error = None;
+                }
+                LeaseTicket {
+                    lease_id: existing.id.clone(),
+                    generation: existing.generation,
+                    action_ref,
+                }
+            };
+            bump_snapshot_revision(&mut inner, tab_id);
+            if ticket.action_ref {
                 self.changed.notify_waiters();
             }
-            return Ok(LeaseTicket {
-                lease_id: existing.id.clone(),
-                generation: existing.generation,
-                action_ref,
-            });
+            return Ok(ticket);
         }
 
         let id = Ulid::new().to_string();
@@ -206,6 +231,7 @@ impl AgentControlService {
                 error: None,
             },
         );
+        bump_snapshot_revision(&mut inner, tab_id);
         self.changed.notify_waiters();
         Ok(LeaseTicket {
             lease_id: id,
@@ -313,11 +339,17 @@ impl AgentControlService {
             return false;
         }
         let mut inner = self.inner.lock().await;
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        let Some(tab_id) = inner
+            .leases
+            .get(&ticket.lease_id)
+            .filter(|lease| lease.owner == owner)
+            .map(|lease| lease.tab_id)
+        else {
+            return false;
+        };
+        bump_snapshot_revision(&mut inner, tab_id);
         let mut unlock_requested = false;
-        if let Some(lease) = inner.leases.get_mut(&ticket.lease_id)
-            && lease.owner == owner
-        {
+        if let Some(lease) = inner.leases.get_mut(&ticket.lease_id) {
             lease.action_refs = lease.action_refs.saturating_sub(1);
             if lease.action_refs == 0 && !lease.persistent {
                 request_unlock(lease, None);
@@ -345,7 +377,8 @@ impl AgentControlService {
         if existing.owner != owner {
             return Err("agent tab lease owner mismatch");
         }
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        let tab_id = existing.tab_id;
+        bump_snapshot_revision(&mut inner, tab_id);
         let Some(lease) = inner.leases.get_mut(&ticket.lease_id) else {
             return Ok(());
         };
@@ -363,13 +396,21 @@ impl AgentControlService {
     /// Requests cleanup for a cancelled action or an explicitly stopped lease.
     pub async fn abort(&self, owner: &str, lease_id: &str) -> Result<(), &'static str> {
         let mut inner = self.inner.lock().await;
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        let Some(tab_id) = inner
+            .leases
+            .get(lease_id)
+            .filter(|lease| lease.owner == owner)
+            .map(|lease| lease.tab_id)
+        else {
+            if inner.leases.contains_key(lease_id) {
+                return Err("agent tab lease owner mismatch");
+            }
+            return Ok(());
+        };
+        bump_snapshot_revision(&mut inner, tab_id);
         let Some(lease) = inner.leases.get_mut(lease_id) else {
             return Ok(());
         };
-        if lease.owner != owner {
-            return Err("agent tab lease owner mismatch");
-        }
         lease.persistent = false;
         lease.action_refs = 0;
         request_unlock(lease, lease.error);
@@ -429,16 +470,24 @@ impl AgentControlService {
     pub async fn status(&self, owner: &str, lease_id: &str) -> Result<LeaseView, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        let Some(lease) = inner.leases.get_mut(lease_id) else {
-            return Err("agent tab lease was not found");
+        let tab_id = {
+            let Some(lease) = inner.leases.get_mut(lease_id) else {
+                return Err("agent tab lease was not found");
+            };
+            if lease.owner != owner {
+                return Err("agent tab lease owner mismatch");
+            }
+            if matches!(lease.phase, Phase::Locked | Phase::Locking) {
+                lease.expires_at = Instant::now() + LEASE_TTL;
+            }
+            lease.tab_id
         };
-        if lease.owner != owner {
-            return Err("agent tab lease owner mismatch");
-        }
-        if matches!(lease.phase, Phase::Locked | Phase::Locking) {
-            lease.expires_at = Instant::now() + LEASE_TTL;
-        }
-        Ok(view(lease, inner.snapshot_revision))
+        let revision = snapshot_revision(&inner, tab_id);
+        let lease = inner
+            .leases
+            .get(lease_id)
+            .expect("lease was validated while holding the service lock");
+        Ok(view(lease, revision))
     }
 
     /// Returns every lease to the authenticated bundled extension so it can
@@ -449,7 +498,7 @@ impl AgentControlService {
         inner
             .leases
             .values()
-            .map(|lease| view(lease, inner.snapshot_revision))
+            .map(|lease| view(lease, snapshot_revision(&inner, lease.tab_id)))
             .collect()
     }
 
@@ -463,13 +512,64 @@ impl AgentControlService {
             .leases
             .values()
             .filter(|lease| matches!(lease.phase, Phase::Locking | Phase::Unlocking))
-            .map(|lease| view(lease, inner.snapshot_revision))
+            .map(|lease| view(lease, snapshot_revision(&inner, lease.tab_id)))
             .collect()
     }
 
     /// User stop/extension recovery requests cleanup for this exact lease.
     /// The bearer token authenticates the bundled extension; tuple matching prevents
     /// a stale tab id from releasing a newer incarnation.
+    pub async fn register_action_dispatch(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+        dispatch_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().await;
+        let Some(lease) = inner.leases.get(&ticket.lease_id) else {
+            return Err("agent tab lease expired before action registration");
+        };
+        if lease.owner != owner {
+            return Err("agent tab lease owner mismatch");
+        }
+        if lease.generation != ticket.generation
+            || !matches!(lease.phase, Phase::Locking | Phase::Locked)
+        {
+            return Err("agent tab lease changed before action registration");
+        }
+        if inner.stopped_tabs.contains(&lease.tab_id) {
+            cancel.cancel();
+            return Err("agent control was stopped for this tab; the action was not dispatched");
+        }
+        if inner.draining_tabs.contains(&lease.tab_id) {
+            cancel.cancel();
+            return Err("the page changed and native unlock is still being confirmed; the action was not dispatched");
+        }
+        inner
+            .active_dispatches
+            .entry(ticket.lease_id.clone())
+            .or_default()
+            .insert(dispatch_id.to_string(), cancel);
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    pub async fn unregister_action_dispatch(&self, lease_id: &str, dispatch_id: &str) {
+        let mut inner = self.inner.lock().await;
+        let remove_entry = inner
+            .active_dispatches
+            .get_mut(lease_id)
+            .is_some_and(|active| {
+                active.remove(dispatch_id);
+                active.is_empty()
+            });
+        if remove_entry {
+            inner.active_dispatches.remove(lease_id);
+        }
+        self.changed.notify_waiters();
+    }
+
     pub async fn request_release(
         &self,
         lease_id: &str,
@@ -477,22 +577,145 @@ impl AgentControlService {
         tab_id: i64,
         target_id: &str,
     ) -> Result<(), &'static str> {
+        {
+            let mut inner = self.inner.lock().await;
+            let Some(lease) = inner.leases.get(lease_id) else {
+                return Err("unknown or expired lease");
+            };
+            if lease.tab_id != tab_id || lease.target_id != target_id {
+                return Err("lease release does not match the requested tab incarnation");
+            }
+            if lease.generation != generation {
+                return Err("lease release generation is stale");
+            }
+            inner.stopped_tabs.insert(tab_id);
+            if let Some(active) = inner.active_dispatches.get(lease_id) {
+                for cancel in active.values() {
+                    cancel.cancel();
+                }
+            }
+            self.changed.notify_waiters();
+        }
+
+        // Stop must not report success or release the native lock while an action
+        // registered to this lease is still executing. A delayed registration sees
+        // stopped_tabs and fails closed.
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        loop {
+            let notified = self.changed.notified();
+            let still_active = self
+                .inner
+                .lock()
+                .await
+                .active_dispatches
+                .get(lease_id)
+                .is_some_and(|active| !active.is_empty());
+            if !still_active {
+                break;
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err("active page action did not stop before the timeout; native unlock was not requested");
+                }
+            }
+        }
+
         let mut inner = self.inner.lock().await;
-        let Some(lease) = inner.leases.get_mut(lease_id) else {
-            return Err("unknown or expired lease");
+        let Some(lease) = inner.leases.get(lease_id) else {
+            return Ok(());
         };
         if lease.tab_id != tab_id || lease.target_id != target_id {
-            return Err("lease release does not match the requested tab incarnation");
+            return Err("lease changed while stopping the active page action");
         }
         if lease.generation != generation {
-            return Err("lease release generation is stale");
+            return Err("lease generation changed while stopping the active page action");
         }
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        bump_snapshot_revision(&mut inner, tab_id);
+        let Some(lease) = inner.leases.get_mut(lease_id) else {
+            return Ok(());
+        };
         lease.persistent = false;
         lease.action_refs = 0;
         request_unlock(lease, lease.error);
         self.changed.notify_waiters();
         Ok(())
+    }
+
+
+    /// Stops dispatches for a page whose document identity changed while a native
+    /// input lock was being acknowledged, then confirms native unlock before returning.
+    pub async fn release_after_document_change(
+        &self,
+        owner: &str,
+        lease_id: &str,
+        tab_id: i64,
+        target_id: &str,
+    ) -> Result<(), &'static str> {
+        {
+            let mut inner = self.inner.lock().await;
+            let Some(lease) = inner.leases.get(lease_id) else {
+                return Ok(());
+            };
+            if lease.owner != owner {
+                return Err("agent tab lease owner mismatch");
+            }
+            if lease.tab_id != tab_id || lease.target_id != target_id {
+                return Err("page document changed on a different tab incarnation");
+            }
+            inner.draining_tabs.insert(tab_id);
+            if let Some(active) = inner.active_dispatches.get(lease_id) {
+                for cancel in active.values() {
+                    cancel.cancel();
+                }
+            }
+            self.changed.notify_waiters();
+        }
+
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        loop {
+            let notified = self.changed.notified();
+            let still_active = self
+                .inner
+                .lock()
+                .await
+                .active_dispatches
+                .get(lease_id)
+                .is_some_and(|active| !active.is_empty());
+            if !still_active {
+                break;
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err("concurrent page action did not stop; native unlock is not confirmed");
+                }
+            }
+        }
+
+        {
+            let mut inner = self.inner.lock().await;
+            let Some(lease) = inner.leases.get(lease_id) else {
+                inner.draining_tabs.remove(&tab_id);
+                return Ok(());
+            };
+            if lease.owner != owner || lease.tab_id != tab_id || lease.target_id != target_id {
+                return Err("lease changed while stopping actions for the changed page");
+            }
+            bump_snapshot_revision(&mut inner, tab_id);
+            let Some(lease) = inner.leases.get_mut(lease_id) else {
+                inner.draining_tabs.remove(&tab_id);
+                return Ok(());
+            };
+            lease.persistent = false;
+            lease.action_refs = 0;
+            request_unlock(lease, Some("page document changed while the action was waiting for its native lock"));
+            self.changed.notify_waiters();
+        }
+
+        let cancel = CancellationToken::new();
+        self.wait_unlocked(owner, lease_id, &cancel, &cancel, &cancel)
+            .await
     }
 
     pub async fn acknowledge(
@@ -504,7 +727,7 @@ impl AgentControlService {
         ack: LeaseAck,
     ) -> Result<(), &'static str> {
         let mut inner = self.inner.lock().await;
-        let Some(lease) = inner.leases.get_mut(lease_id) else {
+        let Some(lease) = inner.leases.get(lease_id) else {
             return Err("unknown or expired lease");
         };
         if lease.tab_id != tab_id || lease.target_id != target_id {
@@ -513,51 +736,59 @@ impl AgentControlService {
         if lease.generation != generation {
             return Err("lease acknowledgement generation is stale");
         }
-        if matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) && ack == LeaseAck::Unlocked {
-            inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        let removes_lease =
+            matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) && ack == LeaseAck::Unlocked;
+        if removes_lease {
+            bump_snapshot_revision(&mut inner, tab_id);
             inner.leases.remove(lease_id);
+            inner.draining_tabs.remove(&tab_id);
             self.changed.notify_waiters();
             return Ok(());
         }
-        inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
-        match (&lease.phase, ack) {
-            (Phase::Locking, LeaseAck::Locked) => {
-                lease.phase = Phase::Locked;
-                lease.error = None;
-                lease.cleanup_failures = 0;
-                lease.expires_at = Instant::now() + LEASE_TTL;
+        {
+            let Some(lease) = inner.leases.get_mut(lease_id) else {
+                return Err("unknown or expired lease");
+            };
+            match (&lease.phase, ack) {
+                (Phase::Locking, LeaseAck::Locked) => {
+                    lease.phase = Phase::Locked;
+                    lease.error = None;
+                    lease.cleanup_failures = 0;
+                    lease.expires_at = Instant::now() + LEASE_TTL;
+                }
+                (Phase::Locking, LeaseAck::Unavailable) => {
+                    request_unlock(
+                        lease,
+                        Some("native tab lock is unavailable; cleanup is required"),
+                    );
+                }
+                (Phase::Locking, LeaseAck::Stale) => {
+                    request_unlock(
+                        lease,
+                        Some("tab changed before native lock acknowledgement"),
+                    );
+                }
+                // A lock may finish after expiry/cancel already requested unlock. Accept
+                // only the exact tuple, keep the desired phase as Unlocking, and make the
+                // extension's next lease-driven pass detach the just-acquired lock.
+                (Phase::Unlocking, LeaseAck::Locked) | (Phase::Failed(_), LeaseAck::Locked) => {
+                    lease.phase = Phase::Unlocking;
+                    lease.error =
+                        Some("late native lock acknowledgement; immediate cleanup is pending");
+                    lease.cleanup_failures = 0;
+                    lease.expires_at = Instant::now() + CLEANUP_RETRY;
+                }
+                (Phase::Unlocking, LeaseAck::Unavailable | LeaseAck::Stale) => {
+                    record_cleanup_failure(lease);
+                }
+                (Phase::Failed(_), LeaseAck::Unavailable | LeaseAck::Stale) => {
+                    return Err("terminal cleanup failure requires an explicit retry");
+                }
+                (Phase::Locked, LeaseAck::Locked) => return Ok(()),
+                _ => return Err("lease acknowledgement does not match its current operation"),
             }
-            (Phase::Locking, LeaseAck::Unavailable) => {
-                request_unlock(
-                    lease,
-                    Some("native tab lock is unavailable; cleanup is required"),
-                );
-            }
-            (Phase::Locking, LeaseAck::Stale) => {
-                request_unlock(
-                    lease,
-                    Some("tab changed before native lock acknowledgement"),
-                );
-            }
-            // A lock may finish after expiry/cancel already requested unlock. Accept
-            // only the exact tuple, keep the desired phase as Unlocking, and make the
-            // extension's next lease-driven pass detach the just-acquired lock.
-            (Phase::Unlocking, LeaseAck::Locked) | (Phase::Failed(_), LeaseAck::Locked) => {
-                lease.phase = Phase::Unlocking;
-                lease.error =
-                    Some("late native lock acknowledgement; immediate cleanup is pending");
-                lease.cleanup_failures = 0;
-                lease.expires_at = Instant::now() + CLEANUP_RETRY;
-            }
-            (Phase::Unlocking, LeaseAck::Unavailable | LeaseAck::Stale) => {
-                record_cleanup_failure(lease);
-            }
-            (Phase::Failed(_), LeaseAck::Unavailable | LeaseAck::Stale) => {
-                return Err("terminal cleanup failure requires an explicit retry");
-            }
-            (Phase::Locked, LeaseAck::Locked) => return Ok(()),
-            _ => return Err("lease acknowledgement does not match its current operation"),
         }
+        bump_snapshot_revision(&mut inner, tab_id);
         self.changed.notify_waiters();
         Ok(())
     }
@@ -568,6 +799,7 @@ impl AgentControlService {
         let ids = {
             let mut inner = self.inner.lock().await;
             let mut ids = Vec::new();
+            let mut tab_ids = Vec::new();
             for lease in inner
                 .leases
                 .values_mut()
@@ -577,9 +809,12 @@ impl AgentControlService {
                 lease.action_refs = 0;
                 request_unlock(lease, lease.error);
                 ids.push(lease.id.clone());
+                tab_ids.push(lease.tab_id);
             }
-            if !ids.is_empty() {
-                inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+            tab_ids.sort_unstable();
+            tab_ids.dedup();
+            for tab_id in tab_ids {
+                bump_snapshot_revision(&mut inner, tab_id);
             }
             self.changed.notify_waiters();
             ids
@@ -602,6 +837,7 @@ impl AgentControlService {
     fn sweep_locked(&self, inner: &mut Inner) -> bool {
         let now = Instant::now();
         let mut changed = false;
+        let mut tab_ids = Vec::new();
         for lease in inner.leases.values_mut() {
             if lease.expires_at > now {
                 continue;
@@ -615,15 +851,27 @@ impl AgentControlService {
                 }
                 Phase::Locked => request_unlock(lease, None),
                 Phase::Unlocking => record_cleanup_failure(lease),
-                Phase::Failed(_) => {}
+                Phase::Failed(_) => continue,
             }
+            tab_ids.push(lease.tab_id);
             changed = true;
         }
-        if changed {
-            inner.snapshot_revision = inner.snapshot_revision.saturating_add(1);
+        tab_ids.sort_unstable();
+        tab_ids.dedup();
+        for tab_id in tab_ids {
+            bump_snapshot_revision(inner, tab_id);
         }
         changed
     }
+}
+
+fn bump_snapshot_revision(inner: &mut Inner, tab_id: i64) {
+    let revision = inner.snapshot_revisions.entry(tab_id).or_default();
+    *revision = revision.saturating_add(1);
+}
+
+fn snapshot_revision(inner: &Inner, tab_id: i64) -> u64 {
+    inner.snapshot_revisions.get(&tab_id).copied().unwrap_or(0)
 }
 
 fn request_unlock(lease: &mut Lease, error: Option<&'static str>) {
@@ -1084,6 +1332,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_revisions_are_isolated_per_tab() -> anyhow::Result<()> {
+        let service = service();
+        let tab_a = service
+            .begin("owner-a", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let revision_a_before = service
+            .leases_for_extension()
+            .await
+            .into_iter()
+            .find(|lease| lease.tab_id == 42)
+            .ok_or_else(|| anyhow::anyhow!("tab A lease missing"))?
+            .snapshot_revision;
+
+        let tab_b = service
+            .begin("owner-b", 2, 84, "target-b", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(&tab_b.lease_id, tab_b.generation, 84, "target-b", LeaseAck::Locked)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let views = service.leases_for_extension().await;
+        let revision_a_after_tab_b_change = views
+            .iter()
+            .find(|lease| lease.tab_id == 42)
+            .ok_or_else(|| anyhow::anyhow!("tab A lease missing after tab B change"))?
+            .snapshot_revision;
+        let revision_b = views
+            .iter()
+            .find(|lease| lease.tab_id == 84)
+            .ok_or_else(|| anyhow::anyhow!("tab B lease missing"))?
+            .snapshot_revision;
+        assert_eq!(revision_a_after_tab_b_change, revision_a_before);
+        assert!(revision_b > revision_a_before);
+
+        service
+            .acknowledge(&tab_a.lease_id, tab_a.generation, 42, "target-a", LeaseAck::Locked)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let revision_a_after_same_tab_change = service
+            .leases_for_extension()
+            .await
+            .into_iter()
+            .find(|lease| lease.tab_id == 42)
+            .ok_or_else(|| anyhow::anyhow!("tab A lease missing after its own change"))?
+            .snapshot_revision;
+        assert!(revision_a_after_same_tab_change > revision_a_before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_locked_ack_does_not_advance_revision_without_mutation() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(&ticket.lease_id, ticket.generation, 42, "target-a", LeaseAck::Locked)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let revision_before = service.status("owner", &ticket.lease_id).await
+            .map_err(anyhow::Error::msg)?
+            .snapshot_revision;
+
+        service
+            .acknowledge(&ticket.lease_id, ticket.generation, 42, "target-a", LeaseAck::Locked)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let revision_after = service.status("owner", &ticket.lease_id).await
+            .map_err(anyhow::Error::msg)?
+            .snapshot_revision;
+        assert_eq!(revision_after, revision_before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_failed_lease_does_not_advance_revision_without_mutation() {
+        let service = service();
+        let mut inner = service.inner.lock().await;
+        let tab = 42;
+        let lease = Lease {
+            id: "failed".to_string(),
+            owner: "owner".to_string(),
+            page_id: 1,
+            tab_id: tab,
+            target_id: "target-a".to_string(),
+            generation: 1,
+            phase: Phase::Failed("cleanup failed"),
+            expires_at: Instant::now() - Duration::from_secs(1),
+            persistent: false,
+            action_refs: 0,
+            cleanup_failures: MAX_CLEANUP_FAILURES,
+            error: Some("native unlock acknowledgement failed"),
+        };
+        inner.leases.insert(lease.id.clone(), lease);
+        let revision_before = snapshot_revision(&inner, tab);
+        assert!(!service.sweep_locked(&mut inner));
+        assert_eq!(snapshot_revision(&inner, tab), revision_before);
+    }
+
+    #[tokio::test]
     async fn every_unresolved_phase_blocks_same_tab_reacquisition() -> anyhow::Result<()> {
         let service = service();
         let ticket = service
@@ -1474,6 +1825,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stopping_cancels_and_drains_in_flight_action_before_unlock() -> anyhow::Result<()> {
+        let service = service();
+        let persistent = service
+            .begin("owner", 1, 42, "target-a", true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &persistent.lease_id,
+                persistent.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let dispatch_cancel = CancellationToken::new();
+        service
+            .register_action_dispatch(
+                "owner",
+                &action,
+                "dispatch-1",
+                dispatch_cancel.clone(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let release_service = service.clone();
+        let release_ticket = action.clone();
+        let mut release = tokio::spawn(async move {
+            release_service
+                .request_release(
+                    &release_ticket.lease_id,
+                    release_ticket.generation,
+                    42,
+                    "target-a",
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), dispatch_cancel.cancelled())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut release)
+                .await
+                .is_err(),
+            "Stop must wait for the registered action to leave execution"
+        );
+        assert!(
+            service
+                .begin("owner", 1, 42, "target-a", false)
+                .await
+                .is_err(),
+            "new actions must be rejected while Stop is draining the active action"
+        );
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked",
+            "the native lock must remain held until the action exits"
+        );
+
+        service
+            .unregister_action_dispatch(&action.lease_id, "dispatch-1")
+            .await;
+        release
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "unlocking"
+        );
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            service
+                .begin("owner", 1, 42, "target-a", false)
+                .await
+                .is_err(),
+            "Stop must leave an action tombstone after the lease is removed"
+        );
+        assert!(
+            service
+                .begin("owner", 1, 42, "target-a", true)
+                .await
+                .is_err(),
+            "MCP persistent begin must not clear the user Stop tombstone"
+        );
+        assert!(
+            service
+                .begin("another-owner", 1, 42, "target-a", true)
+                .await
+                .is_err(),
+            "Stop must block reacquisition by every agent owner"
+        );
+        assert!(
+            service
+                .begin("another-owner", 2, 84, "target-b", false)
+                .await
+                .is_ok(),
+            "Stop must not disable agent control on another tab"
+        );
+        let restarted_service = AgentControlService::new(Some("test-token".to_string()));
+        assert!(
+            restarted_service
+                .begin("owner", 1, 42, "target-a", true)
+                .await
+                .is_ok(),
+            "restarting Pip Dev is the documented recovery path"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn wrong_owner_tab_or_target_never_changes_lease() -> anyhow::Result<()> {
         let service = service();
         let ticket = service
@@ -1558,7 +2053,7 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        finishing.await.map_err(anyhow::Error::msg)??;
+        finishing.await.map_err(anyhow::Error::msg)?.map_err(anyhow::Error::msg)?;
         assert!(service.status("owner", &ticket.lease_id).await.is_err());
         Ok(())
     }
