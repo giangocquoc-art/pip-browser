@@ -672,7 +672,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nested_primitive_rejects_loader_change_while_lock_ack_is_pending() -> anyhow::Result<()> {
+    async fn nested_primitive_rejects_loader_change_while_lock_ack_is_pending() -> anyhow::Result<()>
+    {
         use crate::{
             api::mcp::test_support::{ProfileConnection, current_session, tool_call},
             services::agent_control::{AgentControlService, LeaseAck},
