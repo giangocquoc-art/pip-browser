@@ -926,8 +926,7 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    async fn aborting_one_overlapping_action_preserves_the_other_reference(
-    ) -> anyhow::Result<()> {
+    async fn aborting_one_overlapping_action_preserves_the_other_reference() -> anyhow::Result<()> {
         let service = service();
         let action_a = service
             .begin("owner", 1, 42, "target-a", false)

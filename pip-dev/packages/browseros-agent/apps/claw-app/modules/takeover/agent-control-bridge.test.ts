@@ -156,7 +156,7 @@ describe('agent-control extension bridge', () => {
     const oldReconcile = reconcilePendingAgentControlLeases(
       [oldLease],
       locks,
-      async (_lease, status) => acknowledgements.push(`old:${status}`),
+      async (_lease, status) => { acknowledgements.push(`old:${status}`) },
       () => delayedOwners.promise,
     )
 
@@ -168,7 +168,7 @@ describe('agent-control extension bridge', () => {
     await reconcilePendingAgentControlLeases(
       [newLease],
       locks,
-      async (_lease, status) => acknowledgements.push(`new:${status}`),
+      async (_lease, status) => { acknowledgements.push(`new:${status}`) },
       noTakeoverOwners,
     )
     expect(acknowledgements).toEqual(['new:locked'])
