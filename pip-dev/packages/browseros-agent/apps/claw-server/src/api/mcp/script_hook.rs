@@ -72,6 +72,9 @@ impl InnerCallActionGuard for ScriptActionLeaseGuard {
                     .await
             };
             if let Err(error) = cleanup_result {
+                if let Ok(mut cleanup_error) = guard.call.agent_control_cleanup_error.lock() {
+                    *cleanup_error = Some(error.to_string());
+                }
                 warn!(
                     lease_id = %guard.ticket.lease_id,
                     error = %error,
@@ -542,6 +545,88 @@ mod tests {
             missing_credential
                 .unwrap_err()
                 .contains("native tab control")
+        );
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn failed_native_unlock_is_reported_to_the_parent_script() -> anyhow::Result<()> {
+        use crate::services::agent_control::{AgentControlService, LeaseAck};
+        use std::time::Duration;
+        use tokio_util::sync::CancellationToken;
+
+        let mut call = tool_call("run", json!({ "code": "return 1" })).await?;
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let ticket = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let dispatch_id = DispatchId::new();
+        service
+            .register_action_dispatch(
+                "owner",
+                &ticket,
+                dispatch_id.as_str(),
+                CancellationToken::new(),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &ticket.lease_id,
+                ticket.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let error = call.agent_control_cleanup_error.clone();
+        let guard = Box::new(ScriptActionLeaseGuard {
+            call,
+            owner: "owner".to_string(),
+            ticket: ticket.clone(),
+            dispatch_id,
+            registered: true,
+            completed: false,
+        });
+        let finishing = tokio::spawn(guard.finish());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if service
+                    .pending_for_extension()
+                    .await
+                    .iter()
+                    .any(|lease| lease.status == "unlocking")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        for _ in 0..3 {
+            service
+                .acknowledge(
+                    &ticket.lease_id,
+                    ticket.generation,
+                    42,
+                    "target-a",
+                    LeaseAck::Unavailable,
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+        }
+        tokio::time::timeout(Duration::from_secs(2), finishing).await??;
+        assert!(
+            error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+                .is_some_and(|message| message.contains("native unlock")),
+            "the parent MCP dispatch must receive an unconfirmed native-unlock error"
         );
         Ok(())
     }
