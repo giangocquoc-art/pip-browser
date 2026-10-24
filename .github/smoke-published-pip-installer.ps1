@@ -181,9 +181,117 @@ try {
     $report.webview2RuntimePrepared = $true
 
     Write-Host 'Installing the release as a temporary standard user with no shortcuts or registry registration.'
-    $installerProcess = Start-Process -FilePath $installerPath -ArgumentList '--silent --no-shortcuts --no-register' -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
-    if ($installerProcess.ExitCode -ne 0) {
-        throw "The published installer exited with code $($installerProcess.ExitCode)."
+    $profileInitializer = Start-Process -FilePath (Get-Command pwsh.exe -ErrorAction Stop).Source -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0') -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+    if ($profileInitializer.ExitCode -ne 0) {
+        throw "The temporary user profile initializer exited with code $($profileInitializer.ExitCode)."
+    }
+    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+    if (-not (Test-Path -LiteralPath $profileKey)) {
+        throw 'The temporary standard-user profile was not created.'
+    }
+    $profilePath = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath)
+    $userTempDirectory = Join-Path $profilePath 'AppData\Local\Temp'
+    New-Item -ItemType Directory -Path $userTempDirectory -Force | Out-Null
+    $testInstallerPath = Join-Path $userTempDirectory "Pip-Setup-$version-Windows-x64.exe"
+    Copy-Item -LiteralPath $installerPath -Destination $testInstallerPath -Force
+    $diagnosticPath = Join-Path $userTempDirectory 'Pip-install-diagnostic.json'
+    $quotedTestInstallerPath = $testInstallerPath.Replace("'", "''")
+    $quotedDiagnosticPath = $diagnosticPath.Replace("'", "''")
+    $installDiagnosticWrapper = @'
+$ErrorActionPreference = 'Continue'
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+$adminRole = [System.Security.Principal.WindowsBuiltInRole]::Administrator
+$runtimeRoots = @(
+    [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),
+    $env:ProgramFiles,
+    (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeWebView\Application')
+) | Where-Object { $_ }
+$runtimeFound = $false
+foreach ($root in $runtimeRoots) {
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+    foreach ($versionDirectory in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
+        if ($versionDirectory.Name -match '^\d+(\.\d+){1,3}$' -and (Test-Path -LiteralPath (Join-Path $versionDirectory.FullName 'msedgewebview2.exe') -PathType Leaf)) {
+            $runtimeFound = $true
+            break
+        }
+    }
+    if ($runtimeFound) { break }
+}
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class PipSmokeTokenDiagnostics {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_ELEVATION { public int TokenIsElevated; }
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(IntPtr token, int infoClass, out TOKEN_ELEVATION elevation, int size, out int returned);
+    public static int? GetElevation() {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out token)) return null;
+        try {
+            TOKEN_ELEVATION value;
+            int returned;
+            if (!GetTokenInformation(token, 20, out value, Marshal.SizeOf(typeof(TOKEN_ELEVATION)), out returned)) return null;
+            return value.TokenIsElevated;
+        } finally { CloseHandle(token); }
+    }
+}
+"@
+
+$diagnostic = [ordered]@{
+    username = $env:USERNAME
+    sid = $identity.User.Value
+    expectedSid = '__EXPECTED_SID__'
+    identityMatchesTemporaryUser = ($identity.User.Value -eq '__EXPECTED_SID__')
+    isAdministrator = $principal.IsInRole($adminRole)
+    tokenElevated = [PipSmokeTokenDiagnostics]::GetElevation()
+    userProfile = $env:USERPROFILE
+    localAppData = $env:LOCALAPPDATA
+    runtimeDetected = $runtimeFound
+    installerPath = '__INSTALLER_PATH__'
+    installerOutput = @()
+    installerExitCode = $null
+    installDirectoryExists = $false
+    filesAfterExit = @()
+}
+try {
+    $installerOutput = @(& '__INSTALLER_PATH__' --silent --no-shortcuts --no-register 2>&1 | ForEach-Object { $_.ToString() })
+    $diagnostic.installerExitCode = $LASTEXITCODE
+    $diagnostic.installerOutput = $installerOutput
+} catch {
+    $diagnostic.installerExitCode = 1
+    $diagnostic.installerOutput = @($_.ToString())
+}
+$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Pip'
+$diagnostic.installDirectoryExists = Test-Path -LiteralPath $installDirectory -PathType Container
+if ($diagnostic.installDirectoryExists) {
+    $diagnostic.filesAfterExit = @(Get-ChildItem -LiteralPath $installDirectory -Force | ForEach-Object { $_.Name })
+}
+[System.IO.File]::WriteAllText('__DIAGNOSTIC_PATH__', ($diagnostic | ConvertTo-Json -Compress -Depth 5), [System.Text.UTF8Encoding]::new($false))
+exit ([int]$diagnostic.installerExitCode)
+'@
+    $installDiagnosticWrapper = $installDiagnosticWrapper.Replace('__EXPECTED_SID__', $userSid).
+        Replace('__INSTALLER_PATH__', $quotedTestInstallerPath).
+        Replace('__DIAGNOSTIC_PATH__', $quotedDiagnosticPath)
+    $encodedInstallDiagnosticWrapper = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($installDiagnosticWrapper))
+    $profilePwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    Write-Host 'Installing exact release under the standard user from that user profile, with stdout/stderr and token diagnostics captured.'
+    $installerProcess = Start-Process -FilePath $profilePwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedInstallDiagnosticWrapper) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+    if (-not (Test-Path -LiteralPath $diagnosticPath -PathType Leaf)) {
+        throw "The temporary-user installer wrapper exited with code $($installerProcess.ExitCode) without writing diagnostic data."
+    }
+    $installerDiagnostics = Get-Content -LiteralPath $diagnosticPath -Raw | ConvertFrom-Json
+    Write-Host ('Exact installer diagnostic: ' + ($installerDiagnostics | ConvertTo-Json -Compress -Depth 5))
+    if ($installerProcess.ExitCode -ne 0 -or $installerDiagnostics.installerExitCode -ne 0) {
+        throw "The published installer exited with code $($installerDiagnostics.installerExitCode) under temporary SID $($installerDiagnostics.sid)."
     }
 
     $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
