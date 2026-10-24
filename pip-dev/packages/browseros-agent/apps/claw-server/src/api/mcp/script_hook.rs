@@ -4,6 +4,7 @@ use crate::{
     clock::now_epoch_ms,
     db::audit_log::{RecordToolDispatchInput, bounded_args_json, result_meta},
     ids::DispatchId,
+    services::agent_control::LeaseTicket,
     services::helpers,
 };
 use browseros_core::PageId;
@@ -25,12 +26,16 @@ use tracing::warn;
 /// script. It holds the script's own `ToolCall` to retain the same captured view.
 pub struct ScriptInnerCallHook {
     call: ToolCall,
+    action_leases: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u32, Vec<LeaseTicket>>>>,
 }
 
 impl ScriptInnerCallHook {
     #[must_use]
     pub fn new(call: ToolCall) -> Self {
-        Self { call }
+        Self {
+            call,
+            action_leases: Arc::default(),
+        }
     }
 
     fn identity(&self) -> Option<&ToolIdentity> {
@@ -64,6 +69,49 @@ impl InnerCallHook for ScriptInnerCallHook {
             let Some(identity) = self.identity() else {
                 return Ok(());
             };
+            if self.call.state.agent_control.is_enabled() {
+                let Some(browser) = &self.call.browser_session else {
+                    return Err("the browser session is unavailable for native tab control".to_string());
+                };
+                let Some(page_info) = browser.pages.get_info(PageId(page)).await else {
+                    return Err("the page changed before native tab control could be confirmed".to_string());
+                };
+                let owner = identity.session.id().as_str();
+                let ticket = self
+                    .call
+                    .state
+                    .agent_control
+                    .begin(
+                        owner,
+                        page,
+                        page_info.tab_id.0,
+                        page_info.target_id.as_str(),
+                        false,
+                    )
+                    .await
+                    .map_err(str::to_string)?;
+                if let Err(error) = self
+                    .call
+                    .state
+                    .agent_control
+                    .wait_locked(owner, &ticket.lease_id, &self.call.cancel)
+                    .await
+                {
+                    let _ = self
+                        .call
+                        .state
+                        .agent_control
+                        .abort(owner, &ticket.lease_id)
+                        .await;
+                    return Err(format!("native tab lock was not confirmed: {error}"));
+                }
+                self.action_leases
+                    .lock()
+                    .await
+                    .entry(page)
+                    .or_default()
+                    .push(ticket);
+            }
             // Ownership is a label, not a permission, so nothing is refused here.
             //
             // This hook used to reject any page owned by another conversation, which
@@ -117,6 +165,28 @@ impl InnerCallHook for ScriptInnerCallHook {
         let output_token_estimate = record.output_token_estimate;
         let raw_args = record.args.clone();
         Box::pin(async move {
+            let action_ticket = if let Some(page_id) = page {
+                let mut leases = self.action_leases.lock().await;
+                leases.get_mut(&page_id).and_then(Vec::pop)
+            } else {
+                None
+            };
+            if let Some(ticket) = action_ticket
+                && let Some(identity) = self.identity()
+                && let Err(error) = self
+                    .call
+                    .state
+                    .agent_control
+                    .finish_action_and_wait(
+                        identity.session.id().as_str(),
+                        &ticket,
+                        &self.call.cancel,
+                    )
+                    .await
+                && let Ok(mut cleanup_error) = self.call.agent_control_cleanup_error.lock()
+            {
+                *cleanup_error = Some(error.to_string());
+            }
             let Some(identity) = self.identity() else {
                 return;
             };
