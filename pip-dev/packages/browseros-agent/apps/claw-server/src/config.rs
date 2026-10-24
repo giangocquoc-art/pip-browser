@@ -29,7 +29,9 @@ pub struct AgentControlToken(String);
 
 impl AgentControlToken {
     #[must_use]
-    pub fn expose_to_extension_bridge(&self) -> &str { &self.0 }
+    pub fn expose_to_extension_bridge(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Debug for AgentControlToken {

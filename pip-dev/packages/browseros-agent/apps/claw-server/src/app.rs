@@ -9,8 +9,8 @@ use crate::{
     error::{AppError, AppResult},
     runtime::ShutdownHandle,
     services::{
-        agent_settings::AgentSettingsStore,
         agent_control::AgentControlService,
+        agent_settings::AgentSettingsStore,
         audit::AuditWorker,
         browser::{BrowserService, TabRegistry},
         cockpit::{CockpitQuery, SessionVisualService, TabActivityRecord, TabActivityService},
@@ -148,7 +148,10 @@ impl AppState {
             analytics_sink.clone(),
         ));
         let agent_control = Arc::new(AgentControlService::new_with_policy(
-            config.agent_control_token.as_ref().map(|token| token.expose_to_extension_bridge().to_string()),
+            config
+                .agent_control_token
+                .as_ref()
+                .map(|token| token.expose_to_extension_bridge().to_string()),
             config.agent_control_required,
         ));
         let sessions = Sessions::new_with_analytics(
@@ -168,7 +171,9 @@ impl AppState {
                 skill_runs.spawn_finalize(session_id.clone());
                 let _ = session_efficiency.queue_finalize(session_id.clone());
                 let agent_control = agent_control.clone();
-                tokio::spawn(async move { agent_control.release_session(session_id.as_str()).await; });
+                tokio::spawn(async move {
+                    agent_control.release_session(session_id.as_str()).await;
+                });
             }
         }));
         let tab_registry = TabRegistry::new(session_tabs.clone());

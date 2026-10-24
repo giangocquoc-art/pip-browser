@@ -509,9 +509,7 @@ pub(crate) async fn finish_agent_control_action(
         .await
 }
 
-async fn begin_action_control(
-    call: &ToolCall,
-) -> Result<Option<LeaseTicket>, &'static str> {
+async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'static str> {
     let agent_control = &call.state.agent_control;
     let is_script = ARBITRARY_SCRIPT_TOOLS.contains(&call.tool().name);
     if !agent_control.is_enabled() {
@@ -519,29 +517,48 @@ async fn begin_action_control(
             return Ok(None);
         }
         if is_script {
-            return Err("native agent tab control is required but its extension credential is unavailable; the script was not dispatched");
+            return Err(
+                "native agent tab control is required but its extension credential is unavailable; the script was not dispatched",
+            );
         }
-        if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true)
+        if call
+            .tool()
+            .annotations
+            .as_ref()
+            .and_then(|value| value.read_only_hint)
+            == Some(true)
             || !call.tool().metadata.accepts_page_arg
         {
             return Ok(None);
         }
-        return Err("native agent tab control is required but its extension credential is unavailable; the page action was not dispatched");
+        return Err(
+            "native agent tab control is required but its extension credential is unavailable; the page action was not dispatched",
+        );
     }
     if is_script {
         if call.identity.is_none() {
-            return Err("agent-control lease requires a session identity; the script action was not dispatched");
+            return Err(
+                "agent-control lease requires a session identity; the script action was not dispatched",
+            );
         }
         return Ok(None);
     }
-    if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true) {
+    if call
+        .tool()
+        .annotations
+        .as_ref()
+        .and_then(|value| value.read_only_hint)
+        == Some(true)
+    {
         return Ok(None);
     }
     if !call.tool().metadata.accepts_page_arg {
         return Ok(None);
     }
     let Some(identity) = &call.identity else {
-        return Err("agent-control lease requires a session identity; the page action was not dispatched");
+        return Err(
+            "agent-control lease requires a session identity; the page action was not dispatched",
+        );
     };
     let Some(page_id) = extract_page_id(call) else {
         return Err("page mutation requires an explicit page id for native-lock verification");
@@ -838,10 +855,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn native_control_fails_closed_when_page_mutation_has_no_identity() -> anyhow::Result<()> {
+    async fn native_control_fails_closed_when_page_mutation_has_no_identity() -> anyhow::Result<()>
+    {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call(
@@ -850,23 +867,24 @@ mod tests {
         )
         .await?;
         call.identity = None;
-        call.state.agent_control = Arc::new(AgentControlService::new(Some(
-            "test-secret".to_string(),
-        )));
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
 
         let result = begin_action_control(&call).await;
         assert_eq!(
             result.err(),
-            Some("agent-control lease requires a session identity; the page action was not dispatched"),
+            Some(
+                "agent-control lease requires a session identity; the page action was not dispatched"
+            ),
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn required_native_control_fails_closed_when_script_credential_is_missing() -> anyhow::Result<()> {
+    async fn required_native_control_fails_closed_when_script_credential_is_missing()
+    -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call("run", serde_json::json!({ "code": "return 1" })).await?;
@@ -875,16 +893,18 @@ mod tests {
         let result = begin_action_control(&call).await;
         assert_eq!(
             result.err(),
-            Some("native agent tab control is required but its extension credential is unavailable; the script was not dispatched"),
+            Some(
+                "native agent tab control is required but its extension credential is unavailable; the script was not dispatched"
+            ),
         );
         Ok(())
     }
 
     #[tokio::test]
-    async fn required_native_control_fails_closed_when_page_credential_is_missing() -> anyhow::Result<()> {
+    async fn required_native_control_fails_closed_when_page_credential_is_missing()
+    -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call(
@@ -897,7 +917,9 @@ mod tests {
         let result = begin_action_control(&call).await;
         assert_eq!(
             result.err(),
-            Some("native agent tab control is required but its extension credential is unavailable; the page action was not dispatched"),
+            Some(
+                "native agent tab control is required but its extension credential is unavailable; the page action was not dispatched"
+            ),
         );
         Ok(())
     }
@@ -905,20 +927,20 @@ mod tests {
     #[tokio::test]
     async fn native_control_fails_closed_when_script_has_no_identity() -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call("run", serde_json::json!({})).await?;
         call.identity = None;
-        call.state.agent_control = Arc::new(AgentControlService::new(Some(
-            "test-secret".to_string(),
-        )));
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
 
         let result = begin_action_control(&call).await;
         assert_eq!(
             result.err(),
-            Some("agent-control lease requires a session identity; the script action was not dispatched"),
+            Some(
+                "agent-control lease requires a session identity; the script action was not dispatched"
+            ),
         );
         Ok(())
     }
@@ -926,16 +948,14 @@ mod tests {
     #[tokio::test]
     async fn script_inner_action_fails_closed_when_identity_is_missing() -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
         use browseros_mcp::InnerCallHook;
 
         let mut call = tool_call("run", serde_json::json!({})).await?;
         call.identity = None;
-        call.state.agent_control = Arc::new(AgentControlService::new(Some(
-            "test-secret".to_string(),
-        )));
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
 
         let hook = super::super::script_hook::ScriptInnerCallHook::new(call);
         let result = hook.authorize(Some(1)).await;
@@ -949,8 +969,7 @@ mod tests {
     #[tokio::test]
     async fn native_control_rejects_page_mutation_without_fresh_snapshot() -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call(
@@ -958,9 +977,8 @@ mod tests {
             serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
         )
         .await?;
-        call.state.agent_control = Arc::new(AgentControlService::new(Some(
-            "test-secret".to_string(),
-        )));
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
 
         let result = begin_action_control(&call).await;
         assert_eq!(
@@ -973,14 +991,15 @@ mod tests {
     #[tokio::test]
     async fn native_lock_wait_honors_client_cancellation() -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call("act", serde_json::json!({})).await?;
         let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
         call.state.agent_control = service.clone();
-        let ticket = service.begin("test-owner", 1, 42, "target-a", false).await?;
+        let ticket = service
+            .begin("test-owner", 1, 42, "target-a", false)
+            .await?;
         let client_cancel = call.client_cancel.clone();
 
         let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
@@ -998,14 +1017,15 @@ mod tests {
     #[tokio::test]
     async fn native_lock_wait_honors_operator_cancellation() -> anyhow::Result<()> {
         use crate::{
-            api::mcp::test_support::tool_call,
-            services::agent_control::AgentControlService,
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
         };
 
         let mut call = tool_call("act", serde_json::json!({})).await?;
         let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
         call.state.agent_control = service.clone();
-        let ticket = service.begin("test-owner", 1, 42, "target-a", false).await?;
+        let ticket = service
+            .begin("test-owner", 1, 42, "target-a", false)
+            .await?;
         let dispatch_cancel = call.dispatch_cancel.clone();
 
         let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);

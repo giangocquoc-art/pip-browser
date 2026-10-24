@@ -1,6 +1,6 @@
 use crate::{
     api::mcp::dispatch::{
-        finish_agent_control_action, wait_for_agent_control_lock, ToolCall, ToolIdentity,
+        ToolCall, ToolIdentity, finish_agent_control_action, wait_for_agent_control_lock,
     },
     api::mcp::effects::{ownership_claims, tab_groups, tabs_list_view},
     clock::now_epoch_ms,
@@ -100,10 +100,14 @@ impl InnerCallHook for ScriptInnerCallHook {
             };
             if agent_control.requires_control() {
                 let Some(browser) = &self.call.browser_session else {
-                    return Err("the browser session is unavailable for native tab control".to_string());
+                    return Err(
+                        "the browser session is unavailable for native tab control".to_string()
+                    );
                 };
                 let Some(page_info) = browser.pages.get_info(PageId(page)).await else {
-                    return Err("the page changed before native tab control could be confirmed".to_string());
+                    return Err(
+                        "the page changed before native tab control could be confirmed".to_string(),
+                    );
                 };
                 let owner = identity.session.id().as_str();
                 let ticket = self
@@ -198,12 +202,9 @@ impl InnerCallHook for ScriptInnerCallHook {
             };
             if let Some(ticket) = action_ticket
                 && let Some(identity) = self.identity()
-                && let Err(error) = finish_agent_control_action(
-                    &self.call,
-                    identity.session.id().as_str(),
-                    &ticket,
-                )
-                .await
+                && let Err(error) =
+                    finish_agent_control_action(&self.call, identity.session.id().as_str(), &ticket)
+                        .await
                 && let Ok(mut cleanup_error) = self.call.agent_control_cleanup_error.lock()
             {
                 *cleanup_error = Some(error.to_string());
@@ -415,14 +416,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_control_rejects_raw_cdp_even_when_page_session_is_supplied() -> anyhow::Result<()> {
+    async fn native_control_rejects_raw_cdp_even_when_page_session_is_supplied()
+    -> anyhow::Result<()> {
         use crate::services::agent_control::AgentControlService;
         use browseros_mcp::InnerCallHook;
 
         let mut call = tool_call("run", json!({ "code": "return 1" })).await?;
-        call.state.agent_control = Arc::new(AgentControlService::new(Some(
-            "test-secret".to_string(),
-        )));
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
         let hook = hook_for(&call);
         let result = hook
             .authorize_unscoped_cdp("Input.dispatchMouseEvent", true)
@@ -436,7 +437,11 @@ mod tests {
             .authorize_unscoped_cdp("Browser.createTab", false)
             .await;
         assert!(missing_credential.is_err());
-        assert!(missing_credential.unwrap_err().contains("native tab control"));
+        assert!(
+            missing_credential
+                .unwrap_err()
+                .contains("native tab control")
+        );
         Ok(())
     }
 

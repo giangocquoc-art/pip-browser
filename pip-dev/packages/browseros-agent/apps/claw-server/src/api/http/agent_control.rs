@@ -12,8 +12,14 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     if !state.agent_control.is_enabled() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
-    let bearer = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    if state.agent_control.authorized(bearer) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if state.agent_control.authorized(bearer) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
 }
 
 /// Returns exact lease incarnations and terminal states to the bundled extension.
@@ -23,7 +29,9 @@ pub(super) async fn leases(
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
     authorized(&state, &headers)?;
-    Ok(Json(json!({ "leases": state.agent_control.leases_for_extension().await })))
+    Ok(Json(
+        json!({ "leases": state.agent_control.leases_for_extension().await }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -48,15 +56,23 @@ pub(super) async fn acknowledge(
     Path(lease_id): Path<String>,
     Json(body): Json<AckRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    authorized(&state, &headers).map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
+    authorized(&state, &headers)
+        .map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
     let ack = match body.status.as_str() {
         "locked" => LeaseAck::Locked,
         "unlocked" => LeaseAck::Unlocked,
         "unavailable" => LeaseAck::Unavailable,
         "stale" => LeaseAck::Stale,
-        _ => return Err((StatusCode::BAD_REQUEST, Json(json!({"error":"invalid acknowledgement"})))),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid acknowledgement"})),
+            ));
+        }
     };
-    state.agent_control.acknowledge(&lease_id, body.tab_id, &body.target_id, ack)
+    state
+        .agent_control
+        .acknowledge(&lease_id, body.tab_id, &body.target_id, ack)
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)
@@ -70,8 +86,11 @@ pub(super) async fn release(
     Path(lease_id): Path<String>,
     Json(body): Json<ReleaseRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
-    authorized(&state, &headers).map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
-    state.agent_control.request_release(&lease_id, body.tab_id, &body.target_id)
+    authorized(&state, &headers)
+        .map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
+    state
+        .agent_control
+        .request_release(&lease_id, body.tab_id, &body.target_id)
         .await
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)

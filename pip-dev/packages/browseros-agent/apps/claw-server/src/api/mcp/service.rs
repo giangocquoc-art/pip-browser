@@ -376,13 +376,7 @@ impl ClawMcpService {
                 let ticket = match self
                     .state
                     .agent_control
-                    .begin(
-                        owner,
-                        page_id,
-                        page.tab_id.0,
-                        page.target_id.as_str(),
-                        true,
-                    )
+                    .begin(owner, page_id, page.tab_id.0, page.target_id.as_str(), true)
                     .await
                 {
                     Ok(ticket) => ticket,
@@ -401,11 +395,9 @@ impl ClawMcpService {
                         .agent_control
                         .abort(owner, &ticket.lease_id)
                         .await;
-                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
-                        format!(
-                            "Native tab lock was not confirmed; the action was not started. Cleanup is pending: {error}"
-                        ),
-                    )]);
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
+                        "Native tab lock was not confirmed; the action was not started. Cleanup is pending: {error}"
+                    ))]);
                 }
                 CallToolResult::success(vec![rmcp::model::ContentBlock::text(
                     json!({
@@ -425,36 +417,31 @@ impl ClawMcpService {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 else {
-                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(
-                        format!("agent_control {action} requires leaseId from begin."),
-                    )]);
+                    return CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
+                        "agent_control {action} requires leaseId from begin."
+                    ))]);
                 };
                 if action == "status" {
                     return match self.state.agent_control.status(owner, lease_id).await {
-                        Ok(status) => CallToolResult::success(vec![
-                            rmcp::model::ContentBlock::text(
+                        Ok(status) => {
+                            CallToolResult::success(vec![rmcp::model::ContentBlock::text(
                                 serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string()),
-                            ),
-                        ]),
-                        Err(error) => CallToolResult::error(vec![
-                            rmcp::model::ContentBlock::text(error),
-                        ]),
+                            )])
+                        }
+                        Err(error) => {
+                            CallToolResult::error(vec![rmcp::model::ContentBlock::text(error)])
+                        }
                     };
                 }
-                match self
-                    .state
-                    .agent_control
-                    .end(owner, lease_id, &cancel)
-                    .await
-                {
+                match self.state.agent_control.end(owner, lease_id, &cancel).await {
                     Ok(()) => CallToolResult::success(vec![rmcp::model::ContentBlock::text(
                         "Native tab unlock was confirmed; control is returned.",
                     )]),
-                    Err(error) => CallToolResult::error(vec![
-                        rmcp::model::ContentBlock::text(format!(
+                    Err(error) => {
+                        CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
                             "Native tab unlock is not confirmed; keep the tab stopped and retry cleanup: {error}"
-                        )),
-                    ]),
+                        ))])
+                    }
                 }
             }
             _ => CallToolResult::error(vec![rmcp::model::ContentBlock::text(
@@ -1643,7 +1630,9 @@ impl ServerHandler for ClawMcpService {
         } else if is_mark_skill_run {
             Ok(self.call_mark_skill_run(&started, &raw_args).await)
         } else if is_agent_control {
-            Ok(self.call_agent_control(&started, &raw_args, context.ct.clone()).await)
+            Ok(self
+                .call_agent_control(&started, &raw_args, context.ct.clone())
+                .await)
         } else if is_request_help {
             Ok(self
                 .call_request_human_help(&started, &raw_args, context.ct.clone())
