@@ -586,6 +586,14 @@ impl AgentControlService {
         dispatch_id: &str,
     ) -> bool {
         let mut inner = self.inner.lock().await;
+        if inner
+            .leases
+            .get(&ticket.lease_id)
+            .is_some_and(|lease| lease.owner != owner)
+        {
+            self.changed.notify_waiters();
+            return false;
+        }
         let (removed, remove_entry) = match inner.active_dispatches.get_mut(&ticket.lease_id) {
             Some(active) => {
                 let removed = active.remove(dispatch_id).is_some();
@@ -603,7 +611,6 @@ impl AgentControlService {
         let tab_id = inner
             .leases
             .get(&ticket.lease_id)
-            .filter(|lease| lease.owner == owner && lease.generation == ticket.generation)
             .map(|lease| lease.tab_id);
         let Some(tab_id) = tab_id else {
             self.changed.notify_waiters();
@@ -1953,11 +1960,6 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        let action_b = service
-            .begin("owner", 1, 42, "target-a", false)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        assert_eq!(action_a.lease_id, action_b.lease_id);
         service
             .register_action_dispatch(
                 "owner",
@@ -1967,6 +1969,14 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
+
+        // A second action advances the shared lease generation while A is still
+        // registered. A must still release only its own action reference.
+        let action_b = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(action_a.lease_id, action_b.lease_id);
         service
             .register_action_dispatch(
                 "owner",
@@ -1999,6 +2009,16 @@ mod tests {
             Some(1)
         );
 
+        service
+            .acknowledge(
+                &action_b.lease_id,
+                action_b.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         assert!(
             service
                 .finish_action_dispatch("owner", &action_b, "dispatch-b")
