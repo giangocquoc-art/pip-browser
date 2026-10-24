@@ -27,7 +27,7 @@ pub struct AgentControlService {
 struct Inner {
     leases: BTreeMap<String, Lease>,
     snapshot_revisions: BTreeMap<i64, u64>,
-    stopped_tabs: BTreeMap<i64, String>,
+    stopped_tabs: BTreeSet<(i64, String)>,
     draining_tabs: BTreeSet<i64>,
     active_dispatches: BTreeMap<String, BTreeMap<String, CancellationToken>>,
 }
@@ -143,14 +143,10 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        if let Some(stopped_target) = inner.stopped_tabs.get(&tab_id) {
-            if stopped_target == target_id {
-                return Err(
-                    "agent control was stopped for this tab; restart Pip Dev before reacquiring control",
-                );
-            }
-            // A replacement target is a new tab incarnation, not a restart of the stopped agent.
-            inner.stopped_tabs.remove(&tab_id);
+        if inner.stopped_tabs.contains(&(tab_id, target_id.to_string())) {
+            return Err(
+                "agent control was stopped for this tab; restart Pip Dev before reacquiring control",
+            );
         }
         if inner.draining_tabs.contains(&tab_id) {
             return Err(
@@ -548,8 +544,7 @@ impl AgentControlService {
         }
         if inner
             .stopped_tabs
-            .get(&lease.tab_id)
-            .is_some_and(|target| target == &lease.target_id)
+            .contains(&(lease.tab_id, lease.target_id.clone()))
         {
             cancel.cancel();
             return Err("agent control was stopped for this tab; the action was not dispatched");
@@ -674,7 +669,7 @@ impl AgentControlService {
         {
             return Err("tab Stop target does not match its active lease incarnation");
         }
-        inner.stopped_tabs.insert(tab_id, target_id.to_string());
+        inner.stopped_tabs.insert((tab_id, target_id.to_string()));
         for lease in inner.leases.values().filter(|lease| lease.tab_id == tab_id) {
             if let Some(active) = inner.active_dispatches.get(&lease.id) {
                 for cancel in active.values() {
@@ -704,7 +699,7 @@ impl AgentControlService {
             if lease.generation != generation {
                 return Err("lease release generation is stale");
             }
-            inner.stopped_tabs.insert(tab_id, target_id.to_string());
+            inner.stopped_tabs.insert((tab_id, target_id.to_string()));
             if let Some(active) = inner.active_dispatches.get(lease_id) {
                 for cancel in active.values() {
                     cancel.cancel();
@@ -2166,6 +2161,27 @@ mod tests {
                 .map_err(anyhow::Error::msg)?
                 .target_id,
             "target-b"
+        );
+        service
+            .abort("new-owner", &replacement.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &replacement.lease_id,
+                replacement.generation,
+                42,
+                "target-b",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            service
+                .begin("old-owner", 1, 42, "target-a", false)
+                .await
+                .is_err(),
+            "a different-target begin must never erase the old Stop intent"
         );
         Ok(())
     }
