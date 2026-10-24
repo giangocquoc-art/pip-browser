@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..19919de8931b03b7ae7cf772f9e98b0d907259cd
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_manager.cc
-@@ -0,0 +1,1566 @@
+@@ -0,0 +1,1567 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -757,6 +757,7 @@ index 0000000000000000000000000000000000000000..19919de8931b03b7ae7cf772f9e98b0d
 +  // This secret is unique to the running browser/server instance. It is written
 +  // to the private sidecar config and a Local State pref read by the bundled
 +  // extension; it is never included in logs or page-facing messages.
++  config.agent_control_required = true;
 +  config.agent_control_token = base::UnguessableToken::Create().ToString();
 +  local_state_->SetString(browseros_server::kAgentControlToken,
 +                          config.agent_control_token);

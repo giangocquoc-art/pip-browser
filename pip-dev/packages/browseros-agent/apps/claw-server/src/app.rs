@@ -147,8 +147,9 @@ impl AppState {
             database,
             analytics_sink.clone(),
         ));
-        let agent_control = Arc::new(AgentControlService::new(
+        let agent_control = Arc::new(AgentControlService::new_with_policy(
             config.agent_control_token.as_ref().map(|token| token.expose_to_extension_bridge().to_string()),
+            config.agent_control_required,
         ));
         let sessions = Sessions::new_with_analytics(
             audit_log.clone(),
@@ -302,6 +303,7 @@ mod tests {
             replay_retention_days: 7,
             dev_mode: false,
             agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
 

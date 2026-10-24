@@ -81,17 +81,24 @@ impl InnerCallHook for ScriptInnerCallHook {
 
     fn authorize<'a>(&'a self, page: Option<u32>) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            let agent_control = &self.call.state.agent_control;
+            if agent_control.is_required() && !agent_control.is_enabled() {
+                return Err(
+                    "native agent tab control is required but its extension credential is unavailable; the script action was not dispatched"
+                        .to_string(),
+                );
+            }
             let Some(page) = page else {
                 return Ok(());
             };
             let Some(identity) = self.identity() else {
-                return if self.call.state.agent_control.is_enabled() {
+                return if agent_control.requires_control() {
                     Err("agent-control lease requires a session identity; the script action was not dispatched".to_string())
                 } else {
                     Ok(())
                 };
             };
-            if self.call.state.agent_control.is_enabled() {
+            if agent_control.requires_control() {
                 let Some(browser) = &self.call.browser_session else {
                     return Err("the browser session is unavailable for native tab control".to_string());
                 };
@@ -422,6 +429,14 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("page-scoped"));
+
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+        let hook = hook_for(&call);
+        let missing_credential = hook
+            .authorize_unscoped_cdp("Browser.createTab", false)
+            .await;
+        assert!(missing_credential.is_err());
+        assert!(missing_credential.unwrap_err().contains("native tab control"));
         Ok(())
     }
 

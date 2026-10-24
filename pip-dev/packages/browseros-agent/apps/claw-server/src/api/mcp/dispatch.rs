@@ -512,10 +512,23 @@ pub(crate) async fn finish_agent_control_action(
 async fn begin_action_control(
     call: &ToolCall,
 ) -> Result<Option<LeaseTicket>, &'static str> {
-    if !call.state.agent_control.is_enabled() {
-        return Ok(None);
+    let agent_control = &call.state.agent_control;
+    let is_script = ARBITRARY_SCRIPT_TOOLS.contains(&call.tool().name);
+    if !agent_control.is_enabled() {
+        if !agent_control.is_required() {
+            return Ok(None);
+        }
+        if is_script {
+            return Err("native agent tab control is required but its extension credential is unavailable; the script was not dispatched");
+        }
+        if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true)
+            || !call.tool().metadata.accepts_page_arg
+        {
+            return Ok(None);
+        }
+        return Err("native agent tab control is required but its extension credential is unavailable; the page action was not dispatched");
     }
-    if ARBITRARY_SCRIPT_TOOLS.contains(&call.tool().name) {
+    if is_script {
         if call.identity.is_none() {
             return Err("agent-control lease requires a session identity; the script action was not dispatched");
         }
@@ -845,6 +858,46 @@ mod tests {
         assert_eq!(
             result.err(),
             Some("agent-control lease requires a session identity; the page action was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_native_control_fails_closed_when_script_credential_is_missing() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("run", serde_json::json!({ "code": "return 1" })).await?;
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("native agent tab control is required but its extension credential is unavailable; the script was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_native_control_fails_closed_when_page_credential_is_missing() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("native agent tab control is required but its extension credential is unavailable; the page action was not dispatched"),
         );
         Ok(())
     }

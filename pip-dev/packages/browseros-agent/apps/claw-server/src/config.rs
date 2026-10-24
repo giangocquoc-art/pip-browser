@@ -89,6 +89,8 @@ pub struct Config {
     pub dev_mode: bool,
     /// Redacted per-process credential shared with the bundled extension.
     pub agent_control_token: Option<AgentControlToken>,
+    /// The bundled Pip Dev launcher requires native input leases even if its credential is missing.
+    pub agent_control_required: bool,
     /// Read once per process. Every discovery and execution path gates native features on
     /// this one value, which `BrowserService` copies into each browser session.
     pub native: NativeIdentity,
@@ -153,6 +155,9 @@ struct SidecarConfig {
     /// Instance-scoped extension bridge credential; missing disables native locking.
     #[serde(default)]
     agent_control_token: Option<AgentControlToken>,
+    /// When true, missing native lock support blocks potentially mutating agent operations.
+    #[serde(default)]
+    agent_control_required: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -219,6 +224,7 @@ impl Config {
         let dev_mode = sidecar.flags.dev_mode.unwrap_or(default_dev_mode);
         let browserclaw_dir = resolve_browserclaw_dir(env, dev_mode, &cwd);
         let native = resolve_native_identity(env, sidecar.instance.as_ref());
+        let agent_control_required = sidecar.agent_control_required;
         let agent_control_token = sidecar.agent_control_token;
 
         Ok(Self {
@@ -248,6 +254,7 @@ impl Config {
                 .unwrap_or(DEFAULT_REPLAY_RETENTION_DAYS),
             dev_mode,
             agent_control_token,
+            agent_control_required,
             native,
         })
     }
@@ -424,6 +431,7 @@ mod tests {
         assert_eq!(cfg.session_idle, Duration::from_millis(1000));
         assert_eq!(cfg.session_retention, Duration::from_millis(2000));
         assert_eq!(cfg.replay_retention_days, 7);
+        assert!(!cfg.agent_control_required);
         assert!(cfg.browserclaw_dir.ends_with("browserclaw"));
         assert_eq!(cfg.public_mcp_url(), "http://127.0.0.1:9200/mcp");
         // No proxy configured (dev): falls back to the direct server port.
@@ -435,12 +443,16 @@ mod tests {
     fn reads_replay_retention_days_from_sidecar_config() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let config_path = dir.path().join("sidecar.json");
-        fs::write(&config_path, r#"{"replay":{"retentionDays":14}}"#)?;
+        fs::write(
+            &config_path,
+            r#"{"replay":{"retentionDays":14},"agent_control_required":true}"#,
+        )?;
         let cfg = Config::load_with_env(
             &config_path,
             &ConfigEnv::with_vars(BTreeMap::new(), dir.path().join("home")),
         )?;
         assert_eq!(cfg.replay_retention_days, 14);
+        assert!(cfg.agent_control_required);
         Ok(())
     }
 

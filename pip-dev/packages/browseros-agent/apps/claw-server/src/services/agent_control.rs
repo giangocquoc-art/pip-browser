@@ -18,6 +18,7 @@ const MAX_CLEANUP_FAILURES: u8 = 3;
 #[derive(Clone)]
 pub struct AgentControlService {
     token: Option<Arc<str>>,
+    required: bool,
     inner: Arc<Mutex<Inner>>,
     changed: Arc<Notify>,
 }
@@ -80,8 +81,14 @@ pub struct LeaseTicket {
 impl AgentControlService {
     #[must_use]
     pub fn new(token: Option<String>) -> Self {
+        Self::new_with_policy(token, false)
+    }
+
+    #[must_use]
+    pub fn new_with_policy(token: Option<String>, required: bool) -> Self {
         Self {
             token: token.filter(|token| !token.trim().is_empty()).map(Arc::from),
+            required,
             inner: Arc::default(),
             changed: Arc::new(Notify::new()),
         }
@@ -90,6 +97,17 @@ impl AgentControlService {
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.token.is_some()
+    }
+
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.required
+    }
+
+    /// Whether page-facing operations must pass through native control.
+    #[must_use]
+    pub fn requires_control(&self) -> bool {
+        self.required || self.is_enabled()
     }
 
     /// Bearer auth is the authority. Origin checks are only defense in depth.
@@ -578,6 +596,23 @@ mod tests {
 
     fn service() -> AgentControlService {
         AgentControlService::new(Some("test-only-secret".to_string()))
+    }
+
+    #[test]
+    fn required_policy_does_not_degrade_to_feature_off_without_a_token() {
+        let required = AgentControlService::new_with_policy(None, true);
+        assert!(required.is_required());
+        assert!(required.requires_control());
+        assert!(!required.is_enabled());
+        assert!(!required.authorized(Some("Bearer anything")));
+
+        let disabled = AgentControlService::new_with_policy(None, false);
+        assert!(!disabled.is_required());
+        assert!(!disabled.requires_control());
+
+        let enabled = AgentControlService::new_with_policy(Some("token".to_string()), false);
+        assert!(!enabled.is_required());
+        assert!(enabled.requires_control());
     }
 
     #[tokio::test]
