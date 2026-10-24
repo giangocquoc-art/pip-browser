@@ -46,14 +46,31 @@ export type InPageControlContext = TakeoverContext | AgentControlContext
  * Background's answer to a `takeover-poll`, resolved from the live help request
  * for the sender's tab.
  */
+export interface AgentControlLeaseSummary {
+  leaseId: string
+  pageId: number
+  tabId: number
+  targetId: string
+  operation: 'lock' | 'unlock'
+  status: 'locking' | 'locked' | 'unlocking' | 'failed'
+  error?: string | null
+  expiresAtMs: number
+}
+
 export type TakeoverPollResponse =
-  | { active: true; context: InPageControlContext }
-  | { active: false }
-  | {
-      active: false
-      unavailable: true
-      nativeInputLock?: 'locked' | 'unavailable' | 'unlocked'
-    }
+  (
+    | { active: true; context: InPageControlContext }
+    | { active: false }
+    | {
+        active: false
+        unavailable: true
+        nativeInputLock?: 'locked' | 'unavailable' | 'unlocked'
+      }
+  ) & {
+    /** Exact MCP leases for this tab, including failed cleanup for Stop/Retry. */
+    agentControlLeases?: AgentControlLeaseSummary[]
+    agentControlError?: boolean
+  }
 
 /** A `takeover-resolve`: the human handed control back from the bar. */
 export interface TakeoverResolveMessage {
