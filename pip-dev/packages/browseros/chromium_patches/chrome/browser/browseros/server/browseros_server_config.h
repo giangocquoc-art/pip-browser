@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..a98e3b74de45e
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_config.h
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,148 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -140,6 +140,7 @@ index 0000000000000..a98e3b74de45e
 +  ServerPaths paths;
 +  ServerIdentity identity;
 +  bool allow_remote_in_mcp = false;
++  std::string agent_control_token;
 +
 +  // Returns true if the config is valid for launching.
 +  bool IsValid() const;
