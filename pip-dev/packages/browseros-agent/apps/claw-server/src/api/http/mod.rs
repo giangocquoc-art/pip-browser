@@ -18,7 +18,7 @@ use tracing::{Instrument, info_span};
 use ulid::Ulid;
 
 pub(crate) mod agent_control;
-mod audit;
+pub(crate) mod audit;
 mod cockpit;
 mod connections;
 mod feedback;

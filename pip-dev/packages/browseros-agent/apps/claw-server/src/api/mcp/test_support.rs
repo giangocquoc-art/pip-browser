@@ -43,6 +43,8 @@ pub async fn tool_call(tool_name: &str, raw_args: Value) -> anyhow::Result<ToolC
         session_sweep_interval: Duration::from_secs(60),
         replay_retention_days: 7,
         dev_mode: false,
+        agent_control_token: None,
+        agent_control_required: false,
         native: crate::config::NativeIdentity {
             capabilities: current_native(),
             asserted: false,

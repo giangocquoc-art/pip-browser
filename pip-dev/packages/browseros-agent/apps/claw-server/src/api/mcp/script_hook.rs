@@ -16,6 +16,7 @@ use browseros_mcp::{
 };
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::warn;
 
 /// Host hook a `run`/`execute` script invokes around each browser primitive.

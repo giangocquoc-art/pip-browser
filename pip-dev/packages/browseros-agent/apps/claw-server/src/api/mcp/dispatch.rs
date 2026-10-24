@@ -474,7 +474,7 @@ async fn run_observers(context: ToolObserverContext<'_>, observers: &[NamedToolO
     }
 }
 
-async fn wait_for_agent_control_lock(
+pub(crate) async fn wait_for_agent_control_lock(
     call: &ToolCall,
     owner: &str,
     lease_id: &str,
@@ -999,7 +999,7 @@ mod tests {
         call.state.agent_control = service.clone();
         let ticket = service
             .begin("test-owner", 1, 42, "target-a", false)
-            .await?;
+            .await.map_err(anyhow::Error::msg)?;
         let client_cancel = call.client_cancel.clone();
 
         let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
@@ -1025,7 +1025,7 @@ mod tests {
         call.state.agent_control = service.clone();
         let ticket = service
             .begin("test-owner", 1, 42, "target-a", false)
-            .await?;
+            .await.map_err(anyhow::Error::msg)?;
         let dispatch_cancel = call.dispatch_cancel.clone();
 
         let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
