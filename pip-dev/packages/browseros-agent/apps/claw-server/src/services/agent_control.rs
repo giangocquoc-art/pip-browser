@@ -2064,7 +2064,6 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
     async fn tab_stop_cancels_then_preserves_the_existing_drain_barrier() -> anyhow::Result<()> {
         use std::time::Duration;
