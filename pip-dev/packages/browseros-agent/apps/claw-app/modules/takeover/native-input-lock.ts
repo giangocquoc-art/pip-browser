@@ -277,7 +277,7 @@ export class NativeInputLockManager {
         'Input.setAgentInputLock',
         { locked: true },
       )
-      if (this.leases.get(tabId) !== lease || lease.status === 'unavailable') {
+      if (this.leases.get(tabId) !== lease || this.leases.get(tabId)?.status === 'unavailable') {
         throw new Error('debugger detached while enabling the input lock')
       }
       lease.status = 'locked'

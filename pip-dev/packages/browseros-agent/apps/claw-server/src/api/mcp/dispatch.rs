@@ -474,21 +474,39 @@ async fn run_observers(context: ToolObserverContext<'_>, observers: &[NamedToolO
     }
 }
 
+async fn wait_for_agent_control_lock(
+    call: &ToolCall,
+    owner: &str,
+    lease_id: &str,
+) -> Result<(), &'static str> {
+    let dispatch_cancel = call.dispatch_cancel.clone();
+    let client_cancel = call.client_cancel.clone();
+    let session_cancel = call.cancel.clone();
+    let service = call.state.agent_control.clone();
+
+    tokio::select! {
+        biased;
+        () = dispatch_cancel.cancelled() => Err("agent-control lock wait was cancelled by the operator"),
+        () = client_cancel.cancelled() => Err("agent-control lock wait was cancelled by the client"),
+        result = service.wait_locked(owner, lease_id, &session_cancel) => result,
+    }
+}
+
 async fn begin_action_control(
     call: &ToolCall,
 ) -> Result<Option<LeaseTicket>, &'static str> {
     if !call.state.agent_control.is_enabled() {
         return Ok(None);
     }
-    let Some(identity) = &call.identity else {
-        return Ok(None);
-    };
     if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true) {
         return Ok(None);
     }
     if !call.tool().metadata.accepts_page_arg {
         return Ok(None);
     }
+    let Some(identity) = &call.identity else {
+        return Err("agent-control lease requires a session identity; the page action was not dispatched");
+    };
     let Some(page_id) = extract_page_id(call) else {
         return Err("page mutation requires an explicit page id for native-lock verification");
     };
@@ -508,12 +526,7 @@ async fn begin_action_control(
             false,
         )
         .await?;
-    if let Err(error) = call
-        .state
-        .agent_control
-        .wait_locked(owner, &ticket.lease_id, &call.cancel)
-        .await
-    {
+    if let Err(error) = wait_for_agent_control_lock(call, owner, &ticket.lease_id).await {
         let _ = call
             .state
             .agent_control
@@ -536,6 +549,12 @@ async fn execute_with_agent_control(call: &ToolCall) -> DispatchExecution {
     let ticket = match begin_action_control(call).await {
         Ok(ticket) => ticket,
         Err(error) => {
+            if call.dispatch_cancel.is_cancelled()
+                || call.client_cancel.is_cancelled()
+                || call.cancel.is_cancelled()
+            {
+                return execute_with_cancellation(call).await;
+            }
             return DispatchExecution::Completed(ExecutionOutcome {
                 result: ToolResult::error(format!(
                     "Native tab lock was not confirmed; no page input was dispatched: {error}"
@@ -790,6 +809,31 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn native_control_fails_closed_when_page_mutation_has_no_identity() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.identity = None;
+        call.state.agent_control = Arc::new(AgentControlService::new(Some(
+            "test-secret".to_string(),
+        )));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("agent-control lease requires a session identity; the page action was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn native_control_rejects_page_mutation_without_fresh_snapshot() -> anyhow::Result<()> {
         use crate::{
             api::mcp::test_support::tool_call,
@@ -810,6 +854,56 @@ mod tests {
             result.err(),
             Some("page snapshot is unavailable or stale; the action was not dispatched"),
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_lock_wait_honors_client_cancellation() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("act", serde_json::json!({})).await?;
+        let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        call.state.agent_control = service.clone();
+        let ticket = service.begin("test-owner", 1, 42, "target-a", false).await?;
+        let client_cancel = call.client_cancel.clone();
+
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
+        tokio::pin!(waiting);
+        tokio::task::yield_now().await;
+        client_cancel.cancel();
+        assert_eq!(
+            waiting.await,
+            Err("agent-control lock wait was cancelled by the client"),
+        );
+        service.abort("test-owner", &ticket.lease_id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_lock_wait_honors_operator_cancellation() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("act", serde_json::json!({})).await?;
+        let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        call.state.agent_control = service.clone();
+        let ticket = service.begin("test-owner", 1, 42, "target-a", false).await?;
+        let dispatch_cancel = call.dispatch_cancel.clone();
+
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket.lease_id);
+        tokio::pin!(waiting);
+        tokio::task::yield_now().await;
+        dispatch_cancel.cancel();
+        assert_eq!(
+            waiting.await,
+            Err("agent-control lock wait was cancelled by the operator"),
+        );
+        service.abort("test-owner", &ticket.lease_id).await?;
         Ok(())
     }
 
