@@ -857,15 +857,15 @@ mod tests {
             let dispatch_cancel = CancellationToken::new();
             let finishing = {
                 let service = service.clone();
-                let ticket = ticket.clone();
+                let lease_id = ticket.lease_id.clone();
                 let session_cancel = session_cancel.clone();
                 let client_cancel = client_cancel.clone();
                 let dispatch_cancel = dispatch_cancel.clone();
                 tokio::spawn(async move {
                     service
-                        .finish_action_and_wait_with_cancellation(
+                        .wait_unlocked(
                             "owner",
-                            &ticket,
+                            &lease_id,
                             &session_cancel,
                             &client_cancel,
                             &dispatch_cancel,
