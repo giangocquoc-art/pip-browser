@@ -583,12 +583,12 @@ pub(super) async fn page_document_checkpoint(
 
 async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'static str> {
     let agent_control = &call.state.agent_control;
-    let is_script = ARBITRARY_SCRIPT_TOOLS.contains(&call.tool().name);
+    let uses_inner_control = call.tool().name == "run";
     if !agent_control.is_enabled() {
         if !agent_control.is_required() {
             return Ok(None);
         }
-        if is_script {
+        if uses_inner_control {
             return Err(
                 "native agent tab control is required but its extension credential is unavailable; the script was not dispatched",
             );
@@ -607,7 +607,7 @@ async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'
             "native agent tab control is required but its extension credential is unavailable; the page action was not dispatched",
         );
     }
-    if is_script {
+    if uses_inner_control {
         if call.identity.is_none() {
             return Err(
                 "agent-control lease requires a session identity; the script action was not dispatched",
@@ -996,6 +996,92 @@ mod tests {
                 "agent-control lease requires a session identity; the page action was not dispatched"
             ),
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn evaluate_requires_native_lock_ack_before_dispatch() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+        use std::time::Duration;
+
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call(
+            "evaluate",
+            json!({
+                "page": page.page_id.0,
+                "code": "document.body.click();"
+            }),
+        )
+        .await?;
+        call.browser_session = Some(browser);
+        call.page_snapshot = Some(page);
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let owner = call
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("session identity missing"))?
+            .session
+            .id()
+            .as_str()
+            .to_string();
+        let dispatch_id = call.dispatch_id.clone();
+        let mut starting = tokio::spawn(async move { begin_action_control(&call).await });
+        let locking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service.pending_for_extension().await.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut starting)
+                .await
+                .is_err(),
+            "evaluate must wait for native lock acknowledgement"
+        );
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let ticket = tokio::time::timeout(Duration::from_secs(2), starting)
+            .await??
+            .map_err(anyhow::Error::msg)?
+            .ok_or_else(|| anyhow::anyhow!("evaluate bypassed native control"))?;
+        assert_eq!(ticket.lease_id, locking.lease_id);
+        assert!(
+            service
+                .finish_action_dispatch(&owner, &ticket, dispatch_id.as_str())
+                .await
+        );
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         Ok(())
     }
 

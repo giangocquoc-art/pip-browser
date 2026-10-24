@@ -1369,10 +1369,15 @@ fn parse_bridge_args(args_json: &str) -> Result<Vec<Value>, String> {
 /// variants) carry the page id as their first argument; the rest address no
 /// specific page.
 fn target_page(method: &str, args: &[Value]) -> Option<u32> {
+    if method.starts_with("tool:") {
+        return build_tool_args(args)
+            .get("page")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+    }
     let page_first = method.starts_with("observe.")
         || method.starts_with("input.")
         || method.starts_with("nav.")
-        || method.starts_with("tool:")
         || matches!(method, "pages.close" | "pages.getInfo" | "cdpJsonForPage");
     if !page_first {
         return None;
@@ -2460,6 +2465,34 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(log.authorized, vec![Some(1)]);
         // Rejected before dispatch, so nothing is recorded.
+        assert!(log.recorded.is_empty());
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn object_shaped_tool_args_cannot_bypass_page_authorization() -> anyhow::Result<()> {
+        let connection = Arc::new(RunFakeConnection::new());
+        let mut ctx = test_ctx_for(connection.clone(), BrowserToolDefaults::default());
+        let log = Arc::new(Mutex::new(HookLog {
+            reject: Some("native tab lock is required".to_owned()),
+            ..HookLog::default()
+        }));
+        ctx.inner_call_hook = Some(Arc::new(MockHook(log.clone())));
+        let bridge = test_bridge(ctx);
+        let result = bridge
+            .call(
+                "tool:evaluate",
+                r#"[{"page":1,"code":"document.body.click()"}]"#,
+                false,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(connection.sent_methods().is_empty());
+        let log = log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(log.authorized, vec![Some(1)]);
         assert!(log.recorded.is_empty());
         Ok(())
     }
