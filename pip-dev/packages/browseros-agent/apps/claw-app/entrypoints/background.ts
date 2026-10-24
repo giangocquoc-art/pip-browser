@@ -176,9 +176,10 @@ export default defineBackground(() => {
             return {
               confirmed: result.confirmed,
               pending: result.leases.length,
+              restartRequired: result.restartRequired,
             }
           } catch {
-            return { confirmed: false, pending: 1 }
+            return { confirmed: false, pending: 1, restartRequired: false }
           }
         },
         beginStop: (tabId) => inputLockGate.beginStop(tabId),

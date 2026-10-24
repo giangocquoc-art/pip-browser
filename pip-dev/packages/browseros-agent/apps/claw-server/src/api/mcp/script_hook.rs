@@ -29,7 +29,11 @@ use tracing::warn;
 /// script. It holds the script's own `ToolCall` to retain the same captured view.
 pub struct ScriptInnerCallHook {
     call: ToolCall,
-    action_leases: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u32, Vec<LeaseTicket>>>>,
+    action_leases: Arc<
+        tokio::sync::Mutex<
+            std::collections::BTreeMap<u32, Vec<(LeaseTicket, DispatchId)>>,
+        >,
+    >,
 }
 
 impl ScriptInnerCallHook {
@@ -124,7 +128,33 @@ impl InnerCallHook for ScriptInnerCallHook {
                     )
                     .await
                     .map_err(str::to_string)?;
+                let dispatch_id = DispatchId::new();
+                if let Err(error) = self
+                    .call
+                    .state
+                    .agent_control
+                    .register_action_dispatch(
+                        owner,
+                        &ticket,
+                        dispatch_id.as_str(),
+                        self.call.dispatch_cancel.clone(),
+                    )
+                    .await
+                {
+                    let _ = self
+                        .call
+                        .state
+                        .agent_control
+                        .abort_action(owner, &ticket)
+                        .await;
+                    return Err(error.to_string());
+                }
                 if let Err(error) = wait_for_agent_control_lock(&self.call, owner, &ticket).await {
+                    self.call
+                        .state
+                        .agent_control
+                        .unregister_action_dispatch(&ticket.lease_id, dispatch_id.as_str())
+                        .await;
                     let _ = self
                         .call
                         .state
@@ -138,7 +168,7 @@ impl InnerCallHook for ScriptInnerCallHook {
                     .await
                     .entry(page)
                     .or_default()
-                    .push(ticket);
+                    .push((ticket, dispatch_id));
             }
             // Ownership is a label, not a permission, so nothing is refused here.
             //
@@ -193,20 +223,26 @@ impl InnerCallHook for ScriptInnerCallHook {
         let output_token_estimate = record.output_token_estimate;
         let raw_args = record.args.clone();
         Box::pin(async move {
-            let action_ticket = if let Some(page_id) = page {
+            let action_lease = if let Some(page_id) = page {
                 let mut leases = self.action_leases.lock().await;
                 leases.get_mut(&page_id).and_then(Vec::pop)
             } else {
                 None
             };
-            if let Some(ticket) = action_ticket
-                && let Some(identity) = self.identity()
-                && let Err(error) =
-                    finish_agent_control_action(&self.call, identity.session.id().as_str(), &ticket)
-                        .await
-                && let Ok(mut cleanup_error) = self.call.agent_control_cleanup_error.lock()
-            {
-                *cleanup_error = Some(error.to_string());
+            if let Some((ticket, dispatch_id)) = action_lease {
+                self.call
+                    .state
+                    .agent_control
+                    .unregister_action_dispatch(&ticket.lease_id, dispatch_id.as_str())
+                    .await;
+                if let Some(identity) = self.identity()
+                    && let Err(error) =
+                        finish_agent_control_action(&self.call, identity.session.id().as_str(), &ticket)
+                            .await
+                    && let Ok(mut cleanup_error) = self.call.agent_control_cleanup_error.lock()
+                {
+                    *cleanup_error = Some(error.to_string());
+                }
             }
             let Some(identity) = self.identity() else {
                 return;
@@ -441,6 +477,145 @@ mod tests {
                 .unwrap_err()
                 .contains("native tab control")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_and_drains_nested_script_action_before_native_unlock()
+    -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{current_session, tool_call, ProfileConnection},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+        use browseros_mcp::InnerCallHook;
+        use std::time::Duration;
+
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call(
+            "run",
+            json!({"code":"await browser.pages.click(page);"}),
+        )
+        .await?;
+        call.browser_session = Some(browser);
+        let owner = call
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("script session identity missing"))?
+            .session
+            .id()
+            .as_str()
+            .to_string();
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let dispatch_cancel = call.dispatch_cancel.clone();
+        let hook = Arc::new(ScriptInnerCallHook::new(call.clone()));
+
+        // The inner primitive calls authorize before its handler and record only
+        // after the handler/readback has completed. Holding that interval simulates
+        // a nested script action still executing when Stop arrives.
+        let authorize_hook = hook.clone();
+        let page_id = page.page_id.0;
+        let authorize = tokio::spawn(async move { authorize_hook.authorize(Some(page_id)).await });
+        let locking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service.leases_for_extension().await.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(locking.status, "locking");
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        authorize
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
+
+        let release_service = service.clone();
+        let release_lease = locking.clone();
+        let mut stop = tokio::spawn(async move {
+            release_service
+                .request_release(
+                    &release_lease.lease_id,
+                    release_lease.generation,
+                    release_lease.tab_id,
+                    &release_lease.target_id,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), dispatch_cancel.cancelled()).await?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut stop)
+                .await
+                .is_err(),
+            "Stop must wait for the nested script primitive to report completion"
+        );
+        assert_eq!(
+            service
+                .status(&owner, &locking.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked",
+            "native input must stay locked while the nested primitive is in flight"
+        );
+
+        // This callback is the host's post-handler completion hook. It releases
+        // the per-invocation Stop barrier before requesting the normal action cleanup.
+        hook.record(InnerCallRecord {
+            method: "input.click",
+            page: Some(page_id),
+            args: &json!({"target":"button"}),
+            from_helper: false,
+            is_error: false,
+            duration_ms: 5,
+            output_token_estimate: 0,
+        })
+        .await;
+        stop.await.map_err(anyhow::Error::msg)?.map_err(anyhow::Error::msg)?;
+
+        let unlocking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service
+                    .pending_for_extension()
+                    .await
+                    .into_iter()
+                    .find(|lease| lease.status == "unlocking")
+                {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        service
+            .acknowledge(
+                &unlocking.lease_id,
+                unlocking.generation,
+                unlocking.tab_id,
+                &unlocking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(service.leases_for_extension().await.is_empty());
         Ok(())
     }
 
