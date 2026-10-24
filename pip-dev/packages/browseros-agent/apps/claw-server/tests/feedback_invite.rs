@@ -399,6 +399,8 @@ async fn test_app(root: &Path) -> anyhow::Result<TestApp> {
         server_port: 9200,
         cdp_port: 49337,
         proxy_port: None,
+        agent_control_token: None,
+        agent_control_required: false,
         resources_dir: root.join("resources"),
         browserclaw_dir: root.join("browserclaw"),
         session_idle: Duration::from_secs(300),

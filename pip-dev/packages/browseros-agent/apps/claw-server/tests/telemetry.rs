@@ -142,6 +142,8 @@ async fn test_router(root: &Path) -> anyhow::Result<Router> {
         server_port: 9200,
         cdp_port: 49337,
         proxy_port: None,
+        agent_control_token: None,
+        agent_control_required: false,
         resources_dir: root.join("resources"),
         browserclaw_dir: root.to_path_buf(),
         session_idle: Duration::from_secs(300),
