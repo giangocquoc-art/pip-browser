@@ -608,10 +608,7 @@ impl AgentControlService {
             self.changed.notify_waiters();
             return false;
         }
-        let tab_id = inner
-            .leases
-            .get(&ticket.lease_id)
-            .map(|lease| lease.tab_id);
+        let tab_id = inner.leases.get(&ticket.lease_id).map(|lease| lease.tab_id);
         let Some(tab_id) = tab_id else {
             self.changed.notify_waiters();
             return false;
