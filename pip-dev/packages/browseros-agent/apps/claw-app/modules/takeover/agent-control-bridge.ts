@@ -6,22 +6,15 @@ import type {
   AgentLeaseLockStatus,
   NativeInputLockManager,
 } from './native-input-lock'
+import type { AgentControlLeaseSummary } from './takeover.types'
 
 const TOKEN_PREF = 'browseros.server.agent_control_token'
 const LEASES_PATH = '/api/v1/agent-control/leases'
 const ACK_DEADLINE_MS = 8_000
 const STOP_POLL_MS = 250
 
-export interface AgentControlLeaseView {
-  leaseId: string
-  pageId: number
-  tabId: number
-  targetId: string
-  operation: 'lock' | 'unlock'
-  status: 'locking' | 'locked' | 'unlocking' | 'failed'
-  error?: string | null
-  expiresAtMs: number
-}
+export type AgentControlLeaseView = AgentControlLeaseSummary
+
 
 export type LeaseAcknowledge = (
   lease: AgentControlLeaseView,
