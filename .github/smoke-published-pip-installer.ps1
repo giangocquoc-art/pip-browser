@@ -119,6 +119,296 @@ try {
         throw 'The temporary smoke-test account unexpectedly belongs to Administrators.'
     }
 
+    $profileKey = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\$userSid"
+    $profileDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    while (-not (Test-Path -LiteralPath $profileKey) -and [DateTime]::UtcNow -lt $profileDeadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not (Test-Path -LiteralPath $profileKey)) {
+        throw 'Windows did not create the temporary standard-user profile needed for WebView2.'
+    }
+    $profilePath = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath)
+    $perUserWebViewRoot = Join-Path $profilePath 'AppData\\Local\\Microsoft\\EdgeWebView\\Application'
+    $webViewRoots = @($perUserWebViewRoot)
+    foreach ($programFilesRoot in @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), $env:ProgramFiles)) {
+        if ($programFilesRoot) {
+            $webViewRoots += Join-Path $programFilesRoot 'Microsoft\\EdgeWebView\\Application'
+        }
+    }
+
+    function Find-WebView2Runtime {
+        param([string[]] $Roots)
+        foreach ($root in $Roots) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+            foreach ($directory in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
+                if ($directory.Name -match '^\\d+(\\.\\d+){1,3}
+    $installerProcess = Start-Process -FilePath $installerPath -ArgumentList '--silent --no-shortcuts --no-register' -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+    if ($installerProcess.ExitCode -ne 0) {
+        throw "The published installer exited with code $($installerProcess.ExitCode)."
+    }
+
+    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+    if (-not (Test-Path -LiteralPath $profileKey)) {
+        throw 'The temporary standard-user profile was not created.'
+    }
+    $profilePath = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath)
+    $installDir = Join-Path $profilePath 'AppData\Local\Programs\Pip'
+    $pipPath = Join-Path $installDir 'Pip.exe'
+    foreach ($required in @($pipPath, (Join-Path $installDir '.pip-installed'), (Join-Path $installDir 'uninstall.exe'))) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "The published installer did not produce its expected per-user file: $required"
+        }
+    }
+    $report.installed = $true
+
+    $quotedPipPath = $pipPath.Replace("'", "''")
+    $wrapper = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $settingsDirectory = Join-Path $env:APPDATA 'evergreen-browser'
+    New-Item -ItemType Directory -Path $settingsDirectory -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $settingsDirectory 'settings.json'), '{"google_dns":true}', [System.Text.UTF8Encoding]::new($false))
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-address=127.0.0.1 --remote-debugging-port=__DEBUG_PORT__'
+    $browser = Start-Process -FilePath '__PIP_PATH__' -ArgumentList 'https://www.youtube.com/' -PassThru
+    [System.IO.File]::WriteAllText((Join-Path $settingsDirectory 'smoke-pid.txt'), $browser.Id.ToString(), [System.Text.UTF8Encoding]::new($false))
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_)
+    exit 1
+}
+'@
+    $wrapper = $wrapper.Replace('__DEBUG_PORT__', [string]$debugPort).Replace('__PIP_PATH__', $quotedPipPath)
+    $encodedWrapper = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapper))
+    $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+
+    Write-Host 'Blocking outbound system DNS so a successful page load proves Google DoH handled hostname resolution.'
+    foreach ($protocol in @('UDP', 'TCP')) {
+        $ruleName = "PipReleaseSmoke-$userName-$protocol"
+        New-NetFirewallRule -DisplayName $ruleName -Direction Outbound -Action Block -Profile Any -Protocol $protocol -RemotePort 53 | Out-Null
+        $firewallRuleNames += $ruleName
+    }
+    $report.systemDnsFallbackBlocked = $true
+
+    Write-Host 'Starting the installed Pip executable under the same standard user with Google DNS enabled.'
+    $launcher = Start-Process -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWrapper) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+    if ($launcher.ExitCode -ne 0) {
+        throw "The standard-user browser launcher exited with code $($launcher.ExitCode)."
+    }
+
+    $settingsPath = Join-Path $profilePath 'AppData\Roaming\evergreen-browser\settings.json'
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        throw 'Pip did not receive the temporary Google DNS test settings.'
+    }
+    $savedSettings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+    if ($savedSettings.google_dns -ne $true) {
+        throw 'The installed Pip profile did not enable Google DNS.'
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(70)
+    $webviewCommandLine = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $webviews = Get-SmokeProcesses -Name 'msedgewebview2.exe'
+        foreach ($webview in $webviews) {
+            if ($webview.CommandLine -match '--proxy-server=http://127\.0\.0\.1:\d+') {
+                $webviewCommandLine = [string]$webview.CommandLine
+                break
+            }
+        }
+        if ($webviewCommandLine) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $webviewCommandLine) {
+        throw 'The installed WebView2 process did not expose Pip loopback Google DNS proxy argument.'
+    }
+    $report.googleDnsProxyConfigured = $true
+    if ($webviewCommandLine -notmatch '--host-resolver-rules=.*MAP\s+\*\s+~NOTFOUND') {
+        throw 'The installed WebView2 process did not block direct hostname DNS while Google DNS was enabled.'
+    }
+    $report.hostResolverDirectDnsBlocked = $true
+
+    $target = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(70)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$debugPort/json/list" -TimeoutSec 3
+            $target = $targets | Where-Object { $_.type -eq 'page' -and $_.url -match '^https://[^/]*youtube\.com/' } | Select-Object -First 1
+            if ($target -and $target.webSocketDebuggerUrl) { break }
+        } catch {
+            # The port appears only after WebView2 starts its browser process.
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $target) {
+        throw 'Could not inspect the installed Pip page through its loopback-only WebView2 DevTools endpoint.'
+    }
+
+    $webSocket = [System.Net.WebSockets.ClientWebSocket]::new()
+    $connectTimeout = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(10))
+    try {
+        $webSocket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, $connectTimeout.Token).GetAwaiter().GetResult()
+    } finally {
+        $connectTimeout.Dispose()
+    }
+
+    $expression = @'
+(()=> {
+  const expected = 'youtube.com';
+  const hostname = location.hostname.toLowerCase();
+  const pageText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+  return {
+    loaded: (hostname === expected || hostname.endsWith('.' + expected)) &&
+      document.readyState === 'complete' && pageText.length > 0,
+    hostname,
+    title: document.title,
+    offlineUiDetected: /connect to the internet|you'?re offline|you are offline|no internet connection/i.test(pageText)
+  };
+})()
+'@
+    $requestId = 1
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    $page = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $response = Send-CdpRequest -Socket $webSocket -RequestId $requestId -Method 'Runtime.evaluate' -Params @{ expression = $expression; returnByValue = $true; awaitPromise = $true }
+        $requestId++
+        if ($response.ContainsKey('error')) {
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+        $page = $response.result.result.value
+        if ($page.offlineUiDetected -eq $true) {
+            $report.hostname = $page.hostname
+            $report.title = $page.title
+            $report.offlineUiDetected = $true
+            throw 'The installed Pip release displayed YouTube offline UI with Google DNS enabled.'
+        }
+        if ($page.loaded -eq $true -and $page.offlineUiDetected -eq $false) {
+            break
+        }
+        Start-Sleep -Milliseconds 750
+    }
+
+    if (-not $page -or $page.loaded -ne $true -or $page.offlineUiDetected -ne $false) {
+        throw 'The installed Pip release did not reach usable YouTube content before the 60-second deadline.'
+    }
+    $report.youtubeLoaded = $true
+    $report.offlineUiDetected = $false
+    $report.hostname = [string]$page.hostname
+    $report.title = [string]$page.title
+    Write-Host ('PASS: ' + ($report | ConvertTo-Json -Compress))
+} finally {
+    if ($webSocket) {
+        try {
+            if ($webSocket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+                $closeTimeout = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(2))
+                try {
+                    $webSocket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'smoke complete', $closeTimeout.Token).GetAwaiter().GetResult()
+                } finally {
+                    $closeTimeout.Dispose()
+                }
+            }
+        } catch {}
+        $webSocket.Dispose()
+    }
+
+    foreach ($ruleName in $firewallRuleNames) {
+        try { Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop } catch {
+            Write-Warning "Temporary DNS firewall rule cleanup could not complete: $($_.Exception.Message)"
+        }
+    }
+
+    if ($userName) {
+        foreach ($processName in @('Pip.exe', 'msedgewebview2.exe', 'pwsh.exe')) {
+            foreach ($process in @(Get-SmokeProcesses -Name $processName)) {
+                try { Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop } catch {}
+            }
+        }
+        Start-Sleep -Milliseconds 750
+    }
+
+    if ($userSid) {
+        try {
+            $profile = Get-CimInstance -ClassName Win32_UserProfile |
+                Where-Object { $_.SID -eq $userSid -and -not $_.Special } |
+                Select-Object -First 1
+            if ($profile) {
+                if ($profile.Loaded) {
+                    throw 'The temporary Pip smoke profile is still loaded; refusing to remove it.'
+                }
+                $expectedProfile = $profilePath
+                if (-not $expectedProfile) {
+                    $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+                    if (Test-Path -LiteralPath $profileKey) {
+                        $expectedProfile = [Environment]::ExpandEnvironmentVariables(
+                            (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
+                        )
+                    }
+                }
+                if (-not $expectedProfile) {
+                    throw 'The expected temporary smoke profile path is unavailable; refusing to remove a profile by SID alone.'
+                }
+                $resolvedProfile = [System.IO.Path]::GetFullPath([string]$profile.LocalPath)
+                $expectedProfile = [System.IO.Path]::GetFullPath([string]$expectedProfile)
+                if (-not [string]::Equals($resolvedProfile, $expectedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Refusing to remove a profile whose canonical path does not exactly match the temporary Pip smoke user.'
+                }
+                Remove-CimInstance -InputObject $profile -ErrorAction Stop
+            }
+        } catch {
+            Write-Warning "Temporary Pip smoke profile cleanup could not complete: $($_.Exception.Message)"
+        }
+        if ($createdUser) {
+            try { Remove-LocalUser -SID ([System.Security.Principal.SecurityIdentifier]::new($userSid)) -ErrorAction Stop } catch {
+                Write-Warning "Temporary Pip smoke account cleanup could not complete: $($_.Exception.Message)"
+            }
+        }
+    }
+
+    if ($stageRoot -and (Test-Path -LiteralPath $stageRoot)) {
+        $resolvedStage = [System.IO.Path]::GetFullPath($stageRoot)
+        $resolvedRunnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+        if ($resolvedStage.StartsWith($resolvedRunnerTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $resolvedStage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $plainPassword = $null
+    $securePassword = $null
+    $credential = $null
+}
+ -and (Test-Path -LiteralPath (Join-Path $directory.FullName 'msedgewebview2.exe') -PathType Leaf)) {
+                    return $directory.FullName
+                }
+            }
+        }
+        return $null
+    }
+
+    $webViewRuntimePath = Find-WebView2Runtime -Roots $webViewRoots
+    if (-not $webViewRuntimePath) {
+        Write-Host 'No WebView2 Evergreen Runtime is present for the temporary test account; installing the Microsoft-signed per-user runtime.'
+        $webViewBootstrapper = Join-Path $stageRoot 'MicrosoftEdgeWebview2Setup.exe'
+        Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $webViewBootstrapper -TimeoutSec 120
+        $bootstrapperSignature = Get-AuthenticodeSignature -LiteralPath $webViewBootstrapper
+        if ($bootstrapperSignature.Status -ne 'Valid' -or $bootstrapperSignature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation') {
+            throw 'The downloaded WebView2 bootstrapper does not have a valid Microsoft signature.'
+        }
+
+        $runtimeInstaller = Start-Process -FilePath $webViewBootstrapper -ArgumentList @('/silent', '/install') -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+        if ($runtimeInstaller.ExitCode -notin @(0, 3010)) {
+            throw "The Microsoft WebView2 bootstrapper exited with code $($runtimeInstaller.ExitCode)."
+        }
+        $runtimeDeadline = [DateTime]::UtcNow.AddSeconds(120)
+        while ([DateTime]::UtcNow -lt $runtimeDeadline) {
+            $webViewRuntimePath = Find-WebView2Runtime -Roots $webViewRoots
+            if ($webViewRuntimePath) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $webViewRuntimePath) {
+            throw 'The signed WebView2 bootstrapper finished but did not install a runtime visible to the temporary standard user.'
+        }
+    }
+    Write-Host "WebView2 Runtime preflight passed: $webViewRuntimePath"
+
     Write-Host 'Installing the release as a temporary standard user with no shortcuts or registry registration.'
     $installerProcess = Start-Process -FilePath $installerPath -ArgumentList '--silent --no-shortcuts --no-register' -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
     if ($installerProcess.ExitCode -ne 0) {
