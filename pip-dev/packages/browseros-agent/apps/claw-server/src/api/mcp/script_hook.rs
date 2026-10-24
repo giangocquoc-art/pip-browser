@@ -46,6 +46,22 @@ impl ScriptInnerCallHook {
 }
 
 impl InnerCallHook for ScriptInnerCallHook {
+    fn authorize_unscoped_cdp<'a>(
+        &'a self,
+        _method: &'a str,
+        _has_session_id: bool,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if self.call.state.agent_control.requires_control() {
+                return Err(
+                    "raw browser.cdp is disabled while native tab control is required; use page-scoped browser.cdpJsonForPage(pageId, method, paramsJson)"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        })
+    }
+
     fn acquire_tool_guard<'a>(
         &'a self,
         tool_name: &'a str,
@@ -389,6 +405,24 @@ mod tests {
 
     fn hook_for(call: &crate::api::mcp::dispatch::ToolCall) -> ScriptInnerCallHook {
         ScriptInnerCallHook::new(call.clone())
+    }
+
+    #[tokio::test]
+    async fn native_control_rejects_raw_cdp_even_when_page_session_is_supplied() -> anyhow::Result<()> {
+        use crate::services::agent_control::AgentControlService;
+        use browseros_mcp::InnerCallHook;
+
+        let mut call = tool_call("run", json!({ "code": "return 1" })).await?;
+        call.state.agent_control = Arc::new(AgentControlService::new(Some(
+            "test-secret".to_string(),
+        )));
+        let hook = hook_for(&call);
+        let result = hook
+            .authorize_unscoped_cdp("Input.dispatchMouseEvent", true)
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("page-scoped"));
+        Ok(())
     }
 
     #[tokio::test]

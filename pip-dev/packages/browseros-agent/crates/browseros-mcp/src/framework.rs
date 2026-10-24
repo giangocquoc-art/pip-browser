@@ -165,6 +165,16 @@ pub trait InnerCallHook: Send + Sync {
     /// script as a thrown error.
     fn authorize<'a>(&'a self, page: Option<u32>) -> BoxFuture<'a, Result<(), String>>;
 
+    /// Authorize raw CDP calls that have no page identity. Hosts with native
+    /// tab control should reject this escape hatch and require page-scoped CDP.
+    fn authorize_unscoped_cdp<'a>(
+        &'a self,
+        _method: &'a str,
+        _has_session_id: bool,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Record a completed inner primitive as a child audit row.
     fn record<'a>(&'a self, record: InnerCallRecord<'a>) -> BoxFuture<'a, ()>;
 
