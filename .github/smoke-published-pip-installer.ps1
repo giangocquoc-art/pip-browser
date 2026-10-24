@@ -356,7 +356,8 @@ try {
 }
 '@
     $wrapper = $wrapper.Replace('__DEBUG_PORT__', [string]$debugPort).Replace('__PIP_PATH__', $quotedPipPath)
-    $encodedWrapper = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($wrapper))
+    $browserWrapperPath = Join-Path $userTempDirectory 'Pip-launch-browser.ps1'
+    [System.IO.File]::WriteAllText($browserWrapperPath, $wrapper, [System.Text.UTF8Encoding]::new($false))
     $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
 
     Write-Host 'Blocking outbound system DNS so a successful page load proves Google DoH handled hostname resolution.'
@@ -368,7 +369,36 @@ try {
     $report.systemDnsFallbackBlocked = $true
 
     Write-Host 'Starting the installed Pip executable under the same standard user with Google DNS enabled.'
-    $launcher = Start-Process -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWrapper) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+    $browserStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $browserStartInfo.FileName = $pwshPath
+    $browserStartInfo.WorkingDirectory = $userTempDirectory
+    $browserStartInfo.UserName = $userName
+    $browserStartInfo.Domain = $env:COMPUTERNAME
+    $browserStartInfo.Password = $securePassword
+    $browserStartInfo.LoadUserProfile = $true
+    $browserStartInfo.UseShellExecute = $false
+    $browserStartInfo.CreateNoWindow = $true
+    $browserStartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $browserStartInfo.RedirectStandardOutput = $true
+    $browserStartInfo.RedirectStandardError = $true
+    $browserStartInfo.ArgumentList.Add('-NoLogo')
+    $browserStartInfo.ArgumentList.Add('-NoProfile')
+    $browserStartInfo.ArgumentList.Add('-NonInteractive')
+    $browserStartInfo.ArgumentList.Add('-File')
+    $browserStartInfo.ArgumentList.Add($browserWrapperPath)
+
+    $launcher = [System.Diagnostics.Process]::new()
+    $launcher.StartInfo = $browserStartInfo
+    if (-not $launcher.Start()) {
+        throw 'Could not start the browser wrapper under the temporary standard user.'
+    }
+    $browserStdOutTask = $launcher.StandardOutput.ReadToEndAsync()
+    $browserStdErrTask = $launcher.StandardError.ReadToEndAsync()
+    $launcher.WaitForExit()
+    $browserStdOut = $browserStdOutTask.GetAwaiter().GetResult()
+    $browserStdErr = $browserStdErrTask.GetAwaiter().GetResult()
+    if ($browserStdOut) { Write-Host ('Browser wrapper stdout: ' + $browserStdOut.Trim()) }
+    if ($browserStdErr) { Write-Host ('Browser wrapper stderr: ' + $browserStdErr.Trim()) }
     if ($launcher.ExitCode -ne 0) {
         throw "The standard-user browser launcher exited with code $($launcher.ExitCode)."
     }
