@@ -13,6 +13,10 @@ import type {
 } from '@/modules/takeover/takeover.types'
 import { createTakeoverBridge } from '@/modules/takeover/takeover-bridge'
 import {
+  pollAgentControlLeases,
+  stopAgentControlForTab,
+} from '@/modules/takeover/agent-control-bridge'
+import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
@@ -110,7 +114,7 @@ export default defineBackground(() => {
   }
   chrome.tabs.onRemoved.addListener((tabId) => {
     inputLockGate.removeTab(tabId)
-    void nativeInputLocks.release(tabId)
+    void nativeInputLocks.removeTab(tabId)
   })
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const messageType = (message as { type?: unknown } | null)?.type
@@ -127,6 +131,14 @@ export default defineBackground(() => {
         },
         pollForTab: async (tabId) => {
           const response = await takeover.pollForTab(tabId)
+          let agentControlLeases = []
+          let agentControlError = false
+          try {
+            agentControlLeases = (await pollAgentControlLeases(nativeInputLocks))
+              .filter((lease) => lease.tabId === tabId)
+          } catch {
+            agentControlError = true
+          }
           if (response.active && response.context.mode === 'agent-control') {
             return {
               ...response,
@@ -136,9 +148,24 @@ export default defineBackground(() => {
               },
             }
           }
-          return response
+          return {
+            ...response,
+            agentControlLeases,
+            ...(agentControlError ? { agentControlError: true } : {}),
+          }
         },
         stopForTab: (tabId) => takeover.stopForTab(tabId),
+        stopAgentControlForTab: async (tabId) => {
+          try {
+            const result = await stopAgentControlForTab(tabId, nativeInputLocks)
+            return {
+              confirmed: result.confirmed,
+              pending: result.leases.length,
+            }
+          } catch {
+            return { confirmed: false, pending: 1 }
+          }
+        },
         beginStop: (tabId) => inputLockGate.beginStop(tabId),
         finishStop: (tabId) => inputLockGate.finishStop(tabId),
         reconcileLock: reconcileInputLockIfFinalStop,
@@ -159,6 +186,7 @@ export default defineBackground(() => {
         return false
       }
       const pollRevision = inputLockGate.beginPoll(tabId)
+      void pollAgentControlLeases(nativeInputLocks).catch(() => [])
       void takeover
         .pollForTab(tabId)
         .then(async (response) => {
