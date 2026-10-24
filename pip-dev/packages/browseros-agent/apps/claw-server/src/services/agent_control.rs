@@ -143,7 +143,10 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        if inner.stopped_tabs.contains(&(tab_id, target_id.to_string())) {
+        if inner
+            .stopped_tabs
+            .contains(&(tab_id, target_id.to_string()))
+        {
             return Err(
                 "agent control was stopped for this tab; restart Pip Dev before reacquiring control",
             );
