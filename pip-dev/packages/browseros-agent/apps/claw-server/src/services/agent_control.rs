@@ -326,6 +326,11 @@ impl AgentControlService {
         if lease.tab_id != tab_id || lease.target_id != target_id {
             return Err("lease acknowledgement does not match the requested tab incarnation");
         }
+        if matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) && ack == LeaseAck::Unlocked {
+            inner.leases.remove(lease_id);
+            self.changed.notify_waiters();
+            return Ok(());
+        }
         match (&lease.phase, ack) {
             (Phase::Locking, LeaseAck::Locked) => {
                 lease.phase = Phase::Locked;
@@ -338,11 +343,6 @@ impl AgentControlService {
             }
             (Phase::Locking, LeaseAck::Stale) => {
                 request_unlock(lease, Some("tab changed before native lock acknowledgement"));
-            }
-            (Phase::Unlocking, LeaseAck::Unlocked) | (Phase::Failed(_), LeaseAck::Unlocked) => {
-                inner.leases.remove(lease_id);
-                self.changed.notify_waiters();
-                return Ok(());
             }
             // A lock may finish after expiry/cancel already requested unlock. Accept
             // only the exact tuple, keep the desired phase as Unlocking, and make the
@@ -479,7 +479,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn service() -> AgentControlService {
         AgentControlService::new(Some("test-only-secret".to_string()))
