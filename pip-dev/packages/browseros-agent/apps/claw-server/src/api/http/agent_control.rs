@@ -103,3 +103,124 @@ pub(super) async fn release(
         .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TabStopRequest {
+    target_id: String,
+}
+
+/// Accepts a Stop intent for the exact live target even when no lease exists.
+/// The extension still drives lease release and ACKs before reporting completion.
+pub(super) async fn stop_tab(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<i64>,
+    Json(body): Json<TabStopRequest>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    authorized(&state, &headers)
+        .map_err(|status| (status, Json(json!({"error":"unauthorized"}))))?;
+    let browser = state.browser.session().await.ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"browser is unavailable"})),
+        )
+    })?;
+    let pages = browser.pages.list().await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"browser inventory is unavailable"})),
+        )
+    })?;
+    if !pages
+        .iter()
+        .any(|page| page.tab_id.0 == tab_id && page.target_id.as_str() == body.target_id.as_str())
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({"error":"tab Stop does not match a live target incarnation"})),
+        ));
+    }
+    state
+        .agent_control
+        .request_tab_stop(tab_id, &body.target_id)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, Json(json!({"error":error}))))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+        services::agent_control::AgentControlService,
+    };
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn tab_stop_rejects_stale_target_before_recording_stop_intent() -> anyhow::Result<()> {
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call("tabs", json!({})).await?;
+        call.state.browser.set_session_for_testing(browser).await;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer test-secret".parse()?);
+        let stale = stop_tab(
+            State(call.state.clone()),
+            headers.clone(),
+            Path(page.tab_id.0),
+            Json(TabStopRequest {
+                target_id: "old-target".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            stale.err().map(|(status, _)| status),
+            Some(StatusCode::CONFLICT)
+        );
+        call.state
+            .agent_control
+            .begin(
+                "owner",
+                page.page_id.0,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                false,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let stopped = stop_tab(
+            State(call.state.clone()),
+            headers,
+            Path(page.tab_id.0),
+            Json(TabStopRequest {
+                target_id: page.target_id.to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(stopped.ok(), Some(StatusCode::NO_CONTENT));
+        assert!(
+            call.state
+                .agent_control
+                .begin(
+                    "late-owner",
+                    page.page_id.0,
+                    page.tab_id.0,
+                    page.target_id.as_str(),
+                    false
+                )
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+}

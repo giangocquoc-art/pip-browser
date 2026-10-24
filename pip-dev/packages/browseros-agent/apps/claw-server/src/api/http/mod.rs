@@ -43,6 +43,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/system/diagnostics", get(system::diagnostics))
         .route("/system/shutdown", post(system::shutdown))
         .route("/api/v1/system", get(system::info))
+        .route(
+            "/api/v1/agent-control/tabs/{tab_id}/stop",
+            post(agent_control::stop_tab),
+        )
         .route("/api/v1/agent-control/leases", get(agent_control::leases))
         .route(
             "/api/v1/agent-control/leases/{lease_id}/ack",

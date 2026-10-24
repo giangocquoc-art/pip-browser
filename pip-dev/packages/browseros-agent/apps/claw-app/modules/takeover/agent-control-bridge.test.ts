@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   reconcilePendingAgentControlLeases,
   refreshStopLease,
+  stopAgentControlForTab,
   type AgentControlLeaseView,
 } from './agent-control-bridge'
 import {
@@ -67,6 +68,57 @@ function deferred<T>() {
 }
 
 describe('agent-control extension bridge', () => {
+
+  it('records tab Stop before confirming an empty lease list', async () => {
+    const chromeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'chrome')
+    const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
+    const requests: Array<{ url: string; method: string; body?: string }> = []
+    Object.defineProperty(globalThis, 'chrome', {
+      configurable: true,
+      value: {
+        browserOS: {
+          getPref(name: string, callback: (value: { value: number | string }) => void) {
+            callback({ value: name.endsWith('agent_control_token') ? 'test-secret' : 9000 })
+          },
+        },
+        runtime: {},
+        debugger: {
+          getTargets: async () => [{ id: 'target-incarnation-a', tabId: 17, type: 'page' }],
+        },
+      },
+    })
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: async (input: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: typeof init?.body === 'string' ? init.body : undefined,
+        })
+        if (init?.method === 'POST') return new Response(null, { status: 204 })
+        return Response.json({ leases: [] })
+      },
+    })
+    try {
+      const result = await stopAgentControlForTab(
+        17,
+        { syncAgentControlLease: async () => 'unavailable' },
+        noTakeoverOwners,
+      )
+      expect(requests[0]).toEqual({
+        url: 'http://127.0.0.1:9000/api/v1/agent-control/tabs/17/stop',
+        method: 'POST',
+        body: JSON.stringify({ targetId: 'target-incarnation-a' }),
+      })
+      expect(result).toEqual({ confirmed: true, leases: [], restartRequired: true })
+    } finally {
+      if (chromeDescriptor) Object.defineProperty(globalThis, 'chrome', chromeDescriptor)
+      else Reflect.deleteProperty(globalThis, 'chrome')
+      if (fetchDescriptor) Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
+      else Reflect.deleteProperty(globalThis, 'fetch')
+    }
+  })
+
   it('acknowledges the exact tuple only after native lock confirmation', async () => {
     const order: string[] = []
     let finishLock!: (status: AgentLeaseLockStatus) => void
