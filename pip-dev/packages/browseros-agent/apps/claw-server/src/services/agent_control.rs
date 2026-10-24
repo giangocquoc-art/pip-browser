@@ -312,6 +312,29 @@ impl AgentControlService {
             .collect()
     }
 
+    /// User stop/extension recovery requests cleanup for this exact lease.
+    /// The bearer token authenticates the bundled extension; tuple matching prevents
+    /// a stale tab id from releasing a newer incarnation.
+    pub async fn request_release(
+        &self,
+        lease_id: &str,
+        tab_id: i64,
+        target_id: &str,
+    ) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().await;
+        let Some(lease) = inner.leases.get_mut(lease_id) else {
+            return Err("unknown or expired lease");
+        };
+        if lease.tab_id != tab_id || lease.target_id != target_id {
+            return Err("lease release does not match the requested tab incarnation");
+        }
+        lease.persistent = false;
+        lease.action_refs = 0;
+        request_unlock(lease, lease.error);
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub async fn acknowledge(
         &self,
         lease_id: &str,
@@ -664,6 +687,18 @@ mod tests {
             .await?;
         stopping.await?;
         assert_eq!(service.status("other", &other.lease_id).await?.status, "locking");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_stop_release_requires_exact_tab_incarnation() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service.begin("owner", 1, 42, "target-a", true).await?;
+        assert!(service.request_release(&ticket.lease_id, 43, "target-a").await.is_err());
+        assert!(service.request_release(&ticket.lease_id, 42, "target-b").await.is_err());
+        assert_eq!(service.status("owner", &ticket.lease_id).await?.status, "locking");
+        service.request_release(&ticket.lease_id, 42, "target-a").await?;
+        assert_eq!(service.status("owner", &ticket.lease_id).await?.operation, "unlock");
         Ok(())
     }
 
