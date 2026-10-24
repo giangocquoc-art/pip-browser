@@ -37,6 +37,7 @@ export function nativeInputLockSessionIds(
 }
 
 export type NativeInputLockStatus = 'locked' | 'unavailable' | 'unlocked'
+export type AgentLeaseLockStatus = NativeInputLockStatus | 'stale'
 
 interface LockLease {
   status: NativeInputLockStatus | 'locking' | 'releasing'
@@ -47,8 +48,14 @@ interface LockLease {
 
 const debuggee = (tabId: number) => ({ tabId })
 
+/**
+ * Combines the existing takeover sessions and MCP lease owners before touching
+ * Chromium. A stop/reconcile for one owner therefore cannot unlock another.
+ */
 export class NativeInputLockManager {
   private readonly leases = new Map<number, LockLease>()
+  private readonly takeoverOwners = new Map<number, Set<string>>()
+  private readonly agentLeases = new Map<number, Map<string, string>>()
   private readonly queues = new Map<number, Promise<void>>()
 
   constructor(private readonly debuggerApi: NativeInputDebugger) {
@@ -68,100 +75,228 @@ export class NativeInputLockManager {
     return status === 'locked' || status === 'unavailable' ? status : 'unlocked'
   }
 
+  /** Replaces only takeover owners; active MCP lease owners remain in force. */
   async sync(tabId: number, sessionIds: string[]): Promise<NativeInputLockStatus> {
-    const sessionKey = [...new Set(sessionIds)].sort().join('\0')
-    if (!sessionKey) {
-      await this.release(tabId)
-      return 'unlocked'
-    }
-
     return this.exclusive(tabId, async () => {
-      const existing = this.leases.get(tabId)
-      if (existing?.status === 'locked') {
-        existing.sessionKey = sessionKey
-        return 'locked'
-      }
-      const retryDetachedLease =
-        existing?.status === 'unavailable' &&
-        existing.sessionKey === sessionKey &&
-        existing.retryAfterDetach
-      if (
-        existing?.status === 'unavailable' &&
-        existing.sessionKey === sessionKey &&
-        !retryDetachedLease
-      ) {
-        return 'unavailable'
-      }
-
-      const lease: LockLease = {
-        status: 'locking',
-        sessionKey,
-        attached: false,
-        retryAfterDetach: Boolean(retryDetachedLease),
-      }
-      this.leases.set(tabId, lease)
-      let attached = false
-      try {
-        await this.debuggerApi.attach(debuggee(tabId), '1.3')
-        attached = true
-        lease.attached = true
-        await this.debuggerApi.sendCommand(
-          debuggee(tabId),
-          'Input.setAgentInputLock',
-          { locked: true },
-        )
-        if (this.leases.get(tabId) !== lease || lease.status === 'unavailable') {
-          throw new Error('debugger detached while enabling the input lock')
-        }
-        lease.status = 'locked'
-        lease.retryAfterDetach = false
-        return 'locked'
-      } catch {
-        if (attached) {
-          try {
-            await this.debuggerApi.sendCommand(
-              debuggee(tabId),
-              'Input.setAgentInputLock',
-              { locked: false },
-            )
-          } catch {}
-          try {
-            await this.debuggerApi.detach(debuggee(tabId))
-            lease.attached = false
-          } catch {
-            lease.attached = true
-          }
-        }
-        lease.status = 'unavailable'
-        return 'unavailable'
-      }
+      const unique = new Set(sessionIds.filter(Boolean))
+      if (unique.size) this.takeoverOwners.set(tabId, unique)
+      else this.takeoverOwners.delete(tabId)
+      return this.syncCombined(tabId)
     })
   }
 
+  /**
+   * Acquires/releases one MCP lease without activating a tab. Lock acquisition
+   * verifies the current CDP target id before issuing Input.setAgentInputLock.
+   */
+  async syncAgentControlLease(
+    tabId: number,
+    leaseId: string,
+    targetId: string,
+    operation: 'lock' | 'unlock',
+  ): Promise<AgentLeaseLockStatus> {
+    return this.exclusive(tabId, async () => {
+      const agentOwners = this.agentLeases.get(tabId) ?? new Map<string, string>()
+      const existingTargetId = agentOwners.get(leaseId)
+      if (existingTargetId && existingTargetId !== targetId) return 'stale'
+
+      if (operation === 'unlock') {
+        if (!existingTargetId) return 'unlocked'
+        agentOwners.delete(leaseId)
+        if (agentOwners.size) this.agentLeases.set(tabId, agentOwners)
+        else this.agentLeases.delete(tabId)
+        const status = await this.syncCombined(tabId)
+        // This particular owner is gone even when a separate takeover session
+        // continues to hold the same native tab lock.
+        return status === 'unavailable' ? 'unavailable' : 'unlocked'
+      }
+
+      if (!targetId) return 'stale'
+      const currentLease = this.leases.get(tabId)
+      let attachedHere = false
+      try {
+        if (!currentLease?.attached) {
+          await this.debuggerApi.attach(debuggee(tabId), '1.3')
+          attachedHere = true
+        }
+        const actualTargetId = await this.currentTargetId(tabId)
+        if (!actualTargetId || actualTargetId !== targetId) {
+          if (attachedHere) await this.debuggerApi.detach(debuggee(tabId))
+          return 'stale'
+        }
+      } catch {
+        if (attachedHere) {
+          try {
+            await this.debuggerApi.detach(debuggee(tabId))
+          } catch {}
+        }
+        return 'unavailable'
+      }
+
+      // Keep the verified attachment for the native lock command. No chrome.tabs
+      // activation/navigation call exists in this path, so background tabs stay put.
+      if (attachedHere && !currentLease) {
+        this.leases.set(tabId, {
+          status: 'locking',
+          sessionKey: '',
+          attached: true,
+          retryAfterDetach: false,
+        })
+      } else if (attachedHere && currentLease) {
+        currentLease.attached = true
+      }
+      agentOwners.set(leaseId, targetId)
+      this.agentLeases.set(tabId, agentOwners)
+      return this.syncCombined(tabId, targetId)
+    })
+  }
+
+  /**
+   * Clears takeover ownership only. An MCP lease or another takeover owner can
+   * keep the native lock held until its own exact release arrives.
+   */
   async release(
     tabId: number,
     mayRelease: () => boolean = () => true,
   ): Promise<void> {
     await this.exclusive(tabId, async () => {
-      const lease = this.leases.get(tabId)
-      if (lease?.status === 'unavailable') {
-        await this.releaseUnavailableLease(tabId, lease, mayRelease)
-        return
+      this.takeoverOwners.delete(tabId)
+      await this.syncCombined(tabId, undefined, mayRelease)
+    })
+  }
+
+  /** Tab removal ends every owner, unlike takeover Stop which clears one owner set. */
+  async removeTab(tabId: number): Promise<void> {
+    await this.exclusive(tabId, async () => {
+      this.takeoverOwners.delete(tabId)
+      this.agentLeases.delete(tabId)
+      await this.releaseNative(tabId)
+    })
+  }
+
+  private async syncCombined(
+    tabId: number,
+    expectedTargetId?: string,
+    mayRelease: () => boolean = () => true,
+  ): Promise<NativeInputLockStatus | 'stale'> {
+    const owners = [
+      ...(this.takeoverOwners.get(tabId) ?? []),
+      ...[...(this.agentLeases.get(tabId)?.keys() ?? [])].map((id) => `agent:${id}`),
+    ]
+    const sessionKey = [...new Set(owners)].sort().join('\0')
+    if (!sessionKey) {
+      await this.releaseNative(tabId, mayRelease)
+      return this.status(tabId)
+    }
+
+    const existing = this.leases.get(tabId)
+    if (existing?.status === 'locked') {
+      if (expectedTargetId) {
+        try {
+          if (await this.currentTargetId(tabId) !== expectedTargetId) return 'stale'
+        } catch {
+          return 'unavailable'
+        }
       }
-      if (lease?.status !== 'locked' && lease?.status !== 'locking') return
+      existing.sessionKey = sessionKey
+      return 'locked'
+    }
+    const retryDetachedLease =
+      existing?.status === 'unavailable' &&
+      existing.sessionKey === sessionKey &&
+      existing.retryAfterDetach
+    if (
+      existing?.status === 'unavailable' &&
+      existing.sessionKey === sessionKey &&
+      !retryDetachedLease
+    ) {
+      return 'unavailable'
+    }
+
+    const lease: LockLease = existing ?? {
+      status: 'locking',
+      sessionKey,
+      attached: false,
+      retryAfterDetach: Boolean(retryDetachedLease),
+    }
+    lease.status = 'locking'
+    lease.sessionKey = sessionKey
+    this.leases.set(tabId, lease)
+    let attachedHere = false
+    try {
+      if (!lease.attached) {
+        await this.debuggerApi.attach(debuggee(tabId), '1.3')
+        attachedHere = true
+        lease.attached = true
+      }
+      if (expectedTargetId) {
+        const actualTargetId = await this.currentTargetId(tabId)
+        if (!actualTargetId || actualTargetId !== expectedTargetId) {
+          if (attachedHere) {
+            await this.debuggerApi.detach(debuggee(tabId))
+            lease.attached = false
+            if (this.leases.get(tabId) === lease && !lease.sessionKey) {
+              this.leases.delete(tabId)
+            }
+          }
+          return 'stale'
+        }
+      }
+      await this.debuggerApi.sendCommand(
+        debuggee(tabId),
+        'Input.setAgentInputLock',
+        { locked: true },
+      )
+      if (this.leases.get(tabId) !== lease || lease.status === 'unavailable') {
+        throw new Error('debugger detached while enabling the input lock')
+      }
+      lease.status = 'locked'
+      lease.retryAfterDetach = false
+      return 'locked'
+    } catch {
+      if (attachedHere) {
+        try {
+          await this.debuggerApi.sendCommand(
+            debuggee(tabId),
+            'Input.setAgentInputLock',
+            { locked: false },
+          )
+        } catch {}
+        try {
+          await this.debuggerApi.detach(debuggee(tabId))
+          lease.attached = false
+        } catch {
+          lease.attached = true
+        }
+      }
+      lease.status = 'unavailable'
+      return 'unavailable'
+    }
+  }
+
+  private async currentTargetId(tabId: number): Promise<string | null> {
+    const result = await this.debuggerApi.sendCommand(
+      debuggee(tabId),
+      'Target.getTargetInfo',
+    )
+    if (!result || typeof result !== 'object') return null
+    const value = result as {
+      targetId?: unknown
+      targetInfo?: { targetId?: unknown }
+    }
+    const targetId = value.targetInfo?.targetId ?? value.targetId
+    return typeof targetId === 'string' ? targetId : null
+  }
+
+  private async releaseNative(
+    tabId: number,
+    mayRelease: () => boolean = () => true,
+  ): Promise<void> {
+    const lease = this.leases.get(tabId)
+    if (lease?.status === 'unavailable') {
       if (!mayRelease()) return
-      try {
-        await this.debuggerApi.sendCommand(
-          debuggee(tabId),
-          'Input.setAgentInputLock',
-          { locked: false },
-        )
-      } catch {
-        // Detaching still drops the browser-owned lease if the explicit release
-        // command is unavailable or the target is already gone.
-      }
-      if (!mayRelease()) {
-        await this.restoreAfterSupersededRelease(tabId, lease)
+      if (!lease.attached) {
+        if (this.leases.get(tabId) === lease) this.leases.delete(tabId)
         return
       }
       lease.status = 'releasing'
@@ -169,8 +304,7 @@ export class NativeInputLockManager {
         await this.debuggerApi.detach(debuggee(tabId))
         lease.attached = false
       } catch {
-        // A failed detach does not prove Chromium dropped the native lease.
-        // Keep the unavailable record so later reconciliations can retry.
+        // Preserve the lease when its final attachment state is uncertain.
         lease.status = 'unavailable'
       }
       if (!mayRelease()) {
@@ -180,17 +314,22 @@ export class NativeInputLockManager {
       if (!lease.attached && this.leases.get(tabId) === lease) {
         this.leases.delete(tabId)
       }
-    })
-  }
-
-  private async releaseUnavailableLease(
-    tabId: number,
-    lease: LockLease,
-    mayRelease: () => boolean,
-  ): Promise<void> {
+      return
+    }
+    if (lease?.status !== 'locked' && lease?.status !== 'locking') return
     if (!mayRelease()) return
-    if (!lease.attached) {
-      if (this.leases.get(tabId) === lease) this.leases.delete(tabId)
+    try {
+      await this.debuggerApi.sendCommand(
+        debuggee(tabId),
+        'Input.setAgentInputLock',
+        { locked: false },
+      )
+    } catch {
+      // Detaching still drops the browser-owned lease if the explicit release
+      // command is unavailable or the target is already gone.
+    }
+    if (!mayRelease()) {
+      await this.restoreAfterSupersededRelease(tabId, lease)
       return
     }
     lease.status = 'releasing'
@@ -198,7 +337,8 @@ export class NativeInputLockManager {
       await this.debuggerApi.detach(debuggee(tabId))
       lease.attached = false
     } catch {
-      // Preserve the lease when its final attachment state is uncertain.
+      // A failed detach does not prove Chromium dropped the native lease.
+      // Keep the unavailable record so later reconciliations can retry.
       lease.status = 'unavailable'
     }
     if (!mayRelease()) {
@@ -225,9 +365,6 @@ export class NativeInputLockManager {
         lease.attached = true
       }
     } catch {
-      // The browser may now be unlocked. Retain the debugger connection and
-      // lease so a later final reconciliation can clean it up; never detach
-      // after failing to restore the native lock.
       lease.status = 'unavailable'
       lease.attached = true
       throw new Error('could not restore the agent input lock after a stale release')
@@ -251,9 +388,6 @@ export class NativeInputLockManager {
       )
       if (this.leases.get(tabId) === lease) lease.status = 'locked'
     } catch {
-      // CDP detach has already relinquished the old native lease. Keep any new
-      // debugger attachment and report unavailable if a newer owner arrived
-      // before we could recreate the lock.
       lease.status = 'unavailable'
       throw new Error('could not reacquire the agent input lock after a stale detach')
     }
