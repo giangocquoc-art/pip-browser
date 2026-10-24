@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..4e88e044d184d
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_prefs.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,46 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -38,6 +38,7 @@ index 0000000000000..4e88e044d184d
 +extern const char kAllowRemoteInMCP[];
 +extern const char kRestartServerRequested[];
 +extern const char kServerVersion[];
++extern const char kAgentControlToken[];
 +
 +// Deprecated prefs (kept for migration, will be removed in future)
 +extern const char kMCPServerPort[];     // DEPRECATED: migrated to kProxyPort

@@ -1,5 +1,8 @@
 import './style.css'
-import type { TakeoverActionResponse } from '@/modules/takeover/takeover-action'
+import {
+  takeoverStopSuccessMessage,
+  type TakeoverActionResponse,
+} from '@/modules/takeover/takeover-action'
 
 const targetLabel = document.querySelector<HTMLElement>('#target')
 const statusLabel = document.querySelector<HTMLElement>('#status')
@@ -48,6 +51,21 @@ if (targetLabel && statusLabel && stopButton) {
       }
 
       const poll = result.response
+      const mcpLease = poll.agentControlLeases?.[0]
+      if (mcpLease) {
+        const state = {
+          locking: 'Agent đang yêu cầu khóa tab…',
+          locked: 'Agent Pip Dev đang điều khiển tab này.',
+          unlocking: 'Đang xác nhận trả quyền thao tác…',
+          failed: 'Chưa xác nhận mở khóa. Bấm Dừng để thử dọn khóa lại.',
+        }[mcpLease.status]
+        showUnavailable(mcpLease.error ? `${state} ${mcpLease.error}` : state)
+        return
+      }
+      if (poll.agentControlError) {
+        showUnavailable('Không đọc được trạng thái khóa MCP. Có thể gửi Dừng để thử thu hồi quyền.')
+        return
+      }
       if (poll.active && poll.context.mode === 'agent-control') {
         const names = poll.context.agentLabels.filter(Boolean).join(', ')
         statusLabel.textContent = names
@@ -78,12 +96,11 @@ if (targetLabel && statusLabel && stopButton) {
         ...target,
       })
       if (result.ok && result.action === 'stop') {
-        statusLabel.textContent = result.total === 0
-          ? 'Không còn phiên agent trên tab này; đã trả quyền thao tác.'
-          : `Đã dừng ${result.stopped}/${result.total} phiên agent trên tab này.`
+        statusLabel.textContent = takeoverStopSuccessMessage(result)
       } else if ('reason' in result && result.reason === 'partial-stop') {
-        statusLabel.textContent =
-          `Đã dừng ${result.stopped ?? 0}/${result.total ?? 0} phiên. Tab vẫn khóa khi còn agent.`
+        statusLabel.textContent = result.agentControlConfirmed === false
+          ? `Đã dừng ${result.stopped ?? 0}/${result.total ?? 0} phiên. Chưa xác nhận mở khóa native (${result.agentControlPending ?? 1} lease còn lại); bấm Dừng để thử lại.`
+          : `Đã dừng ${result.stopped ?? 0}/${result.total ?? 0} phiên. Tab vẫn khóa khi còn agent.`
         stopButton.disabled = false
       } else if ('reason' in result && result.reason === 'inactive-tab') {
         statusLabel.textContent = 'Tab đã đổi. Mở lại popup trên tab cần dừng.'

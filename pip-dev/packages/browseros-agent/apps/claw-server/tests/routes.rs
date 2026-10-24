@@ -71,6 +71,8 @@ async fn test_app_with_native(
         server_port: 9200,
         cdp_port,
         proxy_port: None,
+        agent_control_token: None,
+        agent_control_required: false,
         resources_dir: dir.path().join("resources"),
         browserclaw_dir: root,
         session_idle: Duration::from_secs(300),

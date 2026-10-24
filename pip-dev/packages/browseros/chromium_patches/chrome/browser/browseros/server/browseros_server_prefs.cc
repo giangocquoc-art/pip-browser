@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..d1829772e773f
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_prefs.cc
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,53 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -35,6 +35,9 @@ index 0000000000000..d1829772e773f
 +// Current active browseros-server version (for observability)
 +const char kServerVersion[] = "browseros.server.version";
 +
++// Per-process bearer used only by the bundled extension bridge.
++const char kAgentControlToken[] = "browseros.server.agent_control_token";
++
 +// DEPRECATED prefs (kept for migration)
 +const char kMCPServerPort[] = "browseros.server.mcp_port";
 +const char kMCPServerEnabled[] = "browseros.server.mcp_enabled";
@@ -47,6 +50,7 @@ index 0000000000000..d1829772e773f
 +  registry->RegisterBooleanPref(kAllowRemoteInMCP, false);
 +  registry->RegisterBooleanPref(kRestartServerRequested, false);
 +  registry->RegisterStringPref(kServerVersion, std::string());
++  registry->RegisterStringPref(kAgentControlToken, std::string());
 +
 +  // Deprecated prefs: register for migration reads
 +  registry->RegisterIntegerPref(kMCPServerPort, 0);

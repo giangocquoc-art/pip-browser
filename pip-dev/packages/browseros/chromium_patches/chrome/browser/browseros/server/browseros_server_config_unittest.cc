@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..3e6c8d9cbb478e9d3dc59fa2e63ba93482b95080
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_config_unittest.cc
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,235 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -64,6 +64,8 @@ index 0000000000000000000000000000000000000000..3e6c8d9cbb478e9d3dc59fa2e63ba934
 +  config.identity.browseros_version = "1.2.3";
 +  config.identity.chromium_version = "140.0.0.0";
 +  config.allow_remote_in_mcp = true;
++  config.agent_control_token = "test-only-agent-control-secret";
++  config.agent_control_required = true;
 +
 +  return config;
 +}
@@ -198,6 +200,11 @@ index 0000000000000000000000000000000000000000..3e6c8d9cbb478e9d3dc59fa2e63ba934
 +  ASSERT_NE(nullptr, flags);
 +  ASSERT_TRUE(flags->FindBool("allow_remote_in_mcp").has_value());
 +  EXPECT_TRUE(flags->FindBool("allow_remote_in_mcp").value());
++  ASSERT_NE(nullptr, root.FindString("agent_control_token"));
++  EXPECT_EQ("test-only-agent-control-secret",
++            *root.FindString("agent_control_token"));
++  ASSERT_TRUE(root.FindBool("agent_control_required").has_value());
++  EXPECT_TRUE(root.FindBool("agent_control_required").value());
 +
 +  const base::DictValue* instance = root.FindDict("instance");
 +  ASSERT_NE(nullptr, instance);

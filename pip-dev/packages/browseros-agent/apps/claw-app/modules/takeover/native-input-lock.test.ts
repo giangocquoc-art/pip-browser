@@ -17,16 +17,24 @@ function deferred<T>() {
 
 function makeDebugger() {
   const calls: Array<[string, number, string?]> = []
+  const targetIds = new Map<number, string>()
+  const attached = new Set<number>()
   let onDetach: ((source: { tabId?: number }, reason: string) => void) | undefined
   const api: NativeInputDebugger = {
     async attach({ tabId }) {
       calls.push(['attach', tabId])
+      attached.add(tabId)
     },
     async sendCommand({ tabId }, method) {
       calls.push([method, tabId])
+      if (!attached.has(tabId)) throw new Error('debugger is not attached')
+      if (method === 'Target.getTargetInfo') {
+        return { targetInfo: { targetId: targetIds.get(tabId) ?? `target-${tabId}` } }
+      }
     },
     async detach({ tabId }) {
       calls.push(['detach', tabId])
+      attached.delete(tabId)
     },
     onDetach: {
       addListener(listener) {
@@ -34,7 +42,12 @@ function makeDebugger() {
       },
     },
   }
-  return { api, calls, detach: (tabId: number) => onDetach?.({ tabId }, 'target_closed') }
+  return {
+    api,
+    calls,
+    targetIds,
+    detach: (tabId: number) => onDetach?.({ tabId }, 'target_closed'),
+  }
 }
 
 describe('NativeInputLockManager', () => {
@@ -401,6 +414,383 @@ describe('NativeInputLockManager', () => {
     const firstAttempt = [...calls]
     expect(await locks.sync(7, ['session-a'])).toBe('unavailable')
     expect(calls).toEqual(firstAttempt)
+  })
+
+  it('keeps an MCP lease locked when takeover ownership stops, then releases only that lease', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    expect(await locks.sync(7, ['takeover-session'])).toBe('locked')
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'lock', 1, 1),
+    ).toBe('locked')
+    expect(calls.some(([method, tabId]) => method === 'Target.getTargetInfo' && tabId === 7)).toBe(true)
+
+    // Stop/reconcile clears takeover ownership, but the MCP lease remains a
+    // distinct owner and keeps the native lock applied.
+    await locks.release(7)
+    expect(locks.status(7)).toBe('locked')
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock', 1, 1),
+    ).toBe('unlocked')
+    expect(locks.status(7)).toBe('unlocked')
+    expect(calls.slice(-2)).toEqual([
+      ['Input.setAgentInputLock', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('does not confirm unlock when the worker has no owner snapshot', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'unlock', 1, 1),
+    ).toBe('unavailable')
+    expect(calls).toEqual([])
+  })
+
+  it('rehydrates and explicitly unlocks the exact lease after worker restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['Target.getTargetInfo', 7],
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('keeps a takeover owner locked when an MCP lease is released after restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        1,
+        1,
+        {
+          agentLeaseIds: ['lease-1'],
+          takeoverSessionIds: ['takeover-session'],
+        },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(calls.filter(([method]) => method === 'Input.setAgentInputLock')).toEqual([
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('preserves a peer MCP lease when recovering another lease after restart', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'target-7',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-1', 'lease-peer'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+    expect(calls.filter(([method]) => method === 'Input.setAgentInputLock')).toEqual([
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('does not clear a replacement target while recovering an unknown lease', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(7, 'replacement-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'expected-target',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(calls.some(([method]) => method === 'Input.setAgentInputLock')).toBe(false)
+    expect(calls).toEqual([
+      ['Target.getTargetInfo', 7],
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['detach', 7],
+    ])
+  })
+
+  it('keeps a changed target stale when an older native lock is already held', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    // A separate owner may already hold the tab lock. That shared lock must
+    // not be mistaken for acknowledgement of this lease's exact target.
+    expect(await locks.sync(7, ['takeover-session'])).toBe('locked')
+    targetIds.set(7, 'replacement-target')
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock', 1, 1),
+    ).toBe('stale')
+    expect(locks.status(7)).toBe('locked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+      ['Target.getTargetInfo', 7],
+    ])
+  })
+
+  it('does not unlock or detach a replacement target for a stale lease release', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(7, 'original-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'lock',
+        1,
+        1,
+      ),
+    ).toBe('locked')
+    targetIds.set(7, 'replacement-target')
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(locks.status(7)).toBe('unavailable')
+    expect(
+      calls.filter(([method]) => method === 'Input.setAgentInputLock'),
+    ).toHaveLength(1)
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
+
+    // A retry may clean up only after the original target is again the exact
+    // attached incarnation; stale release never detaches the replacement tab.
+    targetIds.set(7, 'original-target')
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls.at(-1)).toEqual(['detach', 7])
+  })
+
+  it('rejects a stale target before applying a native lock and never activates the tab', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(7, 'replacement-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock', 1, 1),
+    ).toBe('stale')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Target.getTargetInfo', 7],
+      ['detach', 7],
+    ])
+    expect(calls.some(([method]) => method === 'Input.setAgentInputLock')).toBe(
+      false,
+    )
+  })
+
+  it('locks a hidden target only after exact CDP target verification', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(9, 'hidden-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(9, 'lease-1', 'hidden-target', 'lock', 1, 1),
+    ).toBe('locked')
+    expect(calls).toEqual([
+      ['attach', 9],
+      ['Target.getTargetInfo', 9],
+      ['Target.getTargetInfo', 9],
+      ['Input.setAgentInputLock', 9],
+    ])
+    expect(locks.status(9)).toBe('locked')
+  })
+
+  it('rejects a delayed old-lease unlock after a newer lease ID owns the tab', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-b',
+        'target-7',
+        'lock',
+        1,
+        2,
+        { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+      ),
+    ).toBe('locked')
+    const callsAfterNewLock = [...calls]
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-a',
+        'target-7',
+        'unlock',
+        1,
+        1,
+        { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(calls).toEqual(callsAfterNewLock)
+    expect(locks.status(7)).toBe('locked')
+  })
+
+  it('does not send a delayed old unlock or detach after a newer snapshot arrives', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const targetLookupStarted = deferred<void>()
+    const finishTargetLookup = deferred<unknown>()
+    const inputCommands: boolean[] = []
+    let targetLookupCount = 0
+
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      if (method === 'Input.setAgentInputLock') {
+        inputCommands.push((params as { locked?: boolean } | undefined)?.locked === true)
+        return
+      }
+      if (method !== 'Target.getTargetInfo') return
+      targetLookupCount += 1
+      if (targetLookupCount === 1) throw new Error('debugger is not attached')
+      if (targetLookupCount === 2) {
+        targetLookupStarted.resolve(undefined)
+        return finishTargetLookup.promise
+      }
+      return { targetInfo: { targetId: 'target-7' } }
+    }
+
+    const oldRelease = locks.syncAgentControlLease(
+      7,
+      'lease-a',
+      'target-7',
+      'unlock',
+      1,
+      1,
+      { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+    )
+    await targetLookupStarted.promise
+    const newLock = locks.syncAgentControlLease(
+      7,
+      'lease-b',
+      'target-7',
+      'lock',
+      1,
+      2,
+      { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+    )
+    finishTargetLookup.resolve({ targetInfo: { targetId: 'target-7' } })
+
+    expect(await oldRelease).toBe('stale')
+    expect(await newLock).toBe('locked')
+    expect(inputCommands).toEqual([true])
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
+    expect(calls).toContainEqual(['Input.setAgentInputLock', 7])
+  })
+
+  it('does not send a delayed old lock after a newer snapshot arrives', async () => {
+    const { api, calls } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    const targetLookupStarted = deferred<void>()
+    const finishTargetLookup = deferred<unknown>()
+    const inputCommands: boolean[] = []
+    let targetLookupCount = 0
+
+    api.sendCommand = async ({ tabId }, method, params) => {
+      calls.push([method, tabId])
+      if (method === 'Input.setAgentInputLock') {
+        inputCommands.push((params as { locked?: boolean } | undefined)?.locked === true)
+        return
+      }
+      if (method !== 'Target.getTargetInfo') return
+      targetLookupCount += 1
+      if (targetLookupCount === 1) {
+        targetLookupStarted.resolve(undefined)
+        return finishTargetLookup.promise
+      }
+      return { targetInfo: { targetId: 'target-7' } }
+    }
+
+    const oldLock = locks.syncAgentControlLease(
+      7,
+      'lease-a',
+      'target-7',
+      'lock',
+      1,
+      1,
+      { agentLeaseIds: ['lease-a'], takeoverSessionIds: [] },
+    )
+    await targetLookupStarted.promise
+    const newLock = locks.syncAgentControlLease(
+      7,
+      'lease-b',
+      'target-7',
+      'lock',
+      1,
+      2,
+      { agentLeaseIds: ['lease-b'], takeoverSessionIds: [] },
+    )
+    finishTargetLookup.resolve({ targetInfo: { targetId: 'target-7' } })
+
+    expect(await oldLock).toBe('stale')
+    expect(await newLock).toBe('locked')
+    expect(inputCommands).toEqual([true])
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
   })
 
   it('reports browser debugger detachment instead of leaving a stale locked state', async () => {

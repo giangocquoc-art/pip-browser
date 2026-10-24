@@ -290,6 +290,8 @@ async fn running_coordinator_reads_sessions_and_recovers_on_notification_and_tim
         server_port: 0,
         cdp_port: 0,
         proxy_port: None,
+        agent_control_token: None,
+        agent_control_required: false,
         resources_dir: dir.path().join("resources"),
         browserclaw_dir: dir.path().join("browserclaw"),
         session_idle: Duration::from_secs(300),

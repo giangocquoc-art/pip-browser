@@ -3,7 +3,7 @@ use crate::{
     api::mcp::{effects, guards, helper_runtime, observers},
     identity::ClientIdentity,
     ids::{ConvoId, DispatchId, SessionId},
-    services::sessions::Session,
+    services::{agent_control::LeaseTicket, sessions::Session},
 };
 use browseros_core::{BrowserSession, PageId, pages::PageInfo, target::BrowserView};
 use browseros_mcp::{
@@ -87,6 +87,8 @@ pub struct ToolCall {
     /// A reusable PageId must never let a later callback adopt its replacement tab.
     pub(crate) created_page_snapshots:
         Arc<tokio::sync::Mutex<std::collections::BTreeMap<u32, CreatedPageCapture>>>,
+    /// Native cleanup failures from code-mode inner actions, surfaced after script execution.
+    pub(crate) agent_control_cleanup_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ToolCall {
@@ -136,6 +138,7 @@ impl ToolCall {
         Self {
             foreign_pages: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             created_page_snapshots: Arc::default(),
+            agent_control_cleanup_error: Arc::default(),
             catalog,
             tool_index,
             raw_args,
@@ -349,7 +352,7 @@ async fn dispatch_tool_call_with(
             );
         }
 
-        match execute_with_cancellation(&call).await {
+        match execute_with_agent_control(&call).await {
             DispatchExecution::ProtocolCancelled => {
                 tracing::info!(
                     tool = call.tool().name,
@@ -469,6 +472,294 @@ async fn run_observers(context: ToolObserverContext<'_>, observers: &[NamedToolO
             );
         }
     }
+}
+
+pub(crate) async fn wait_for_agent_control_lock(
+    call: &ToolCall,
+    owner: &str,
+    ticket: &LeaseTicket,
+) -> Result<(), &'static str> {
+    let dispatch_cancel = call.dispatch_cancel.clone();
+    let client_cancel = call.client_cancel.clone();
+    let session_cancel = call.cancel.clone();
+    let service = call.state.agent_control.clone();
+
+    tokio::select! {
+        biased;
+        () = dispatch_cancel.cancelled() => Err("agent-control lock wait was cancelled by the operator"),
+        () = client_cancel.cancelled() => Err("agent-control lock wait was cancelled by the client"),
+        result = service.wait_locked(
+            owner,
+            &ticket.lease_id,
+            ticket.generation,
+            &session_cancel,
+        ) => result,
+    }
+}
+
+pub(crate) async fn finish_agent_control_action(
+    call: &ToolCall,
+    owner: &str,
+    ticket: &LeaseTicket,
+) -> Result<(), &'static str> {
+    call.state
+        .agent_control
+        .finish_action_and_wait_with_cancellation(
+            owner,
+            ticket,
+            &call.cancel,
+            &call.client_cancel,
+            &call.dispatch_cancel,
+        )
+        .await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PageDocumentCheckpoint {
+    target_id: String,
+    tab_id: i64,
+    url: String,
+    main_frame_id: String,
+    loader_id: String,
+}
+
+pub(super) async fn page_document_checkpoint(
+    call: &ToolCall,
+    page_id: u32,
+    expected: &PageInfo,
+) -> Result<PageDocumentCheckpoint, &'static str> {
+    let browser = call
+        .browser_session
+        .as_ref()
+        .ok_or("browser session is unavailable; document identity could not be verified")?;
+    let live = browser
+        .pages
+        .refresh(PageId(page_id))
+        .await
+        .map_err(|_| "page refresh failed; document identity could not be verified")?
+        .ok_or("page disappeared before document identity could be verified")?;
+    if live.page_id != expected.page_id
+        || live.target_id != expected.target_id
+        || live.tab_id != expected.tab_id
+        || live.url != expected.url
+    {
+        return Err("page URL, target, or tab changed; the action was not dispatched");
+    }
+
+    let page =
+        browser.pages.get_session(PageId(page_id)).await.map_err(
+            |_| "page CDP session is unavailable; document identity could not be verified",
+        )?;
+    if page.target_id != live.target_id || page.url != live.url {
+        return Err("page target or URL changed during document verification");
+    }
+    let frame_tree = page
+        .session
+        .send_value("Page.getFrameTree", json!({}))
+        .await
+        .map_err(|_| "main frame could not be read; document identity could not be verified")?;
+    let frame = frame_tree
+        .pointer("/frameTree/frame")
+        .ok_or("main frame is unavailable; document identity could not be verified")?;
+    let main_frame_id = frame
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("main frame id is missing; document identity could not be verified")?;
+    let loader_id = frame
+        .get("loaderId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("main frame loader id is missing; document identity could not be verified")?;
+
+    Ok(PageDocumentCheckpoint {
+        target_id: live.target_id.to_string(),
+        tab_id: live.tab_id.0,
+        url: live.url,
+        main_frame_id: main_frame_id.to_string(),
+        loader_id: loader_id.to_string(),
+    })
+}
+
+async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'static str> {
+    let agent_control = &call.state.agent_control;
+    let uses_inner_control = call.tool().name == "run";
+    if !agent_control.is_enabled() {
+        if !agent_control.is_required() {
+            return Ok(None);
+        }
+        if uses_inner_control {
+            return Err(
+                "native agent tab control is required but its extension credential is unavailable; the script was not dispatched",
+            );
+        }
+        if call
+            .tool()
+            .annotations
+            .as_ref()
+            .and_then(|value| value.read_only_hint)
+            == Some(true)
+            || !call.tool().metadata.accepts_page_arg
+        {
+            return Ok(None);
+        }
+        return Err(
+            "native agent tab control is required but its extension credential is unavailable; the page action was not dispatched",
+        );
+    }
+    if uses_inner_control {
+        if call.identity.is_none() {
+            return Err(
+                "agent-control lease requires a session identity; the script action was not dispatched",
+            );
+        }
+        return Ok(None);
+    }
+    if call
+        .tool()
+        .annotations
+        .as_ref()
+        .and_then(|value| value.read_only_hint)
+        == Some(true)
+    {
+        return Ok(None);
+    }
+    if !call.tool().metadata.accepts_page_arg {
+        return Ok(None);
+    }
+    let Some(identity) = &call.identity else {
+        return Err(
+            "agent-control lease requires a session identity; the page action was not dispatched",
+        );
+    };
+    let Some(page_id) = extract_page_id(call) else {
+        return Err("page mutation requires an explicit page id for native-lock verification");
+    };
+    let Some(page) = &call.page_snapshot else {
+        return Err("page snapshot is unavailable or stale; the action was not dispatched");
+    };
+
+    let document_before = page_document_checkpoint(call, page_id, page).await?;
+    let owner = identity.session.id().as_str();
+    let ticket = call
+        .state
+        .agent_control
+        .begin(
+            owner,
+            page_id,
+            page.tab_id.0,
+            page.target_id.as_str(),
+            false,
+        )
+        .await?;
+    if let Err(error) = call
+        .state
+        .agent_control
+        .register_action_dispatch(
+            owner,
+            &ticket,
+            call.dispatch_id.as_str(),
+            call.dispatch_cancel.clone(),
+        )
+        .await
+    {
+        let _ = call.state.agent_control.abort_action(owner, &ticket).await;
+        return Err(error);
+    }
+    if let Err(error) = wait_for_agent_control_lock(call, owner, &ticket).await {
+        call.state
+            .agent_control
+            .unregister_action_dispatch(&ticket.lease_id, call.dispatch_id.as_str())
+            .await;
+        let _ = call.state.agent_control.abort_action(owner, &ticket).await;
+        return Err(error);
+    }
+    let document_after = page_document_checkpoint(call, page_id, page).await;
+    if !matches!(document_after, Ok(after) if after == document_before) {
+        call.state
+            .agent_control
+            .unregister_action_dispatch(&ticket.lease_id, call.dispatch_id.as_str())
+            .await;
+        let unlock = call
+            .state
+            .agent_control
+            .release_after_document_change(
+                owner,
+                &ticket.lease_id,
+                page.tab_id.0,
+                page.target_id.as_str(),
+            )
+            .await;
+        return Err(match unlock {
+            Ok(()) => {
+                "page document changed while waiting for native lock; action cancelled and native unlock confirmed"
+            }
+            Err(_) => {
+                "page document changed or could not be verified; action cancelled but native unlock is not confirmed; stop the tab and retry cleanup"
+            }
+        });
+    }
+    Ok(Some(ticket))
+}
+
+async fn execute_with_agent_control(call: &ToolCall) -> DispatchExecution {
+    // Preserve the established cancellation envelope before reserving a native lease.
+    if call.dispatch_cancel.is_cancelled()
+        || call.client_cancel.is_cancelled()
+        || call.cancel.is_cancelled()
+    {
+        return execute_with_cancellation(call).await;
+    }
+
+    let ticket = match begin_action_control(call).await {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            if call.dispatch_cancel.is_cancelled()
+                || call.client_cancel.is_cancelled()
+                || call.cancel.is_cancelled()
+            {
+                return execute_with_cancellation(call).await;
+            }
+            return DispatchExecution::Completed(ExecutionOutcome {
+                result: ToolResult::error(format!(
+                    "Native tab lock was not confirmed; no page input was dispatched: {error}"
+                )),
+                cancelled: false,
+                duration_ms: 0,
+            });
+        }
+    };
+
+    let mut execution = execute_with_cancellation(call).await;
+    if let (Some(ticket), Some(identity)) = (ticket.as_ref(), call.identity.as_ref()) {
+        // Remove the action from the Stop barrier before waiting for native unlock ACK.
+        // A stop request cancels the dispatch and unlocks only after this point.
+        call.state
+            .agent_control
+            .unregister_action_dispatch(&ticket.lease_id, call.dispatch_id.as_str())
+            .await;
+        if let Err(error) =
+            finish_agent_control_action(call, identity.session.id().as_str(), ticket).await
+        {
+            if let DispatchExecution::Completed(outcome) = &mut execution {
+                outcome.result = ToolResult::error(format!(
+                    "The page action may have run, but native tab unlock is not confirmed. Keep the tab stopped and retry cleanup: {error}"
+                ));
+                outcome.cancelled = false;
+            }
+        }
+    }
+
+    if let Ok(mut cleanup_error) = call.agent_control_cleanup_error.lock()
+        && let Some(error) = cleanup_error.take()
+        && let DispatchExecution::Completed(outcome) = &mut execution
+    {
+        outcome.result = ToolResult::error(format!(
+            "The script action may have run, but native tab unlock is not confirmed. Keep the tab stopped and retry cleanup: {error}"
+        ));
+        outcome.cancelled = false;
+    }
+    execution
 }
 
 async fn execute_with_cancellation(call: &ToolCall) -> DispatchExecution {
@@ -683,6 +974,383 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn native_control_fails_closed_when_page_mutation_has_no_identity() -> anyhow::Result<()>
+    {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.identity = None;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some(
+                "agent-control lease requires a session identity; the page action was not dispatched"
+            ),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn evaluate_requires_native_lock_ack_before_dispatch() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+        use std::time::Duration;
+
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call(
+            "evaluate",
+            json!({
+                "page": page.page_id.0,
+                "code": "document.body.click();"
+            }),
+        )
+        .await?;
+        call.browser_session = Some(browser);
+        call.page_snapshot = Some(page);
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let owner = call
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("session identity missing"))?
+            .session
+            .id()
+            .as_str()
+            .to_string();
+        let dispatch_id = call.dispatch_id.clone();
+        let mut starting = tokio::spawn(async move { begin_action_control(&call).await });
+        let locking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service.pending_for_extension().await.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut starting)
+                .await
+                .is_err(),
+            "evaluate must wait for native lock acknowledgement"
+        );
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let ticket = tokio::time::timeout(Duration::from_secs(2), starting)
+            .await??
+            .map_err(anyhow::Error::msg)?
+            .ok_or_else(|| anyhow::anyhow!("evaluate bypassed native control"))?;
+        assert_eq!(ticket.lease_id, locking.lease_id);
+        assert!(
+            service
+                .finish_action_dispatch(&owner, &ticket, dispatch_id.as_str())
+                .await
+        );
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn changed_main_frame_loader_while_lock_ack_is_pending_cancels_and_unlocks()
+    -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+
+        let connection = ProfileConnection::new();
+        let browser = current_session(connection.clone());
+        let pages = browser.pages.list().await?;
+        let page = pages
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let page_id = page.page_id.0;
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": page_id, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.browser_session = Some(browser);
+        call.page_snapshot = Some(page.clone());
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+
+        let running = tokio::spawn(async move { begin_action_control(&call).await });
+        let locking = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let leases = service.leases_for_extension().await;
+                if let Some(lease) = leases.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(locking.status, "locking");
+
+        *connection
+            .main_frame_loader_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = "loader-2".to_string();
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let unlocking = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let leases = service.pending_for_extension().await;
+                if let Some(lease) = leases.into_iter().find(|lease| lease.status == "unlocking") {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        service
+            .acknowledge(
+                &unlocking.lease_id,
+                unlocking.generation,
+                unlocking.tab_id,
+                &unlocking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+        let result = running.await?;
+        assert_eq!(
+            result.err(),
+            Some(
+                "page document changed while waiting for native lock; action cancelled and native unlock confirmed"
+            ),
+        );
+        assert!(service.leases_for_extension().await.is_empty());
+        let page_tree_reads = connection
+            .calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(method, _)| method == "Page.getFrameTree")
+            .count();
+        assert_eq!(
+            page_tree_reads, 2,
+            "checkpoint runs both before and after ACK"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_native_control_fails_closed_when_script_credential_is_missing()
+    -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("run", serde_json::json!({ "code": "return 1" })).await?;
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some(
+                "native agent tab control is required but its extension credential is unavailable; the script was not dispatched"
+            ),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_native_control_fails_closed_when_page_credential_is_missing()
+    -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some(
+                "native agent tab control is required but its extension credential is unavailable; the page action was not dispatched"
+            ),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_control_fails_closed_when_script_has_no_identity() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("run", serde_json::json!({})).await?;
+        call.identity = None;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some(
+                "agent-control lease requires a session identity; the script action was not dispatched"
+            ),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn script_inner_action_fails_closed_when_identity_is_missing() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+        use browseros_mcp::InnerCallHook;
+
+        let mut call = tool_call("run", serde_json::json!({})).await?;
+        call.identity = None;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+
+        let hook = super::super::script_hook::ScriptInnerCallHook::new(call);
+        let result = hook.authorize(Some(1)).await;
+        assert_eq!(
+            result,
+            Err("agent-control lease requires a session identity; the script action was not dispatched".to_string()),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_control_rejects_page_mutation_without_fresh_snapshot() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("page snapshot is unavailable or stale; the action was not dispatched"),
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_lock_wait_honors_client_cancellation() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("act", serde_json::json!({})).await?;
+        let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        call.state.agent_control = service.clone();
+        let ticket = service
+            .begin("test-owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let client_cancel = call.client_cancel.clone();
+
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket);
+        tokio::pin!(waiting);
+        tokio::task::yield_now().await;
+        client_cancel.cancel();
+        assert_eq!(
+            waiting.await,
+            Err("agent-control lock wait was cancelled by the client"),
+        );
+        service
+            .abort("test-owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_lock_wait_honors_operator_cancellation() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call, services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call("act", serde_json::json!({})).await?;
+        let service = Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        call.state.agent_control = service.clone();
+        let ticket = service
+            .begin("test-owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let dispatch_cancel = call.dispatch_cancel.clone();
+
+        let waiting = wait_for_agent_control_lock(&call, "test-owner", &ticket);
+        tokio::pin!(waiting);
+        tokio::task::yield_now().await;
+        dispatch_cancel.cancel();
+        assert_eq!(
+            waiting.await,
+            Err("agent-control lock wait was cancelled by the operator"),
+        );
+        service
+            .abort("test-owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn deferred_grouping_preserves_explicit_group_update() -> anyhow::Result<()> {
         assert_deferred_grouping_preserves_explicit_group("update", true).await
     }
@@ -774,7 +1442,10 @@ mod tests {
             // explicit native group is published before the older callback resumes.
             let first = futures_util::poll!(create.as_mut());
             native.group_lookup_release.notify_one();
-            tokio::time::timeout(std::time::Duration::from_secs(3), grouping).await??;
+            tokio::time::timeout(std::time::Duration::from_secs(3), grouping)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .map_err(anyhow::Error::msg)?;
             match first {
                 Poll::Ready(result) => result,
                 Poll::Pending => {
@@ -915,7 +1586,10 @@ mod tests {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("explicit group missing"))?;
         native.group_lookup_release.notify_one();
-        tokio::time::timeout(std::time::Duration::from_secs(3), grouping).await??;
+        tokio::time::timeout(std::time::Duration::from_secs(3), grouping)
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
         let current = view.page(original.page_id.clone()).await?;
         assert_eq!(current.target_id, original.target_id);
         assert_eq!(current.tab_id, original.tab_id);
@@ -1194,7 +1868,10 @@ mod tests {
             let mut work = Box::pin(execute_with_cancellation(&script));
             let first = futures_util::poll!(work.as_mut());
             native.group_create_release.notify_one();
-            tokio::time::timeout(std::time::Duration::from_secs(3), grouping).await??;
+            tokio::time::timeout(std::time::Duration::from_secs(3), grouping)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .map_err(anyhow::Error::msg)?;
             match first {
                 Poll::Ready(result) => result,
                 Poll::Pending => {

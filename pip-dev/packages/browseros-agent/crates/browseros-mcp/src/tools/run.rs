@@ -841,10 +841,26 @@ impl BrowserBridge {
         // consumes the owned args below.
         let recorded_args = Value::Array(args.clone());
         if let Some(hook) = &self.ctx.inner_call_hook {
-            hook.authorize(page).await?;
+            if method == "cdp" {
+                let cdp_method = args
+                    .first()
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "CDP method argument is required".to_string())?;
+                let has_session_id = args.get(2).is_some_and(|value| !value.is_null());
+                hook.authorize_unscoped_cdp(cdp_method, has_session_id)
+                    .await?;
+            }
         }
+        let action_guard = if let Some(hook) = &self.ctx.inner_call_hook {
+            hook.authorize_with_guard(page).await?
+        } else {
+            None
+        };
         let started = Instant::now();
         let outcome = self.dispatch(method, args).await;
+        if let Some(action_guard) = action_guard {
+            action_guard.finish().await;
+        }
         if let Some(hook) = &self.ctx.inner_call_hook {
             if method == "pages.newPage"
                 && let Ok(BrowserCallValue::Json(Value::Number(number))) = &outcome
@@ -1353,10 +1369,15 @@ fn parse_bridge_args(args_json: &str) -> Result<Vec<Value>, String> {
 /// variants) carry the page id as their first argument; the rest address no
 /// specific page.
 fn target_page(method: &str, args: &[Value]) -> Option<u32> {
+    if method.starts_with("tool:") {
+        return build_tool_args(args)
+            .get("page")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+    }
     let page_first = method.starts_with("observe.")
         || method.starts_with("input.")
         || method.starts_with("nav.")
-        || method.starts_with("tool:")
         || matches!(method, "pages.close" | "pages.getInfo" | "cdpJsonForPage");
     if !page_first {
         return None;
@@ -1672,6 +1693,7 @@ mod tests {
     struct RunFakeState {
         create_tab_params: Vec<Value>,
         add_group_params: Vec<Value>,
+        sent_methods: Vec<String>,
         created_tab: Option<Value>,
     }
 
@@ -1682,6 +1704,13 @@ mod tests {
                 sender,
                 state: Arc::new(Mutex::new(RunFakeState::default())),
             }
+        }
+
+        fn sent_methods(&self) -> Vec<String> {
+            self.state
+                .lock()
+                .map(|state| state.sent_methods.clone())
+                .unwrap_or_default()
         }
 
         fn create_tab_params(&self) -> Vec<Value> {
@@ -1737,6 +1766,11 @@ mod tests {
         ) -> BoxFuture<'a, Result<Value, CdpError>> {
             let state = self.state.clone();
             Box::pin(async move {
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .sent_methods
+                    .push(method.to_string());
                 match method {
                     "Browser.getTabs" => Ok(json!({ "tabs": self.tabs() })),
                     "Browser.getWindows" => Ok(json!({ "windows": [] })),
@@ -2095,6 +2129,7 @@ mod tests {
     #[derive(Default)]
     struct HookLog {
         authorized: Vec<Option<u32>>,
+        unscoped_cdp: Vec<(String, bool)>,
         recorded: Vec<(String, Option<u32>, bool)>,
         created: Vec<u32>,
         reject: Option<String>,
@@ -2112,6 +2147,23 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             log.authorized.push(page);
+            let result = match &log.reject {
+                Some(message) => Err(message.clone()),
+                None => Ok(()),
+            };
+            Box::pin(async move { result })
+        }
+
+        fn authorize_unscoped_cdp<'a>(
+            &'a self,
+            method: &'a str,
+            has_session_id: bool,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            let mut log = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            log.unscoped_cdp.push((method.to_owned(), has_session_id));
             let result = match &log.reject {
                 Some(message) => Err(message.clone()),
                 None => Ok(()),
@@ -2413,6 +2465,64 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(log.authorized, vec![Some(1)]);
         // Rejected before dispatch, so nothing is recorded.
+        assert!(log.recorded.is_empty());
+        Ok(())
+    }
+
+
+    #[tokio::test]
+    async fn object_shaped_tool_args_cannot_bypass_page_authorization() -> anyhow::Result<()> {
+        let connection = Arc::new(RunFakeConnection::new());
+        let mut ctx = test_ctx_for(connection.clone(), BrowserToolDefaults::default());
+        let log = Arc::new(Mutex::new(HookLog {
+            reject: Some("native tab lock is required".to_owned()),
+            ..HookLog::default()
+        }));
+        ctx.inner_call_hook = Some(Arc::new(MockHook(log.clone())));
+        let bridge = test_bridge(ctx);
+        let result = bridge
+            .call(
+                "tool:evaluate",
+                r#"[{"page":1,"code":"document.body.click()"}]"#,
+                false,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(connection.sent_methods().is_empty());
+        let log = log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(log.authorized, vec![Some(1)]);
+        assert!(log.recorded.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn run_hook_rejection_blocks_raw_cdp_before_dispatch() -> anyhow::Result<()> {
+        let connection = Arc::new(RunFakeConnection::new());
+        let mut ctx = test_ctx_for(connection.clone(), BrowserToolDefaults::default());
+        let log = Arc::new(Mutex::new(HookLog {
+            reject: Some("raw CDP is disabled while native tab control is required".to_owned()),
+            ..HookLog::default()
+        }));
+        ctx.inner_call_hook = Some(Arc::new(MockHook(log.clone())));
+        let bridge = test_bridge(ctx);
+        let result = bridge
+            .call(
+                "cdp",
+                r#"["Input.dispatchMouseEvent",{"type":"mousePressed"},"session-1"]"#,
+                false,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(connection.sent_methods().is_empty());
+        let log = log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            log.unscoped_cdp,
+            vec![("Input.dispatchMouseEvent".to_owned(), true)]
+        );
         assert!(log.recorded.is_empty());
         Ok(())
     }

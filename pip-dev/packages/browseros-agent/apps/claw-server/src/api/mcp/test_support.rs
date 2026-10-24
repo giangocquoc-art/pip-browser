@@ -43,6 +43,8 @@ pub async fn tool_call(tool_name: &str, raw_args: Value) -> anyhow::Result<ToolC
         session_sweep_interval: Duration::from_secs(60),
         replay_retention_days: 7,
         dev_mode: false,
+        agent_control_token: None,
+        agent_control_required: false,
         native: crate::config::NativeIdentity {
             capabilities: current_native(),
             asserted: false,
@@ -109,6 +111,7 @@ pub(crate) struct ProfileConnection {
     pub tabs: std::sync::Mutex<Vec<Value>>,
     pub groups: std::sync::Mutex<Vec<Value>>,
     pub calls: std::sync::Mutex<Vec<(String, Value)>>,
+    pub main_frame_loader_id: std::sync::Mutex<String>,
     // Epoch selection and recorded publication share this lock with reconnect.
     dispatch_epoch: std::sync::Mutex<u64>,
     pub fail_inventory: std::sync::atomic::AtomicBool,
@@ -152,6 +155,7 @@ impl ProfileConnection {
             ]),
             groups: std::sync::Mutex::new(Vec::new()),
             calls: std::sync::Mutex::new(Vec::new()),
+            main_frame_loader_id: std::sync::Mutex::new("loader-1".to_string()),
             dispatch_epoch: std::sync::Mutex::new(1),
             fail_inventory: std::sync::atomic::AtomicBool::new(false),
             group_created: tokio::sync::Notify::new(),
@@ -370,6 +374,18 @@ impl ProfileConnection {
                 "Target.detachFromTarget" => Ok(json!({})),
                 "Target.attachToTarget" => {
                     Ok(json!({"sessionId":format!("S-{}", params["targetId"])}))
+                }
+                "Page.getFrameTree" => {
+                    let loader_id = self
+                        .main_frame_loader_id
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone();
+                    Ok(json!({"frameTree":{"frame":{
+                        "id":"main-frame",
+                        "loaderId":loader_id,
+                        "url":"https://example.test/"
+                    }}}))
                 }
                 "Page.enable"
                 | "DOM.enable"
