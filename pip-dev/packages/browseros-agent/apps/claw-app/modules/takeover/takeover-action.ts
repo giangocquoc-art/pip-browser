@@ -28,6 +28,10 @@ export interface TakeoverActionDependencies {
   ) => Promise<{ id?: number; windowId?: number } | undefined>
   pollForTab: (tabId: number) => Promise<TakeoverPollResponse>
   stopForTab: (tabId: number) => Promise<{ stopped: number; total: number }>
+  stopAgentControlForTab?: (tabId: number) => Promise<{
+    confirmed: boolean
+    pending: number
+  }>
   beginStop: (tabId: number) => void
   finishStop: (tabId: number) => void
   /** Re-read live ownership and keep/release the lock to match the latest state. */
@@ -36,7 +40,13 @@ export interface TakeoverActionDependencies {
 
 export type TakeoverActionResponse =
   | { ok: true; action: 'poll'; response: TakeoverPollResponse }
-  | { ok: true; action: 'stop'; stopped: number; total: number }
+  | {
+      ok: true
+      action: 'stop'
+      stopped: number
+      total: number
+      agentControlConfirmed?: boolean
+    }
   | {
       ok: false
       action?: 'poll' | 'stop'
@@ -48,6 +58,8 @@ export type TakeoverActionResponse =
         | 'partial-stop'
       stopped?: number
       total?: number
+      agentControlConfirmed?: boolean
+      agentControlPending?: number
     }
 
 export function isTakeoverActionRequest(
@@ -121,16 +133,31 @@ export async function handleTakeoverAction(
         return { ok: false, action: 'stop', reason: 'inactive-tab' }
       }
       const { stopped, total } = await dependencies.stopForTab(tabId)
-      if (total > 0 && stopped !== total) {
+      const agentControl = dependencies.stopAgentControlForTab
+        ? await dependencies.stopAgentControlForTab(tabId)
+        : undefined
+      if ((total > 0 && stopped !== total) || agentControl?.confirmed === false) {
         return {
           ok: false,
           action: 'stop',
           reason: 'partial-stop',
           stopped,
           total,
+          ...(agentControl
+            ? {
+                agentControlConfirmed: agentControl.confirmed,
+                agentControlPending: agentControl.pending,
+              }
+            : {}),
         }
       }
-      return { ok: true, action: 'stop', stopped, total }
+      return {
+        ok: true,
+        action: 'stop',
+        stopped,
+        total,
+        ...(agentControl ? { agentControlConfirmed: true } : {}),
+      }
     } finally {
       try {
         await dependencies.reconcileLock(tabId)
