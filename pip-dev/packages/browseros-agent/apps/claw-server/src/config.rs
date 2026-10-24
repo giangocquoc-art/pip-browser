@@ -20,6 +20,24 @@ const BROWSERCLAW_DIR_NAME: &str = ".browserclaw";
 /// Developer assertion of the native BrowserOS version for builds whose launch config does
 /// not carry a usable one (dev/dogfood sidecars, stale local stamps). Logged at startup.
 pub const NATIVE_VERSION_ENV: &str = "CLAW_NATIVE_BROWSEROS_VERSION";
+
+/// Per-browser-process secret shared only by the bundled extension and sidecar.
+/// Its Debug output is redacted because Config is included in startup diagnostics.
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+pub struct AgentControlToken(String);
+
+impl AgentControlToken {
+    #[must_use]
+    pub fn expose_to_extension_bridge(&self) -> &str { &self.0 }
+}
+
+impl std::fmt::Debug for AgentControlToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AgentControlToken([redacted])")
+    }
+}
+
 const DEV_BROWSERCLAW_DIR_NAME: &str = ".browserclaw-dev";
 
 #[derive(Debug, Parser)]
@@ -69,6 +87,8 @@ pub struct Config {
     pub session_sweep_interval: Duration,
     pub replay_retention_days: u64,
     pub dev_mode: bool,
+    /// Redacted per-process credential shared with the bundled extension.
+    pub agent_control_token: Option<AgentControlToken>,
     /// Read once per process. Every discovery and execution path gates native features on
     /// this one value, which `BrowserService` copies into each browser session.
     pub native: NativeIdentity,
@@ -130,6 +150,9 @@ struct SidecarConfig {
     /// native unknown (gated features hidden), never fail startup and with it all browsing.
     #[serde(default)]
     instance: Option<serde_json::Value>,
+    /// Instance-scoped extension bridge credential; missing disables native locking.
+    #[serde(default)]
+    agent_control_token: Option<AgentControlToken>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -196,6 +219,7 @@ impl Config {
         let dev_mode = sidecar.flags.dev_mode.unwrap_or(default_dev_mode);
         let browserclaw_dir = resolve_browserclaw_dir(env, dev_mode, &cwd);
         let native = resolve_native_identity(env, sidecar.instance.as_ref());
+        let agent_control_token = sidecar.agent_control_token;
 
         Ok(Self {
             server_port,
@@ -223,6 +247,7 @@ impl Config {
                 .map(|replay| replay.retention_days.get())
                 .unwrap_or(DEFAULT_REPLAY_RETENTION_DAYS),
             dev_mode,
+            agent_control_token,
             native,
         })
     }

@@ -10,6 +10,7 @@ use crate::{
     runtime::ShutdownHandle,
     services::{
         agent_settings::AgentSettingsStore,
+        agent_control::AgentControlService,
         audit::AuditWorker,
         browser::{BrowserService, TabRegistry},
         cockpit::{CockpitQuery, SessionVisualService, TabActivityRecord, TabActivityService},
@@ -36,6 +37,7 @@ pub struct AppState {
     pub audit_worker: Arc<AuditWorker>,
     pub audit_settings: Arc<crate::services::audit_settings::AuditSettingsStore>,
     pub agent_settings: Arc<AgentSettingsStore>,
+    pub agent_control: Arc<AgentControlService>,
     pub session_tabs: Arc<SessionTabLedger>,
     pub recordings: Arc<RecordingStore>,
     pub recording_ingest: Arc<RecordingIngestService>,
@@ -145,6 +147,9 @@ impl AppState {
             database,
             analytics_sink.clone(),
         ));
+        let agent_control = Arc::new(AgentControlService::new(
+            config.agent_control_token.as_ref().map(|token| token.expose_to_extension_bridge().to_string()),
+        ));
         let sessions = Sessions::new_with_analytics(
             audit_log.clone(),
             session_tabs.clone(),
@@ -157,9 +162,12 @@ impl AppState {
         sessions.set_completion_hook(Arc::new({
             let session_efficiency = session_efficiency.clone();
             let skill_runs = skill_runs.clone();
+            let agent_control = agent_control.clone();
             move |session_id| {
                 skill_runs.spawn_finalize(session_id.clone());
-                let _ = session_efficiency.queue_finalize(session_id);
+                let _ = session_efficiency.queue_finalize(session_id.clone());
+                let agent_control = agent_control.clone();
+                tokio::spawn(async move { agent_control.release_session(session_id.as_str()).await; });
             }
         }));
         let tab_registry = TabRegistry::new(session_tabs.clone());
@@ -212,6 +220,7 @@ impl AppState {
             audit_worker,
             audit_settings,
             agent_settings,
+            agent_control,
             session_tabs,
             recordings,
             recording_ingest,
@@ -292,6 +301,7 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
             native: Default::default(),
         });
 
