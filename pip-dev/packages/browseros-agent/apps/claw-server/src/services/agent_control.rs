@@ -2066,6 +2066,83 @@ mod tests {
 
 
     #[tokio::test]
+    async fn tab_stop_cancels_then_preserves_the_existing_drain_barrier() -> anyhow::Result<()> {
+        use std::time::Duration;
+
+        let service = service();
+        let action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let cancel = CancellationToken::new();
+        service
+            .register_action_dispatch("owner", &action, "dispatch", cancel.clone())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .request_tab_stop(42, "target-a")
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked"
+        );
+        let releasing = service.clone();
+        let ticket = action.clone();
+        let mut stop = tokio::spawn(async move {
+            releasing
+                .request_release(&ticket.lease_id, ticket.generation, 42, "target-a")
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut stop)
+                .await
+                .is_err()
+        );
+        service
+            .finish_action_dispatch("owner", &action, "dispatch")
+            .await;
+        stop.await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "unlocking"
+        );
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(service.leases_for_extension().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn stop_before_first_lease_blocks_only_the_stopped_target() -> anyhow::Result<()> {
         let service = service();
         service

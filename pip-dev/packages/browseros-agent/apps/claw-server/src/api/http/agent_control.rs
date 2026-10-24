@@ -187,7 +187,8 @@ mod tests {
             stale.err().map(|(status, _)| status),
             Some(StatusCode::CONFLICT)
         );
-        call.state
+        let probe = call
+            .state
             .agent_control
             .begin(
                 "owner",
@@ -198,6 +199,29 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .abort("owner", &probe.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .acknowledge(
+                &probe.lease_id,
+                probe.generation,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            call.state
+                .agent_control
+                .leases_for_extension()
+                .await
+                .is_empty()
+        );
         let stopped = stop_tab(
             State(call.state.clone()),
             headers,
