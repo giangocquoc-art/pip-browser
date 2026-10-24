@@ -753,6 +753,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ephemeral_action_waits_for_native_unlock_ack() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service.begin("owner", 1, 42, "target-a", false).await?;
+        service
+            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked)
+            .await?;
+
+        let finishing = {
+            let service = service.clone();
+            let ticket = ticket.clone();
+            tokio::spawn(async move {
+                service
+                    .finish_action_and_wait("owner", &ticket, &CancellationToken::new())
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let pending = service.pending_for_extension().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation, "unlock");
+        assert!(!finishing.is_finished());
+
+        service
+            .acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked)
+            .await?;
+        finishing.await??;
+        assert!(service.status("owner", &ticket.lease_id).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn action_references_unlock_after_last_action_but_not_while_persistent() -> anyhow::Result<()> {
         let service = service();
         let persistent = service.begin("owner", 1, 42, "target-a", true).await?;
