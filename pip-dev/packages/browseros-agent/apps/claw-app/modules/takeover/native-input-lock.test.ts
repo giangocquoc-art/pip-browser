@@ -437,6 +437,26 @@ describe('NativeInputLockManager', () => {
     ])
   })
 
+  it('keeps a changed target stale when an older native lock is already held', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    // A separate owner may already hold the tab lock. That shared lock must
+    // not be mistaken for acknowledgement of this lease's exact target.
+    expect(await locks.sync(7, ['takeover-session'])).toBe('locked')
+    targetIds.set(7, 'replacement-target')
+
+    expect(
+      await locks.syncAgentControlLease(7, 'lease-1', 'expected-target', 'lock'),
+    ).toBe('stale')
+    expect(locks.status(7)).toBe('locked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+      ['Target.getTargetInfo', 7],
+    ])
+  })
+
   it('rejects a stale target before applying a native lock and never activates the tab', async () => {
     const { api, calls, targetIds } = makeDebugger()
     targetIds.set(7, 'replacement-target')
