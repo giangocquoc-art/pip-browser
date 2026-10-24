@@ -13,6 +13,10 @@ import type {
 } from '@/modules/takeover/takeover.types'
 import { createTakeoverBridge } from '@/modules/takeover/takeover-bridge'
 import {
+  pollAgentControlLeases,
+  stopAgentControlForTab,
+} from '@/modules/takeover/agent-control-bridge'
+import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
@@ -57,6 +61,19 @@ export default defineBackground(() => {
     resolveServerBaseUrl: resolveBrowserOSServerBaseUrl,
   })
   const nativeInputLocks = new NativeInputLockManager(chrome.debugger)
+  const readTakeoverOwners = async (tabId: number): Promise<string[] | null> => {
+    try {
+      const response = await takeover.refreshForTab(tabId)
+      if (!response.active) {
+        return 'unavailable' in response && response.unavailable ? null : []
+      }
+      return response.context.mode === 'agent-control'
+        ? nativeInputLockSessionIds(response.context)
+        : []
+    } catch {
+      return null
+    }
+  }
   const inputLockGate = new TakeoverInputLockGate()
   // Revisions close races among observed stop/help transitions. The server
   // cannot atomically reserve a tab with this CDP update, so a new owner created
@@ -110,7 +127,7 @@ export default defineBackground(() => {
   }
   chrome.tabs.onRemoved.addListener((tabId) => {
     inputLockGate.removeTab(tabId)
-    void nativeInputLocks.release(tabId)
+    void nativeInputLocks.removeTab(tabId)
   })
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const messageType = (message as { type?: unknown } | null)?.type
@@ -127,6 +144,14 @@ export default defineBackground(() => {
         },
         pollForTab: async (tabId) => {
           const response = await takeover.pollForTab(tabId)
+          let agentControlLeases: Awaited<ReturnType<typeof pollAgentControlLeases>> = []
+          let agentControlError = false
+          try {
+            agentControlLeases = (await pollAgentControlLeases(nativeInputLocks, readTakeoverOwners))
+              .filter((lease) => lease.tabId === tabId)
+          } catch {
+            agentControlError = true
+          }
           if (response.active && response.context.mode === 'agent-control') {
             return {
               ...response,
@@ -134,11 +159,29 @@ export default defineBackground(() => {
                 ...response.context,
                 nativeInputLock: nativeInputLocks.status(tabId),
               },
+              agentControlLeases,
+              ...(agentControlError ? { agentControlError: true } : {}),
             }
           }
-          return response
+          return {
+            ...response,
+            agentControlLeases,
+            ...(agentControlError ? { agentControlError: true } : {}),
+          }
         },
         stopForTab: (tabId) => takeover.stopForTab(tabId),
+        stopAgentControlForTab: async (tabId) => {
+          try {
+            const result = await stopAgentControlForTab(tabId, nativeInputLocks, readTakeoverOwners)
+            return {
+              confirmed: result.confirmed,
+              pending: result.leases.length,
+              restartRequired: result.restartRequired,
+            }
+          } catch {
+            return { confirmed: false, pending: 1, restartRequired: false }
+          }
+        },
         beginStop: (tabId) => inputLockGate.beginStop(tabId),
         finishStop: (tabId) => inputLockGate.finishStop(tabId),
         reconcileLock: reconcileInputLockIfFinalStop,
@@ -159,6 +202,7 @@ export default defineBackground(() => {
         return false
       }
       const pollRevision = inputLockGate.beginPoll(tabId)
+      void pollAgentControlLeases(nativeInputLocks, readTakeoverOwners).catch(() => [])
       void takeover
         .pollForTab(tabId)
         .then(async (response) => {

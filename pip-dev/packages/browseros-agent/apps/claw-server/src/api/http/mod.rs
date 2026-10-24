@@ -17,6 +17,7 @@ use std::time::Instant;
 use tracing::{Instrument, info_span};
 use ulid::Ulid;
 
+pub(crate) mod agent_control;
 pub(crate) mod audit;
 mod cockpit;
 mod connections;
@@ -42,6 +43,15 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/system/diagnostics", get(system::diagnostics))
         .route("/system/shutdown", post(system::shutdown))
         .route("/api/v1/system", get(system::info))
+        .route("/api/v1/agent-control/leases", get(agent_control::leases))
+        .route(
+            "/api/v1/agent-control/leases/{lease_id}/ack",
+            post(agent_control::acknowledge),
+        )
+        .route(
+            "/api/v1/agent-control/leases/{lease_id}/release",
+            post(agent_control::release),
+        )
         .route(
             "/api/v1/extension/update-ready",
             post(extension_update_ready),

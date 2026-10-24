@@ -1,18 +1,20 @@
 use crate::{
-    api::mcp::dispatch::{ToolCall, ToolIdentity},
+    api::mcp::dispatch::{ToolCall, ToolIdentity, wait_for_agent_control_lock},
     api::mcp::effects::{ownership_claims, tab_groups, tabs_list_view},
     clock::now_epoch_ms,
     db::audit_log::{RecordToolDispatchInput, bounded_args_json, result_meta},
     ids::DispatchId,
+    services::agent_control::LeaseTicket,
     services::helpers,
 };
 use browseros_core::PageId;
 use browseros_mcp::{
-    InnerCallHook, InnerCallRecord,
+    InnerCallActionGuard, InnerCallHook, InnerCallRecord,
     token_estimate::{TOKEN_ESTIMATOR_VERSION, estimate_tool_input_tokens},
 };
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::warn;
 
 /// Host hook a `run`/`execute` script invokes around each browser primitive.
@@ -27,6 +29,98 @@ pub struct ScriptInnerCallHook {
     call: ToolCall,
 }
 
+struct ScriptActionLeaseGuard {
+    call: ToolCall,
+    owner: String,
+    ticket: LeaseTicket,
+    dispatch_id: DispatchId,
+    registered: bool,
+    completed: bool,
+}
+
+impl InnerCallActionGuard for ScriptActionLeaseGuard {
+    fn finish(self: Box<Self>) -> BoxFuture<'static, ()> {
+        Box::pin(async move {
+            let mut guard = self;
+            let cleanup_result = if guard.registered {
+                guard
+                    .call
+                    .state
+                    .agent_control
+                    .finish_action_dispatch_and_wait_with_cancellation(
+                        &guard.owner,
+                        &guard.ticket,
+                        guard.dispatch_id.as_str(),
+                        &guard.call.cancel,
+                        &guard.call.client_cancel,
+                        &guard.call.dispatch_cancel,
+                    )
+                    .await
+            } else {
+                guard
+                    .call
+                    .state
+                    .agent_control
+                    .finish_action_and_wait_with_cancellation(
+                        &guard.owner,
+                        &guard.ticket,
+                        &guard.call.cancel,
+                        &guard.call.client_cancel,
+                        &guard.call.dispatch_cancel,
+                    )
+                    .await
+            };
+            if let Err(error) = cleanup_result {
+                warn!(
+                    lease_id = %guard.ticket.lease_id,
+                    error = %error,
+                    "script inner action cleanup did not complete"
+                );
+            }
+            guard.completed = true;
+        })
+    }
+}
+
+impl Drop for ScriptActionLeaseGuard {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let call = self.call.clone();
+        let owner = self.owner.clone();
+        let ticket = self.ticket.clone();
+        let dispatch_id = self.dispatch_id.clone();
+        let registered = self.registered;
+        let service = call.state.agent_control.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            call.dispatch_cancel.cancel();
+            warn!(
+                lease_id = %ticket.lease_id,
+                "could not schedule script action cleanup after runtime shutdown"
+            );
+            return;
+        };
+        runtime.spawn(async move {
+            if registered {
+                service
+                    .finish_action_dispatch(&owner, &ticket, dispatch_id.as_str())
+                    .await;
+            } else {
+                let _ = service
+                    .finish_action_and_wait_with_cancellation(
+                        &owner,
+                        &ticket,
+                        &call.cancel,
+                        &call.client_cancel,
+                        &call.dispatch_cancel,
+                    )
+                    .await;
+            }
+        });
+    }
+}
+
 impl ScriptInnerCallHook {
     #[must_use]
     pub fn new(call: ToolCall) -> Self {
@@ -39,6 +133,22 @@ impl ScriptInnerCallHook {
 }
 
 impl InnerCallHook for ScriptInnerCallHook {
+    fn authorize_unscoped_cdp<'a>(
+        &'a self,
+        _method: &'a str,
+        _has_session_id: bool,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if self.call.state.agent_control.requires_control() {
+                return Err(
+                    "raw browser.cdp is disabled while native tab control is required; use page-scoped browser.cdpJsonForPage(pageId, method, paramsJson)"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        })
+    }
+
     fn acquire_tool_guard<'a>(
         &'a self,
         tool_name: &'a str,
@@ -58,12 +168,94 @@ impl InnerCallHook for ScriptInnerCallHook {
 
     fn authorize<'a>(&'a self, page: Option<u32>) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            if let Some(guard) = self.authorize_with_guard(page).await? {
+                guard.finish().await;
+            }
+            Ok(())
+        })
+    }
+
+    fn authorize_with_guard<'a>(
+        &'a self,
+        page: Option<u32>,
+    ) -> BoxFuture<'a, Result<Option<Box<dyn InnerCallActionGuard>>, String>> {
+        Box::pin(async move {
+            let mut action_guard: Option<Box<dyn InnerCallActionGuard>> = None;
+            let agent_control = &self.call.state.agent_control;
+            if agent_control.is_required() && !agent_control.is_enabled() {
+                return Err(
+                    "native agent tab control is required but its extension credential is unavailable; the script action was not dispatched"
+                        .to_string(),
+                );
+            }
             let Some(page) = page else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(identity) = self.identity() else {
-                return Ok(());
+                return if agent_control.requires_control() {
+                    Err("agent-control lease requires a session identity; the script action was not dispatched".to_string())
+                } else {
+                    Ok(None)
+                };
             };
+            if agent_control.requires_control() {
+                let Some(browser) = &self.call.browser_session else {
+                    return Err(
+                        "the browser session is unavailable for native tab control".to_string()
+                    );
+                };
+                let Some(page_info) = browser.pages.get_info(PageId(page)).await else {
+                    return Err(
+                        "the page changed before native tab control could be confirmed".to_string(),
+                    );
+                };
+                let owner = identity.session.id().as_str();
+                let ticket = self
+                    .call
+                    .state
+                    .agent_control
+                    .begin(
+                        owner,
+                        page,
+                        page_info.tab_id.0,
+                        page_info.target_id.as_str(),
+                        false,
+                    )
+                    .await
+                    .map_err(str::to_string)?;
+                let dispatch_id = DispatchId::new();
+                // Own the action reference before any further await. Cancellation
+                // during dispatch registration therefore still has a cleanup owner.
+                let mut lease_guard = Box::new(ScriptActionLeaseGuard {
+                    call: self.call.clone(),
+                    owner: owner.to_string(),
+                    ticket: ticket.clone(),
+                    dispatch_id: dispatch_id.clone(),
+                    registered: false,
+                    completed: false,
+                });
+                if let Err(error) = self
+                    .call
+                    .state
+                    .agent_control
+                    .register_action_dispatch(
+                        owner,
+                        &ticket,
+                        dispatch_id.as_str(),
+                        self.call.dispatch_cancel.clone(),
+                    )
+                    .await
+                {
+                    lease_guard.finish().await;
+                    return Err(error.to_string());
+                }
+                lease_guard.registered = true;
+                if let Err(error) = wait_for_agent_control_lock(&self.call, owner, &ticket).await {
+                    lease_guard.finish().await;
+                    return Err(format!("native tab lock was not confirmed: {error}"));
+                }
+                action_guard = Some(lease_guard as Box<dyn InnerCallActionGuard>);
+            }
             // Ownership is a label, not a permission, so nothing is refused here.
             //
             // This hook used to reject any page owned by another conversation, which
@@ -98,7 +290,7 @@ impl InnerCallHook for ScriptInnerCallHook {
             {
                 pages.insert(page, description);
             }
-            Ok(())
+            Ok(action_guard)
         })
     }
 
@@ -321,6 +513,177 @@ mod tests {
 
     fn hook_for(call: &crate::api::mcp::dispatch::ToolCall) -> ScriptInnerCallHook {
         ScriptInnerCallHook::new(call.clone())
+    }
+
+    #[tokio::test]
+    async fn native_control_rejects_raw_cdp_even_when_page_session_is_supplied()
+    -> anyhow::Result<()> {
+        use crate::services::agent_control::AgentControlService;
+        use browseros_mcp::InnerCallHook;
+
+        let mut call = tool_call("run", json!({ "code": "return 1" })).await?;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        let hook = hook_for(&call);
+        let result = hook
+            .authorize_unscoped_cdp("Input.dispatchMouseEvent", true)
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("page-scoped"));
+
+        call.state.agent_control = Arc::new(AgentControlService::new_with_policy(None, true));
+        let hook = hook_for(&call);
+        let missing_credential = hook
+            .authorize_unscoped_cdp("Browser.createTab", false)
+            .await;
+        assert!(missing_credential.is_err());
+        assert!(
+            missing_credential
+                .unwrap_err()
+                .contains("native tab control")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stop_cancels_and_drains_dropped_nested_script_action_without_record()
+    -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+        use browseros_mcp::InnerCallHook;
+        use std::time::Duration;
+        use tokio::sync::oneshot;
+
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call("run", json!({"code":"await browser.pages.click(page);"})).await?;
+        call.browser_session = Some(browser);
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let dispatch_cancel = call.dispatch_cancel.clone();
+        let hook = Arc::new(ScriptInnerCallHook::new(call));
+        let page_id = page.page_id.0;
+        let (started_tx, started_rx) = oneshot::channel();
+        let (cancelled_tx, cancelled_rx) = oneshot::channel();
+        let (drop_tx, drop_rx) = oneshot::channel();
+        let action_hook = hook.clone();
+
+        // This future mirrors the bridge lifetime: authorization yields an
+        // invocation guard, the primitive is in flight, and cancellation drops the
+        // whole future before the audit callback can run.
+        let inner_action = async move {
+            let guard = action_hook
+                .authorize_with_guard(Some(page_id))
+                .await?
+                .ok_or_else(|| "script action did not receive a native lease guard".to_string())?;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+            guard.finish().await;
+            Ok::<(), String>(())
+        };
+        let mut inner_action = Box::pin(inner_action);
+        let action = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = dispatch_cancel.cancelled() => {
+                    let _ = cancelled_tx.send(());
+                    let _ = drop_rx.await;
+                    drop(inner_action);
+                }
+                result = &mut inner_action => {
+                    let _ = result;
+                }
+            }
+        });
+
+        let locking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service.leases_for_extension().await.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(locking.status, "locking");
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        tokio::time::timeout(Duration::from_secs(2), started_rx).await??;
+
+        let release_service = service.clone();
+        let release_lease = locking.clone();
+        let mut stop = tokio::spawn(async move {
+            release_service
+                .request_release(
+                    &release_lease.lease_id,
+                    release_lease.generation,
+                    release_lease.tab_id,
+                    &release_lease.target_id,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), cancelled_rx).await??;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut stop)
+                .await
+                .is_err(),
+            "Stop must wait until the dropped nested action unregisters"
+        );
+        assert_eq!(
+            service
+                .leases_for_extension()
+                .await
+                .first()
+                .map(|lease| lease.status),
+            Some("locked"),
+            "native input must stay locked while the nested primitive is in flight"
+        );
+        let _ = drop_tx.send(());
+        action.await.map_err(anyhow::Error::msg)?;
+
+        let unlocking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service
+                    .pending_for_extension()
+                    .await
+                    .into_iter()
+                    .find(|lease| lease.status == "unlocking")
+                {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        service
+            .acknowledge(
+                &unlocking.lease_id,
+                unlocking.generation,
+                unlocking.tab_id,
+                &unlocking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        stop.await.map_err(anyhow::Error::msg)??;
+        assert!(service.leases_for_extension().await.is_empty());
+        Ok(())
     }
 
     #[tokio::test]
