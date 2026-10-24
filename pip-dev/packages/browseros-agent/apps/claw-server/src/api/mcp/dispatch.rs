@@ -3,7 +3,7 @@ use crate::{
     api::mcp::{effects, guards, helper_runtime, observers},
     identity::ClientIdentity,
     ids::{ConvoId, DispatchId, SessionId},
-    services::sessions::Session,
+    services::{agent_control::LeaseTicket, sessions::Session},
 };
 use browseros_core::{BrowserSession, PageId, pages::PageInfo, target::BrowserView};
 use browseros_mcp::{
@@ -87,6 +87,8 @@ pub struct ToolCall {
     /// A reusable PageId must never let a later callback adopt its replacement tab.
     pub(crate) created_page_snapshots:
         Arc<tokio::sync::Mutex<std::collections::BTreeMap<u32, CreatedPageCapture>>>,
+    /// Native cleanup failures from code-mode inner actions, surfaced after script execution.
+    pub(crate) agent_control_cleanup_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl ToolCall {
@@ -136,6 +138,7 @@ impl ToolCall {
         Self {
             foreign_pages: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             created_page_snapshots: Arc::default(),
+            agent_control_cleanup_error: Arc::default(),
             catalog,
             tool_index,
             raw_args,
@@ -349,7 +352,7 @@ async fn dispatch_tool_call_with(
             );
         }
 
-        match execute_with_cancellation(&call).await {
+        match execute_with_agent_control(&call).await {
             DispatchExecution::ProtocolCancelled => {
                 tracing::info!(
                     tool = call.tool().name,
@@ -469,6 +472,110 @@ async fn run_observers(context: ToolObserverContext<'_>, observers: &[NamedToolO
             );
         }
     }
+}
+
+async fn begin_action_control(
+    call: &ToolCall,
+) -> Result<Option<LeaseTicket>, &'static str> {
+    if !call.state.agent_control.is_enabled() {
+        return Ok(None);
+    }
+    let Some(identity) = &call.identity else {
+        return Ok(None);
+    };
+    if call.tool().annotations.as_ref().and_then(|value| value.read_only_hint) == Some(true) {
+        return Ok(None);
+    }
+    if !call.tool().metadata.accepts_page_arg {
+        return Ok(None);
+    }
+    let Some(page_id) = extract_page_id(call) else {
+        return Err("page mutation requires an explicit page id for native-lock verification");
+    };
+    let Some(page) = &call.page_snapshot else {
+        return Err("page snapshot is unavailable or stale; the action was not dispatched");
+    };
+
+    let owner = identity.session.id().as_str();
+    let ticket = call
+        .state
+        .agent_control
+        .begin(
+            owner,
+            page_id,
+            page.tab_id.0,
+            page.target_id.as_str(),
+            false,
+        )
+        .await?;
+    if let Err(error) = call
+        .state
+        .agent_control
+        .wait_locked(owner, &ticket.lease_id, &call.cancel)
+        .await
+    {
+        let _ = call
+            .state
+            .agent_control
+            .abort(owner, &ticket.lease_id)
+            .await;
+        return Err(error);
+    }
+    Ok(Some(ticket))
+}
+
+async fn execute_with_agent_control(call: &ToolCall) -> DispatchExecution {
+    // Preserve the established cancellation envelope before reserving a native lease.
+    if call.dispatch_cancel.is_cancelled()
+        || call.client_cancel.is_cancelled()
+        || call.cancel.is_cancelled()
+    {
+        return execute_with_cancellation(call).await;
+    }
+
+    let ticket = match begin_action_control(call).await {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            return DispatchExecution::Completed(ExecutionOutcome {
+                result: ToolResult::error(format!(
+                    "Native tab lock was not confirmed; no page input was dispatched: {error}"
+                )),
+                cancelled: false,
+                duration_ms: 0,
+            });
+        }
+    };
+
+    let mut execution = execute_with_cancellation(call).await;
+    if let (Some(ticket), Some(identity)) = (ticket.as_ref(), call.identity.as_ref())
+        && let Err(error) = call
+            .state
+            .agent_control
+            .finish_action_and_wait(
+                identity.session.id().as_str(),
+                ticket,
+                &call.cancel,
+            )
+            .await
+    {
+        if let DispatchExecution::Completed(outcome) = &mut execution {
+            outcome.result = ToolResult::error(format!(
+                "The page action may have run, but native tab unlock is not confirmed. Keep the tab stopped and retry cleanup: {error}"
+            ));
+            outcome.cancelled = false;
+        }
+    }
+
+    if let Ok(mut cleanup_error) = call.agent_control_cleanup_error.lock()
+        && let Some(error) = cleanup_error.take()
+        && let DispatchExecution::Completed(outcome) = &mut execution
+    {
+        outcome.result = ToolResult::error(format!(
+            "The script action may have run, but native tab unlock is not confirmed. Keep the tab stopped and retry cleanup: {error}"
+        ));
+        outcome.cancelled = false;
+    }
+    execution
 }
 
 async fn execute_with_cancellation(call: &ToolCall) -> DispatchExecution {
@@ -681,6 +788,30 @@ pub fn linked_cancel_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_control_rejects_page_mutation_without_fresh_snapshot() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::tool_call,
+            services::agent_control::AgentControlService,
+        };
+
+        let mut call = tool_call(
+            "act",
+            serde_json::json!({ "page": 1, "action": "click", "target": "button" }),
+        )
+        .await?;
+        call.state.agent_control = Arc::new(AgentControlService::new(Some(
+            "test-secret".to_string(),
+        )));
+
+        let result = begin_action_control(&call).await;
+        assert_eq!(
+            result.err(),
+            Some("page snapshot is unavailable or stale; the action was not dispatched"),
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn deferred_grouping_preserves_explicit_group_update() -> anyhow::Result<()> {
