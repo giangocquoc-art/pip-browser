@@ -67,55 +67,98 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+
+function mockStopBridge(
+  leases: AgentControlLeaseView[] = [],
+  targetIds = ['target-incarnation-a'],
+) {
+  const chromeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'chrome')
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
+  const requests: Array<{ url: string; method: string; body?: string }> = []
+  let targetIndex = 0
+  Object.defineProperty(globalThis, 'chrome', {
+    configurable: true,
+    value: {
+      browserOS: {
+        getPref(name: string, callback: (value: { value: number | string }) => void) {
+          callback({ value: name.endsWith('agent_control_token') ? 'test-secret' : 9000 })
+        },
+      },
+      runtime: {},
+      debugger: {
+        getTargets: async () => [{
+          id: targetIds[Math.min(targetIndex++, targetIds.length - 1)],
+          tabId: 17,
+          type: 'page',
+        }],
+      },
+    },
+  })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        body: typeof init?.body === 'string' ? init.body : undefined,
+      })
+      if (init?.method === 'POST') return new Response(null, { status: 204 })
+      return Response.json({ leases })
+    },
+  })
+  return {
+    requests,
+    restore() {
+      if (chromeDescriptor) Object.defineProperty(globalThis, 'chrome', chromeDescriptor)
+      else Reflect.deleteProperty(globalThis, 'chrome')
+      if (fetchDescriptor) Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
+      else Reflect.deleteProperty(globalThis, 'fetch')
+    },
+  }
+}
+
 describe('agent-control extension bridge', () => {
 
   it('records tab Stop before confirming an empty lease list', async () => {
-    const chromeDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'chrome')
-    const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
-    const requests: Array<{ url: string; method: string; body?: string }> = []
-    Object.defineProperty(globalThis, 'chrome', {
-      configurable: true,
-      value: {
-        browserOS: {
-          getPref(name: string, callback: (value: { value: number | string }) => void) {
-            callback({ value: name.endsWith('agent_control_token') ? 'test-secret' : 9000 })
-          },
-        },
-        runtime: {},
-        debugger: {
-          getTargets: async () => [{ id: 'target-incarnation-a', tabId: 17, type: 'page' }],
-        },
-      },
-    })
-    Object.defineProperty(globalThis, 'fetch', {
-      configurable: true,
-      value: async (input: RequestInfo | URL, init?: RequestInit) => {
-        requests.push({
-          url: String(input),
-          method: init?.method ?? 'GET',
-          body: typeof init?.body === 'string' ? init.body : undefined,
-        })
-        if (init?.method === 'POST') return new Response(null, { status: 204 })
-        return Response.json({ leases: [] })
-      },
-    })
+    const fixture = mockStopBridge()
     try {
       const result = await stopAgentControlForTab(
         17,
         { syncAgentControlLease: async () => 'unavailable' },
         noTakeoverOwners,
       )
-      expect(requests[0]).toEqual({
+      expect(fixture.requests[0]).toEqual({
         url: 'http://127.0.0.1:9000/api/v1/agent-control/tabs/17/stop',
         method: 'POST',
         body: JSON.stringify({ targetId: 'target-incarnation-a' }),
       })
       expect(result).toEqual({ confirmed: true, leases: [], restartRequired: true })
     } finally {
-      if (chromeDescriptor) Object.defineProperty(globalThis, 'chrome', chromeDescriptor)
-      else Reflect.deleteProperty(globalThis, 'chrome')
-      if (fetchDescriptor) Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
-      else Reflect.deleteProperty(globalThis, 'fetch')
+      fixture.restore()
+    }
+  })
+
+  it('does not release a replacement target or report success after Stop target changes', async () => {
+    const replacement = { ...lease('locked', 'lock'), targetId: 'target-incarnation-b' }
+    const fixture = mockStopBridge(
+      [replacement],
+      ['target-incarnation-a', 'target-incarnation-b'],
+    )
+    let nativeCalls = 0
+    try {
+      await expect(stopAgentControlForTab(
+        17,
+        { syncAgentControlLease: async () => { nativeCalls += 1; return 'unavailable' } },
+        noTakeoverOwners,
+      )).rejects.toThrow('target changed')
+      expect(nativeCalls).toBe(0)
+      expect(fixture.requests.filter((request) => request.method === 'POST')).toEqual([{
+        url: 'http://127.0.0.1:9000/api/v1/agent-control/tabs/17/stop',
+        method: 'POST',
+        body: JSON.stringify({ targetId: 'target-incarnation-a' }),
+      }])
+    } finally {
+      fixture.restore()
     }
   })
 

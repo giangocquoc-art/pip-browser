@@ -293,7 +293,7 @@ export async function stopAgentControlForTab(
   )
   const current = await listLeases(baseUrl, token)
   observeLeaseSnapshot(current, locks)
-  const owned = current.filter((lease) => lease.tabId === tabId)
+  const owned = current.filter((lease) => lease.tabId === tabId && lease.targetId === target.id)
   for (const initial of owned) {
     let candidate = initial
     while (Date.now() < deadline) {
@@ -332,15 +332,23 @@ export async function stopAgentControlForTab(
     observeLeaseSnapshot(latest, locks)
     // A stop request is scoped to this tab; it must not reconcile another tab's lease.
     await reconcilePendingAgentControlLeases(
-      latest.filter((lease) => lease.tabId === tabId),
+      latest.filter((lease) => lease.tabId === tabId && lease.targetId === target.id),
       locks,
       (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
       readTakeoverOwners,
     )
     latest = await listLeases(baseUrl, token)
     observeLeaseSnapshot(latest, locks)
-    latest = latest.filter((lease) => lease.tabId === tabId)
-    if (latest.length === 0) return { confirmed: true, leases: [], restartRequired: true }
+    latest = latest.filter((lease) => lease.tabId === tabId && lease.targetId === target.id)
+    if (latest.length === 0) {
+      const currentTarget = (await chrome.debugger.getTargets()).find(
+        (candidate) => candidate.tabId === tabId && candidate.type === 'page',
+      )
+      if (currentTarget?.id !== target.id) {
+        throw new Error('The stopped tab target changed; control return cannot be confirmed')
+      }
+      return { confirmed: true, leases: [], restartRequired: true }
+    }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS))
   } while (true)
