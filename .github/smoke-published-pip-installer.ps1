@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 $version = '0.1.16'
 $expectedSha256 = '3ffd295cd68e8d65b096cd538946be46238ece143c1fc5ecfaa26badb41be7c2'
-$installerUrl = "https://github.com/giangocquoc-art/pip-browser/releases/download/v$version/Pip-Setup-$version-Windows-x64.exe"
+$installerUrl = "https://download.pip.psharehub.com/"
 $debugPort = 9222
 $firewallRuleNames = @()
 $createdUser = $false
@@ -202,10 +202,13 @@ $ErrorActionPreference = 'Continue'
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
 $adminRole = [System.Security.Principal.WindowsBuiltInRole]::Administrator
+$systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
 $runtimeRoots = @(
     [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),
     $env:ProgramFiles,
-    (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeWebView\Application')
+    (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeWebView\Application'),
+    (Join-Path $systemDrive 'Program Files (x86)\Microsoft\EdgeWebView\Application'),
+    (Join-Path $systemDrive 'Program Files\Microsoft\EdgeWebView\Application')
 ) | Where-Object { $_ }
 $runtimeFound = $false
 foreach ($root in $runtimeRoots) {
