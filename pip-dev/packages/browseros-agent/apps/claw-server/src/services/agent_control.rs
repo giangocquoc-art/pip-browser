@@ -98,9 +98,10 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        if let Some(existing) = inner.leases.values_mut().find(|lease| {
-            lease.tab_id == tab_id && !matches!(lease.phase, Phase::Unlocking | Phase::Failed(_))
-        }) {
+        if let Some(existing) = inner.leases.values_mut().find(|lease| lease.tab_id == tab_id) {
+            if !matches!(existing.phase, Phase::Locking | Phase::Locked) {
+                return Err("the previous tab lease is unresolved; wait for native unlock acknowledgement");
+            }
             if existing.owner != owner {
                 return Err("this tab is already controlled by another agent session");
             }
@@ -181,6 +182,18 @@ impl AgentControlService {
         }
     }
 
+    pub async fn abort(&self, owner: &str, lease_id: &str) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().await;
+        let Some(lease) = inner.leases.get_mut(lease_id) else { return Ok(()) };
+        if lease.owner != owner { return Err("agent tab lease owner mismatch"); }
+        lease.persistent = false;
+        lease.action_refs = 0;
+        lease.phase = Phase::Unlocking;
+        lease.expires_at = Instant::now() + LEASE_TTL;
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub async fn end(
         &self,
         owner: &str,
@@ -247,7 +260,7 @@ impl AgentControlService {
         self.sweep().await;
         let inner = self.inner.lock().await;
         inner.leases.values()
-            .filter(|lease| matches!(lease.phase, Phase::Locking | Phase::Unlocking))
+            .filter(|lease| matches!(lease.phase, Phase::Locking | Phase::Unlocking | Phase::Failed(_)))
             .map(view)
             .collect()
     }
@@ -268,13 +281,21 @@ impl AgentControlService {
             (Phase::Locking, LeaseAck::Locked) => lease.phase = Phase::Locked,
             (Phase::Locking, LeaseAck::Unavailable) => lease.phase = Phase::Failed("native tab lock is unavailable"),
             (Phase::Locking, LeaseAck::Stale) => lease.phase = Phase::Failed("tab changed before the native lock was acknowledged"),
-            (Phase::Unlocking, LeaseAck::Unlocked) => {
+            (Phase::Unlocking, LeaseAck::Unlocked) | (Phase::Failed(_), LeaseAck::Unlocked) => {
                 inner.leases.remove(lease_id);
                 self.changed.notify_waiters();
                 return Ok(());
             }
-            (Phase::Unlocking, LeaseAck::Unavailable) => lease.phase = Phase::Failed("native tab unlock is unavailable"),
-            (Phase::Locked, LeaseAck::Locked) | (Phase::Failed(_), _) => return Ok(()),
+            // A lock may finish after expiry/cancel already requested unlock. Accept
+            // only the exact tuple, keep the desired phase as Unlocking, and make the
+            // extension's next lease-driven pass detach the just-acquired lock.
+            (Phase::Unlocking, LeaseAck::Locked) | (Phase::Failed(_), LeaseAck::Locked) => {
+                lease.phase = Phase::Unlocking;
+            }
+            (Phase::Unlocking, LeaseAck::Unavailable) => return Ok(()),
+            (Phase::Failed(_), LeaseAck::Unavailable) | (Phase::Failed(_), LeaseAck::Stale) => return Ok(()),
+            (Phase::Locked, LeaseAck::Locked) => return Ok(()),
+            (Phase::Locking, LeaseAck::Unlocked) => return Err("lease acknowledgement does not match its current operation"),
             _ => return Err("lease acknowledgement does not match its current operation"),
         }
         self.changed.notify_waiters();
@@ -306,7 +327,7 @@ impl AgentControlService {
         for lease in inner.leases.values_mut() {
             if lease.expires_at > now { continue; }
             match lease.phase {
-                Phase::Locking => lease.phase = Phase::Failed("agent tab lock lease expired before acknowledgement"),
+                Phase::Locking => lease.phase = Phase::Unlocking,
                 Phase::Locked => { lease.phase = Phase::Unlocking; lease.expires_at = now + LEASE_TTL; }
                 Phase::Unlocking => lease.expires_at = now + LEASE_TTL,
                 Phase::Failed(_) => {}
@@ -318,7 +339,7 @@ impl AgentControlService {
 }
 
 fn view(lease: &Lease) -> LeaseView {
-    let operation = if matches!(lease.phase, Phase::Unlocking) { "unlock" } else { "lock" };
+    let operation = if matches!(lease.phase, Phase::Unlocking | Phase::Failed(_)) { "unlock" } else { "lock" };
     let remaining = lease.expires_at.saturating_duration_since(Instant::now());
     let expires_at_ms = SystemTime::now().duration_since(UNIX_EPOCH)
         .unwrap_or_default().saturating_add(remaining).as_millis() as u64;
@@ -360,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acknowledgement_must_match_exact_tab_and_target_before_locking() {
+    async fn acknowledgement_must_match_exact_tab_and_target_before_locking() -> anyhow::Result<()> {
         let service = service();
         let ticket = service.begin("session-a", 1, 42, "target-a", true).await?;
         assert!(service.acknowledge(&ticket.lease_id, 43, "target-a", LeaseAck::Locked).await.is_err());
@@ -368,7 +389,7 @@ mod tests {
         assert_eq!(service.pending_for_extension().await.len(), 1);
         service.acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked).await?;
         service.wait_locked("session-a", &ticket.lease_id, &CancellationToken::new()).await?;
-        Ok::<_, anyhow::Error>(())
+        Ok(())
     }
 
     #[tokio::test]
@@ -391,7 +412,33 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert!(service.wait_locked("owner", &ticket.lease_id, &cancel).await.is_err());
-        assert!(service.pending_for_extension().await.iter().any(|item| item.lease_id == ticket.lease_id));
+        service.abort("owner", &ticket.lease_id).await?;
+        assert_eq!(service.pending_for_extension().await[0].operation, "unlock");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn late_lock_ack_after_cancel_never_satisfies_lock_wait_and_requires_unlock() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service.begin("owner", 1, 42, "target-a", true).await?;
+        service.abort("owner", &ticket.lease_id).await?;
+        service.acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked).await?;
+        assert!(service.wait_locked("owner", &ticket.lease_id, &CancellationToken::new()).await.is_err());
+        let cleanup = service.pending_for_extension().await;
+        assert_eq!(cleanup.len(), 1);
+        assert_eq!(cleanup[0].operation, "unlock");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_unresolved_phase_blocks_same_tab_reacquisition() -> anyhow::Result<()> {
+        let service = service();
+        let ticket = service.begin("owner", 1, 42, "target-a", true).await?;
+        service.acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Locked).await?;
+        service.abort("owner", &ticket.lease_id).await?;
+        assert!(service.begin("owner", 1, 42, "target-a", true).await.is_err());
+        service.acknowledge(&ticket.lease_id, 42, "target-a", LeaseAck::Unlocked).await?;
+        assert!(service.begin("owner", 1, 42, "target-a", true).await.is_ok());
         Ok(())
     }
 
