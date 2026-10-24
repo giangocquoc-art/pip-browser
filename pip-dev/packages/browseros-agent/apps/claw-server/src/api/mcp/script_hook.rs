@@ -14,6 +14,7 @@ use browseros_mcp::{
 };
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+#[cfg(test)]
 use std::sync::Arc;
 use tracing::warn;
 
@@ -681,7 +682,9 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        stop.await.map_err(anyhow::Error::msg)??;
+        stop.await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
         assert!(service.leases_for_extension().await.is_empty());
         Ok(())
     }

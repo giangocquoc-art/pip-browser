@@ -675,7 +675,7 @@ async fn begin_action_control(call: &ToolCall) -> Result<Option<LeaseTicket>, &'
         return Err(error);
     }
     let document_after = page_document_checkpoint(call, page_id, page).await;
-    if !matches!(document_after, Ok(after) if after == &document_before) {
+    if !matches!(document_after, Ok(after) if after == document_before) {
         call.state
             .agent_control
             .unregister_action_dispatch(&ticket.lease_id, call.dispatch_id.as_str())
@@ -1227,7 +1227,10 @@ mod tests {
             waiting.await,
             Err("agent-control lock wait was cancelled by the client"),
         );
-        service.abort("test-owner", &ticket.lease_id).await?;
+        service
+            .abort("test-owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         Ok(())
     }
 
@@ -1254,7 +1257,10 @@ mod tests {
             waiting.await,
             Err("agent-control lock wait was cancelled by the operator"),
         );
-        service.abort("test-owner", &ticket.lease_id).await?;
+        service
+            .abort("test-owner", &ticket.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
         Ok(())
     }
 
