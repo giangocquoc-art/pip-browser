@@ -208,19 +208,41 @@ impl AgentControlService {
     }
 
     pub async fn finish_action(&self, owner: &str, ticket: &LeaseTicket) {
+        let _ = self.finish_action_request_unlock(owner, ticket).await;
+    }
+
+    /// Releases an ephemeral action reference and waits for native unlock ACK.
+    /// A persistent user-started lease remains held and returns immediately.
+    pub async fn finish_action_and_wait(
+        &self,
+        owner: &str,
+        ticket: &LeaseTicket,
+        cancel: &CancellationToken,
+    ) -> Result<(), &'static str> {
+        if self.finish_action_request_unlock(owner, ticket).await {
+            self.wait_unlocked(owner, &ticket.lease_id, cancel).await
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn finish_action_request_unlock(&self, owner: &str, ticket: &LeaseTicket) -> bool {
         if !ticket.action_ref {
-            return;
+            return false;
         }
         let mut inner = self.inner.lock().await;
+        let mut unlock_requested = false;
         if let Some(lease) = inner.leases.get_mut(&ticket.lease_id)
             && lease.owner == owner
         {
             lease.action_refs = lease.action_refs.saturating_sub(1);
             if lease.action_refs == 0 && !lease.persistent {
                 request_unlock(lease, None);
+                unlock_requested = true;
                 self.changed.notify_waiters();
             }
         }
+        unlock_requested
     }
 
     /// Requests cleanup for a cancelled action or an explicitly stopped lease.
