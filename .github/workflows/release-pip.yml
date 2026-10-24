@@ -94,6 +94,7 @@ jobs:
         env:
           PIP_VERIFY_DOH_TARGET: youtube
         run: cargo run --locked -p evergreen-browser -- --verify-google-dns-webview
+
       - name: Build installer payloads and source archive
         shell: pwsh
         run: ./scripts/build-installer.ps1 -SkipBrowserBuild
