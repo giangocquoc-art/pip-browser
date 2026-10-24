@@ -146,6 +146,8 @@ export default defineBackground(() => {
                 ...response.context,
                 nativeInputLock: nativeInputLocks.status(tabId),
               },
+              agentControlLeases,
+              ...(agentControlError ? { agentControlError: true } : {}),
             }
           }
           return {
