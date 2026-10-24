@@ -22,9 +22,9 @@ mod tests;
 
 pub use framework::{
     BrowserToolDefaults, BrowserToolOptions, FeatureNote, InnerCallActionGuard, InnerCallHook,
-    InnerCallRecord,
-    OutputFileAccess, StaticTargetStore, TargetStore, ToolCtx, ToolDef, ToolMetadata, ToolResult,
-    catalog, execute_tool, extract_page_id, result_page_id, unapplied_target_note,
+    InnerCallRecord, OutputFileAccess, StaticTargetStore, TargetStore, ToolCtx, ToolDef,
+    ToolMetadata, ToolResult, catalog, execute_tool, extract_page_id, result_page_id,
+    unapplied_target_note,
 };
 pub use service::{
     BrowserMcpService, BrowserMcpServiceOptions, BrowserSessionProvider,

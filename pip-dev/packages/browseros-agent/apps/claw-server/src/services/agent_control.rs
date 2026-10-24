@@ -1943,8 +1943,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finishing_registered_dispatch_is_idempotent_for_sibling_actions()
-    -> anyhow::Result<()> {
+    async fn finishing_registered_dispatch_is_idempotent_for_sibling_actions() -> anyhow::Result<()>
+    {
         let service = service();
         let action_a = service
             .begin("owner", 1, 42, "target-a", false)
@@ -1961,12 +1961,7 @@ mod tests {
             .await
             .map_err(anyhow::Error::msg)?;
         service
-            .register_action_dispatch(
-                "owner",
-                &action_a,
-                "dispatch-a",
-                CancellationToken::new(),
-            )
+            .register_action_dispatch("owner", &action_a, "dispatch-a", CancellationToken::new())
             .await
             .map_err(anyhow::Error::msg)?;
 
@@ -1978,12 +1973,7 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
         assert_eq!(action_a.lease_id, action_b.lease_id);
         service
-            .register_action_dispatch(
-                "owner",
-                &action_b,
-                "dispatch-b",
-                CancellationToken::new(),
-            )
+            .register_action_dispatch("owner", &action_b, "dispatch-b", CancellationToken::new())
             .await
             .map_err(anyhow::Error::msg)?;
 
