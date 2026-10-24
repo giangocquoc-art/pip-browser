@@ -136,6 +136,14 @@ impl AgentControlService {
             let action_ref = !persistent;
             if action_ref {
                 existing.action_refs = existing.action_refs.saturating_add(1);
+                if matches!(existing.phase, Phase::Locked) {
+                    // Every mutating MCP call gets a fresh extension ACK. If
+                    // native CDP detached since the prior action, the extension
+                    // must reacquire before this call can pass wait_locked().
+                    existing.phase = Phase::Locking;
+                    existing.error = None;
+                    self.changed.notify_waiters();
+                }
             }
             return Ok(LeaseTicket {
                 lease_id: existing.id.clone(),
@@ -614,6 +622,49 @@ mod tests {
             .is_err());
         assert_eq!(service.pending_for_extension().await.len(), 1);
         assert_eq!(service.status("owner", &ticket.lease_id).await?.status, "locking");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_ephemeral_action_requires_a_fresh_lock_ack() -> anyhow::Result<()> {
+        let service = service();
+        let persistent = service.begin("owner", 1, 42, "target-a", true).await?;
+        service
+            .acknowledge(&persistent.lease_id, 42, "target-a", LeaseAck::Locked)
+            .await?;
+
+        let action = service.begin("owner", 1, 42, "target-a", false).await?;
+        assert_eq!(action.lease_id, persistent.lease_id);
+        assert_eq!(
+            service.status("owner", &action.lease_id).await?.status,
+            "locking"
+        );
+        assert_eq!(
+            service.pending_for_extension().await[0].operation,
+            "lock"
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            service
+                .wait_locked("owner", &action.lease_id, &cancelled)
+                .await
+                .is_err()
+        );
+
+        service
+            .acknowledge(&action.lease_id, 42, "target-a", LeaseAck::Locked)
+            .await?;
+        service
+            .wait_locked("owner", &action.lease_id, &CancellationToken::new())
+            .await?;
+        service.finish_action("owner", &action).await;
+        assert_eq!(
+            service.status("owner", &action.lease_id).await?.status,
+            "locked",
+            "a persistent lease remains held after one acknowledged action"
+        );
         Ok(())
     }
 

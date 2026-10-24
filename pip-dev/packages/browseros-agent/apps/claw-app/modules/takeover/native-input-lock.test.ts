@@ -565,6 +565,51 @@ describe('NativeInputLockManager', () => {
     ])
   })
 
+  it('does not unlock or detach a replacement target for a stale lease release', async () => {
+    const { api, calls, targetIds } = makeDebugger()
+    targetIds.set(7, 'original-target')
+    const locks = new NativeInputLockManager(api)
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'lock',
+      ),
+    ).toBe('locked')
+    targetIds.set(7, 'replacement-target')
+
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'unlock',
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('stale')
+    expect(locks.status(7)).toBe('unavailable')
+    expect(
+      calls.filter(([method]) => method === 'Input.setAgentInputLock'),
+    ).toHaveLength(1)
+    expect(calls.some(([method]) => method === 'detach')).toBe(false)
+
+    // A retry may clean up only after the original target is again the exact
+    // attached incarnation; stale release never detaches the replacement tab.
+    targetIds.set(7, 'original-target')
+    expect(
+      await locks.syncAgentControlLease(
+        7,
+        'lease-1',
+        'original-target',
+        'unlock',
+        { agentLeaseIds: ['lease-1'], takeoverSessionIds: [] },
+      ),
+    ).toBe('unlocked')
+    expect(calls.at(-1)).toEqual(['detach', 7])
+  })
+
   it('rejects a stale target before applying a native lock and never activates the tab', async () => {
     const { api, calls, targetIds } = makeDebugger()
     targetIds.set(7, 'replacement-target')

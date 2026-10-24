@@ -215,6 +215,19 @@ export class NativeInputLockManager {
     ]
     const sessionKey = [...new Set(owners)].sort().join('\0')
     if (!sessionKey) {
+      if (expectedTargetId) {
+        let actualTargetId: string | null
+        try {
+          actualTargetId = await this.currentTargetId(tabId)
+        } catch {
+          return 'unavailable'
+        }
+        if (!actualTargetId || actualTargetId !== expectedTargetId) {
+          const staleLease = this.leases.get(tabId)
+          if (staleLease) staleLease.status = 'unavailable'
+          return 'stale'
+        }
+      }
       await this.releaseNative(tabId, mayRelease)
       return this.status(tabId)
     }
@@ -223,7 +236,10 @@ export class NativeInputLockManager {
     if (existing?.status === 'locked') {
       if (expectedTargetId) {
         try {
-          if (await this.currentTargetId(tabId) !== expectedTargetId) return 'stale'
+          if (await this.currentTargetId(tabId) !== expectedTargetId) {
+            existing.status = 'unavailable'
+            return 'stale'
+          }
         } catch {
           return 'unavailable'
         }
