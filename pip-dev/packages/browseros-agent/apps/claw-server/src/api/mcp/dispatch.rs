@@ -515,7 +515,7 @@ pub(crate) async fn finish_agent_control_action(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PageDocumentCheckpoint {
+pub(super) struct PageDocumentCheckpoint {
     target_id: String,
     tab_id: i64,
     url: String,
@@ -523,7 +523,7 @@ struct PageDocumentCheckpoint {
     loader_id: String,
 }
 
-async fn page_document_checkpoint(
+pub(super) async fn page_document_checkpoint(
     call: &ToolCall,
     page_id: u32,
     expected: &PageInfo,

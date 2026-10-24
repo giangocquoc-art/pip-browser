@@ -1,5 +1,7 @@
 use crate::{
-    api::mcp::dispatch::{ToolCall, ToolIdentity, wait_for_agent_control_lock},
+    api::mcp::dispatch::{
+        ToolCall, ToolIdentity, page_document_checkpoint, wait_for_agent_control_lock,
+    },
     api::mcp::effects::{ownership_claims, tab_groups, tabs_list_view},
     clock::now_epoch_ms,
     db::audit_log::{RecordToolDispatchInput, bounded_args_json, result_meta},
@@ -213,6 +215,9 @@ impl InnerCallHook for ScriptInnerCallHook {
                         "the page changed before native tab control could be confirmed".to_string(),
                     );
                 };
+                let document_before = page_document_checkpoint(&self.call, page, &page_info)
+                    .await
+                    .map_err(str::to_string)?;
                 let owner = identity.session.id().as_str();
                 let ticket = self
                     .call
@@ -257,6 +262,42 @@ impl InnerCallHook for ScriptInnerCallHook {
                 if let Err(error) = wait_for_agent_control_lock(&self.call, owner, &ticket).await {
                     lease_guard.finish().await;
                     return Err(format!("native tab lock was not confirmed: {error}"));
+                }
+                let document_after = page_document_checkpoint(&self.call, page, &page_info).await;
+                if !matches!(document_after, Ok(after) if after == document_before) {
+                    let service = self.call.state.agent_control.clone();
+                    let owner = owner.to_string();
+                    let ticket = ticket.clone();
+                    let dispatch_id = dispatch_id.clone();
+                    let tab_id = page_info.tab_id.0;
+                    let target_id = page_info.target_id.to_string();
+                    let cleanup_error = self.call.agent_control_cleanup_error.clone();
+                    // Cleanup outlives a cancelled script future and drains peer
+                    // actions before releasing a persistent native lease.
+                    let cleanup = tokio::spawn(async move {
+                        service
+                            .finish_action_dispatch(&owner, &ticket, dispatch_id.as_str())
+                            .await;
+                        let result = service
+                            .release_after_document_change(
+                                &owner,
+                                &ticket.lease_id,
+                                tab_id,
+                                &target_id,
+                            )
+                            .await;
+                        if let Err(error) = result
+                            && let Ok(mut cleanup_error) = cleanup_error.lock()
+                        {
+                            *cleanup_error = Some(error.to_string());
+                        }
+                        result
+                    });
+                    lease_guard.completed = true;
+                    return Err(match cleanup.await {
+                        Ok(Ok(())) => "page document changed while waiting for native lock; script primitive was not dispatched and native unlock confirmed",
+                        _ => "page document changed or could not be verified; script primitive was not dispatched but native unlock is not confirmed; stop the tab and retry cleanup",
+                    }.to_string());
                 }
                 action_guard = Some(lease_guard as Box<dyn InnerCallActionGuard>);
             }
@@ -549,7 +590,6 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
     async fn failed_native_unlock_is_reported_to_the_parent_script() -> anyhow::Result<()> {
         use crate::services::agent_control::{AgentControlService, LeaseAck};
@@ -628,6 +668,94 @@ mod tests {
                 .is_some_and(|message| message.contains("native unlock")),
             "the parent MCP dispatch must receive an unconfirmed native-unlock error"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_primitive_rejects_loader_change_while_lock_ack_is_pending() -> anyhow::Result<()> {
+        use crate::{
+            api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+            services::agent_control::{AgentControlService, LeaseAck},
+        };
+        use std::time::Duration;
+
+        let connection = ProfileConnection::new();
+        let browser = current_session(connection.clone());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call("run", json!({"code":"return 1"})).await?;
+        call.browser_session = Some(browser);
+        let service = AgentControlService::new(Some("test-secret".to_string()));
+        call.state.agent_control = Arc::new(service.clone());
+        let hook = ScriptInnerCallHook::new(call);
+        let mut authorizing = tokio::spawn(async move {
+            hook.authorize_with_guard(Some(page.page_id.0))
+                .await
+                .map(|guard| guard.is_some())
+        });
+        let locking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service.pending_for_extension().await.into_iter().next() {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        *connection
+            .main_frame_loader_id
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = "loader-after-reload".to_string();
+        service
+            .acknowledge(
+                &locking.lease_id,
+                locking.generation,
+                locking.tab_id,
+                &locking.target_id,
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let unlocking = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(lease) = service
+                    .pending_for_extension()
+                    .await
+                    .into_iter()
+                    .find(|lease| lease.status == "unlocking")
+                {
+                    break lease;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut authorizing)
+                .await
+                .is_err(),
+            "document-change rejection must wait for confirmed native unlock"
+        );
+        service
+            .acknowledge(
+                &unlocking.lease_id,
+                unlocking.generation,
+                unlocking.tab_id,
+                &unlocking.target_id,
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let error = tokio::time::timeout(Duration::from_secs(2), authorizing)
+            .await??
+            .expect_err("changed document must not authorize a script primitive");
+        assert!(error.contains("document changed"));
+        assert!(service.leases_for_extension().await.is_empty());
         Ok(())
     }
 
