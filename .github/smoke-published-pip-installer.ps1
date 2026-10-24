@@ -281,10 +281,41 @@ exit ([int]$diagnostic.installerExitCode)
     $installDiagnosticWrapper = $installDiagnosticWrapper.Replace('__EXPECTED_SID__', $userSid).
         Replace('__INSTALLER_PATH__', $quotedTestInstallerPath).
         Replace('__DIAGNOSTIC_PATH__', $quotedDiagnosticPath)
-    $encodedInstallDiagnosticWrapper = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($installDiagnosticWrapper))
+    $diagnosticWrapperPath = Join-Path $userTempDirectory 'Pip-install-diagnostic.ps1'
+    [System.IO.File]::WriteAllText($diagnosticWrapperPath, $installDiagnosticWrapper, [System.Text.UTF8Encoding]::new($false))
     $profilePwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
     Write-Host 'Installing exact release under the standard user from that user profile, with stdout/stderr and token diagnostics captured.'
-    $installerProcess = Start-Process -FilePath $profilePwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedInstallDiagnosticWrapper) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru -Wait
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $profilePwshPath
+    $startInfo.WorkingDirectory = $userTempDirectory
+    $startInfo.UserName = $userName
+    $startInfo.Domain = $env:COMPUTERNAME
+    $startInfo.Password = $securePassword
+    $startInfo.LoadUserProfile = $true
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.ArgumentList.Add('-NoLogo')
+    $startInfo.ArgumentList.Add('-NoProfile')
+    $startInfo.ArgumentList.Add('-NonInteractive')
+    $startInfo.ArgumentList.Add('-File')
+    $startInfo.ArgumentList.Add($diagnosticWrapperPath)
+
+    $installerProcess = [System.Diagnostics.Process]::new()
+    $installerProcess.StartInfo = $startInfo
+    if (-not $installerProcess.Start()) {
+        throw 'Could not start the temporary-user installer diagnostic process.'
+    }
+    $wrapperStdOutTask = $installerProcess.StandardOutput.ReadToEndAsync()
+    $wrapperStdErrTask = $installerProcess.StandardError.ReadToEndAsync()
+    $installerProcess.WaitForExit()
+    $wrapperStdOut = $wrapperStdOutTask.GetAwaiter().GetResult()
+    $wrapperStdErr = $wrapperStdErrTask.GetAwaiter().GetResult()
+    if ($wrapperStdOut) { Write-Host ('Installer wrapper stdout: ' + $wrapperStdOut.Trim()) }
+    if ($wrapperStdErr) { Write-Host ('Installer wrapper stderr: ' + $wrapperStdErr.Trim()) }
     if (-not (Test-Path -LiteralPath $diagnosticPath -PathType Leaf)) {
         throw "The temporary-user installer wrapper exited with code $($installerProcess.ExitCode) without writing diagnostic data."
     }
