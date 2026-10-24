@@ -112,6 +112,42 @@ describe('takeover toolbar action', () => {
     ])
   })
 
+  it('does not report control returned until MCP native unlock is confirmed', async () => {
+    const { calls, dependencies } = fixture({ stopped: 0, total: 0 })
+    dependencies.stopAgentControlForTab = async (tabId) => {
+      calls.push(`agent-release:${tabId}`)
+      return { confirmed: false, pending: 1 }
+    }
+
+    await expect(
+      handleTakeoverAction(stopRequest, trustedPopup, dependencies),
+    ).resolves.toMatchObject({
+      ok: false,
+      action: 'stop',
+      reason: 'partial-stop',
+      agentControlConfirmed: false,
+      agentControlPending: 1,
+    })
+    expect(calls).toContain('agent-release:17')
+    expect(calls.at(-1)).toBe('finish:17')
+  })
+
+  it('reports MCP control returned only after stop reconciliation confirms unlock', async () => {
+    const { dependencies } = fixture({ stopped: 0, total: 0 })
+    dependencies.stopAgentControlForTab = async () => ({
+      confirmed: true,
+      pending: 0,
+    })
+
+    await expect(
+      handleTakeoverAction(stopRequest, trustedPopup, dependencies),
+    ).resolves.toMatchObject({
+      ok: true,
+      action: 'stop',
+      agentControlConfirmed: true,
+    })
+  })
+
   it('reconciles current ownership after partial cancellation', async () => {
     const { calls, dependencies } = fixture({ stopped: 1, total: 2 })
     await expect(
