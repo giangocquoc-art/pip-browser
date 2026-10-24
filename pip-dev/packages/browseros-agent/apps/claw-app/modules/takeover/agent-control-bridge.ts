@@ -279,9 +279,21 @@ export async function stopAgentControlForTab(
 ): Promise<StopAgentControlResult> {
   const { baseUrl, token } = await credentials()
   const deadline = Date.now() + ACK_DEADLINE_MS
+  const target = (await chrome.debugger.getTargets()).find(
+    (candidate) => candidate.tabId === tabId && candidate.type === 'page',
+  )
+  if (!target?.id) throw new Error('The stopped tab target could not be verified')
+  await requestJson<void>(
+    `${baseUrl}/api/v1/agent-control/tabs/${tabId}/stop`,
+    token,
+    {
+      method: 'POST',
+      body: JSON.stringify({ targetId: target.id }),
+    },
+  )
   const current = await listLeases(baseUrl, token)
   observeLeaseSnapshot(current, locks)
-  const owned = current.filter((lease) => lease.tabId === tabId)
+  const owned = current.filter((lease) => lease.tabId === tabId && lease.targetId === target.id)
   for (const initial of owned) {
     let candidate = initial
     while (Date.now() < deadline) {
@@ -320,18 +332,26 @@ export async function stopAgentControlForTab(
     observeLeaseSnapshot(latest, locks)
     // A stop request is scoped to this tab; it must not reconcile another tab's lease.
     await reconcilePendingAgentControlLeases(
-      latest.filter((lease) => lease.tabId === tabId),
+      latest.filter((lease) => lease.tabId === tabId && lease.targetId === target.id),
       locks,
       (lease, status) => acknowledgeLease(baseUrl, token, lease, status),
       readTakeoverOwners,
     )
     latest = await listLeases(baseUrl, token)
     observeLeaseSnapshot(latest, locks)
-    latest = latest.filter((lease) => lease.tabId === tabId)
-    if (latest.length === 0) return { confirmed: true, leases: [], restartRequired: owned.length > 0 }
+    latest = latest.filter((lease) => lease.tabId === tabId && lease.targetId === target.id)
+    if (latest.length === 0) {
+      const currentTarget = (await chrome.debugger.getTargets()).find(
+        (candidate) => candidate.tabId === tabId && candidate.type === 'page',
+      )
+      if (currentTarget?.id !== target.id) {
+        throw new Error('The stopped tab target changed; control return cannot be confirmed')
+      }
+      return { confirmed: true, leases: [], restartRequired: true }
+    }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS))
   } while (true)
 
-  return { confirmed: false, leases: latest, restartRequired: owned.length > 0 }
+  return { confirmed: false, leases: latest, restartRequired: true }
 }

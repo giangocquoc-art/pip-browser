@@ -27,7 +27,7 @@ pub struct AgentControlService {
 struct Inner {
     leases: BTreeMap<String, Lease>,
     snapshot_revisions: BTreeMap<i64, u64>,
-    stopped_tabs: BTreeSet<i64>,
+    stopped_tabs: BTreeSet<(i64, String)>,
     draining_tabs: BTreeSet<i64>,
     active_dispatches: BTreeMap<String, BTreeMap<String, CancellationToken>>,
 }
@@ -143,7 +143,10 @@ impl AgentControlService {
     ) -> Result<LeaseTicket, &'static str> {
         self.sweep().await;
         let mut inner = self.inner.lock().await;
-        if inner.stopped_tabs.contains(&tab_id) {
+        if inner
+            .stopped_tabs
+            .contains(&(tab_id, target_id.to_string()))
+        {
             return Err(
                 "agent control was stopped for this tab; restart Pip Dev before reacquiring control",
             );
@@ -542,7 +545,10 @@ impl AgentControlService {
         {
             return Err("agent tab lease changed before action registration");
         }
-        if inner.stopped_tabs.contains(&lease.tab_id) {
+        if inner
+            .stopped_tabs
+            .contains(&(lease.tab_id, lease.target_id.clone()))
+        {
             cancel.cancel();
             return Err("agent control was stopped for this tab; the action was not dispatched");
         }
@@ -654,6 +660,30 @@ impl AgentControlService {
         }
     }
 
+    /// Records explicit user Stop before a lease exists. The HTTP bridge has
+    /// verified the target against current browser inventory; keep that exact
+    /// incarnation so a reused numeric tab ID does not inherit the tombstone.
+    pub async fn request_tab_stop(&self, tab_id: i64, target_id: &str) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().await;
+        if inner
+            .leases
+            .values()
+            .any(|lease| lease.tab_id == tab_id && lease.target_id != target_id)
+        {
+            return Err("tab Stop target does not match its active lease incarnation");
+        }
+        inner.stopped_tabs.insert((tab_id, target_id.to_string()));
+        for lease in inner.leases.values().filter(|lease| lease.tab_id == tab_id) {
+            if let Some(active) = inner.active_dispatches.get(&lease.id) {
+                for cancel in active.values() {
+                    cancel.cancel();
+                }
+            }
+        }
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub async fn request_release(
         &self,
         lease_id: &str,
@@ -672,7 +702,7 @@ impl AgentControlService {
             if lease.generation != generation {
                 return Err("lease release generation is stale");
             }
-            inner.stopped_tabs.insert(tab_id);
+            inner.stopped_tabs.insert((tab_id, target_id.to_string()));
             if let Some(active) = inner.active_dispatches.get(lease_id) {
                 for cancel in active.values() {
                     cancel.cancel();
@@ -2029,6 +2059,133 @@ mod tests {
             )
             .await
             .map_err(anyhow::Error::msg)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tab_stop_cancels_then_preserves_the_existing_drain_barrier() -> anyhow::Result<()> {
+        use std::time::Duration;
+
+        let service = service();
+        let action = service
+            .begin("owner", 1, 42, "target-a", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let cancel = CancellationToken::new();
+        service
+            .register_action_dispatch("owner", &action, "dispatch", cancel.clone())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Locked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .request_tab_stop(42, "target-a")
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "locked"
+        );
+        let releasing = service.clone();
+        let ticket = action.clone();
+        let mut stop = tokio::spawn(async move {
+            releasing
+                .request_release(&ticket.lease_id, ticket.generation, 42, "target-a")
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut stop)
+                .await
+                .is_err()
+        );
+        service
+            .finish_action_dispatch("owner", &action, "dispatch")
+            .await;
+        stop.await
+            .map_err(anyhow::Error::msg)?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service
+                .status("owner", &action.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .status,
+            "unlocking"
+        );
+        service
+            .acknowledge(
+                &action.lease_id,
+                action.generation,
+                42,
+                "target-a",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(service.leases_for_extension().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stop_before_first_lease_blocks_only_the_stopped_target() -> anyhow::Result<()> {
+        let service = service();
+        service
+            .request_tab_stop(42, "target-a")
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            service
+                .begin("late-owner", 1, 42, "target-a", false)
+                .await
+                .is_err()
+        );
+        let replacement = service
+            .begin("new-owner", 2, 42, "target-b", false)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(service.request_tab_stop(42, "target-a").await.is_err());
+        assert_eq!(
+            service
+                .status("new-owner", &replacement.lease_id)
+                .await
+                .map_err(anyhow::Error::msg)?
+                .target_id,
+            "target-b"
+        );
+        service
+            .abort("new-owner", &replacement.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        service
+            .acknowledge(
+                &replacement.lease_id,
+                replacement.generation,
+                42,
+                "target-b",
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            service
+                .begin("old-owner", 1, 42, "target-a", false)
+                .await
+                .is_err(),
+            "a different-target begin must never erase the old Stop intent"
+        );
         Ok(())
     }
 
