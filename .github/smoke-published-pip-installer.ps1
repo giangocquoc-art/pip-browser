@@ -196,7 +196,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $webviewCommandLine) {
-        throw 'The installed WebView2 process did not expose Pip’s loopback Google DNS proxy argument.'
+        throw 'The installed WebView2 process did not expose Pip loopback Google DNS proxy argument.'
     }
     $report.googleDnsProxyConfigured = $true
     if ($webviewCommandLine -notmatch '--host-resolver-rules=.*MAP\s+\*\s+~NOTFOUND') {
@@ -257,7 +257,7 @@ try {
             $report.hostname = $page.hostname
             $report.title = $page.title
             $report.offlineUiDetected = $true
-            throw 'The installed Pip release displayed YouTube’s offline UI with Google DNS enabled.'
+            throw 'The installed Pip release displayed YouTube offline UI with Google DNS enabled.'
         }
         if ($page.loaded -eq $true -and $page.offlineUiDetected -eq $false) {
             break
