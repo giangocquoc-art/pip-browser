@@ -81,7 +81,8 @@ export class NativeInputLockManager {
       const unique = new Set(sessionIds.filter(Boolean))
       if (unique.size) this.takeoverOwners.set(tabId, unique)
       else this.takeoverOwners.delete(tabId)
-      return this.syncCombined(tabId)
+      const status = await this.syncCombined(tabId)
+      return status === 'stale' ? this.status(tabId) : status
     })
   }
 

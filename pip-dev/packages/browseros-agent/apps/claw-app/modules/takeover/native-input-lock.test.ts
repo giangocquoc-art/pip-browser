@@ -420,7 +420,7 @@ describe('NativeInputLockManager', () => {
     expect(
       await locks.syncAgentControlLease(7, 'lease-1', 'target-7', 'lock'),
     ).toBe('locked')
-    expect(calls.indexOf(['Target.getTargetInfo', 7])).toBeGreaterThanOrEqual(0)
+    expect(calls.some(([method, tabId]) => method === 'Target.getTargetInfo' && tabId === 7)).toBe(true)
 
     // Stop/reconcile clears takeover ownership, but the MCP lease remains a
     // distinct owner and keeps the native lock applied.
