@@ -88,6 +88,12 @@ jobs:
           }
           Write-Host "Verified $($report.checks.Count) native UI checks, including the ad88vip6 popup."
 
+      - name: Verify YouTube through Pip's Google DNS proxy
+        # Checks WebView2 navigation through Pip's Google DNS proxy on this Windows runner.
+        # This validates connectivity, not live YouTube ad removal or user-machine networks.
+        env:
+          PIP_VERIFY_DOH_TARGET: youtube
+        run: cargo run --locked -p evergreen-browser -- --verify-google-dns-webview
       - name: Build installer payloads and source archive
         shell: pwsh
         run: ./scripts/build-installer.ps1 -SkipBrowserBuild
