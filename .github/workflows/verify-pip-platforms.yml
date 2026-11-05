@@ -41,6 +41,10 @@ jobs:
       - name: Test, lint and build development APK
         working-directory: browser-source/android
         run: gradle --no-daemon --max-workers=2 testDebugUnitTest lintDebug assembleDebug
+      - name: Show Android lint diagnostics
+        if: failure()
+        run: |
+          find browser-source/android/app/build -name 'lint-results-*.txt' -type f -exec cat {} \;
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Pip-Android-development-APK

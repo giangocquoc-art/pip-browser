@@ -360,6 +360,9 @@ public final class MainActivity extends Activity {
         else finish();
     }
 
+    // API 33+ gestures use the platform OnBackInvokedCallback registered in onCreate.
+    // This override remains solely for Android 8-12 compatibility.
+    @SuppressLint("GestureBackNavigation")
     @SuppressWarnings("deprecation")
     @Override public void onBackPressed() { navigateBack(); }
 
