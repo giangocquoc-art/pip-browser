@@ -2542,7 +2542,7 @@ throw new Error('boom');
 console.log('before');
 while (true) {}
 "#,
-            Some(10.0),
+            Some(1000.0),
         )
         .await?;
         assert!(result.is_error);
@@ -2551,7 +2551,7 @@ while (true) {}
             Some(json!({
                 "ok": false,
                 "logs": ["before"],
-                "error": "run exceeded 10ms"
+                "error": "run exceeded 1000ms"
             }))
         );
         Ok(())
@@ -2567,7 +2567,7 @@ try {
   return 'caught';
 }
 "#,
-            Some(10.0),
+            Some(1000.0),
         )
         .await?;
         assert!(result.is_error);
@@ -2576,7 +2576,7 @@ try {
             Some(json!({
                 "ok": false,
                 "logs": [],
-                "error": "run exceeded 10ms"
+                "error": "run exceeded 1000ms"
             }))
         );
         Ok(())

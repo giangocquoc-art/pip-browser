@@ -34,6 +34,7 @@ export function takeoverForTab(
       return {
         mode: 'help',
         sessionId: session.sessionId,
+        requestId: help.requestId,
         agentLabel: session.label || session.slug,
         reason: help.reason,
         resumeHint: help.resumeHint,

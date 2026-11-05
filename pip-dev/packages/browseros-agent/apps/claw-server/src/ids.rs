@@ -69,6 +69,16 @@ string_id!(SessionId);
 string_id!(ProfileId);
 string_id!(ConvoId);
 
+/// The current browser page incarnation pinned when help was requested. Page and target IDs
+/// distinguish a reused Chrome tab; the connection epoch distinguishes a reconnected CDP session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpTargetIdentity {
+    pub browser_tab_id: i64,
+    pub page_id: u32,
+    pub target_id: String,
+    pub connection_epoch: u64,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct DispatchId(String);

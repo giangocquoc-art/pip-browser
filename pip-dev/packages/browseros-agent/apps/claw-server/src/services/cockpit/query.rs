@@ -8,6 +8,7 @@
 use crate::{
     db::audit_log::TaskSummary,
     error::AppResult,
+    ids::HelpTargetIdentity,
     services::{
         browser::{BrowserService, hex_for_slug},
         cockpit::{TabActivityService, ToolEvent},
@@ -15,7 +16,7 @@ use crate::{
         sessions::{Session, Sessions},
     },
 };
-use browseros_core::pages::PageInfo;
+use browseros_core::{CdpConnection, pages::PageInfo};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -40,7 +41,7 @@ pub enum LiveActivityState {
 
 #[derive(Debug, Clone)]
 pub struct LiveTabProjection {
-    pub browser_tab_id: i64,
+    pub identity: HelpTargetIdentity,
     pub url: String,
     pub title: String,
     pub first_activity_at: Option<i64>,
@@ -151,7 +152,7 @@ impl CockpitQuery {
             .session_tabs
             .list_open_session_tabs(&session_ids)
             .await?;
-        let Some(pages) = self.current_pages().await else {
+        let Some((pages, connection_epoch)) = self.current_pages().await else {
             let connected = self.connected_session_ids().await;
             return Ok(projected
                 .into_iter()
@@ -190,7 +191,12 @@ impl CockpitQuery {
             ));
             let active = record.is_some_and(|record| record.status == "active");
             let tab = LiveTabProjection {
-                browser_tab_id: ownership.tab_id,
+                identity: HelpTargetIdentity {
+                    browser_tab_id: ownership.tab_id,
+                    page_id: page.page_id.0,
+                    target_id: page.target_id.as_str().to_string(),
+                    connection_epoch,
+                },
                 url: page.url.clone(),
                 title: page.title.clone(),
                 first_activity_at: record.map(|record| record.first_tool_at),
@@ -255,7 +261,11 @@ impl CockpitQuery {
                     right
                         .last_activity_at
                         .cmp(&left.last_activity_at)
-                        .then_with(|| left.browser_tab_id.cmp(&right.browser_tab_id))
+                        .then_with(|| {
+                            left.identity
+                                .browser_tab_id
+                                .cmp(&right.identity.browser_tab_id)
+                        })
                 });
                 projected
             })
@@ -271,13 +281,26 @@ impl CockpitQuery {
             .collect()
     }
 
-    async fn current_pages(&self) -> Option<Vec<PageInfo>> {
+    async fn current_pages(&self) -> Option<(Vec<PageInfo>, u64)> {
         let browser = self.browser.session().await?;
         if !browser.is_connected() {
             return None;
         }
+        let connection = browser.connection();
+        let connection_epoch = connection.connection_epoch();
         match browser.pages.list().await {
-            Ok(pages) => Some(pages),
+            Ok(pages)
+                if browser.is_connected()
+                    && connection.connection_epoch() == connection_epoch
+                    && self
+                        .browser
+                        .session()
+                        .await
+                        .is_some_and(|current| Arc::ptr_eq(&browser, &current)) =>
+            {
+                Some((pages, connection_epoch))
+            }
+            Ok(_) => None,
             Err(error) => {
                 tracing::warn!(error = %error, "failed to reconcile live browser pages");
                 None

@@ -16,8 +16,8 @@ import { apiClient } from './client'
 
 export const useResolveHelp = createMutation<
   ResolveHelpResponse,
-  { sessionId: string; note?: string }
+  { sessionId: string; requestId: string; browserTabId: number; note?: string }
 >({
-  mutationFn: async ({ sessionId, note }) =>
-    (await apiClient()).resolveHelp({ sessionId, note }),
+  mutationFn: async ({ sessionId, requestId, browserTabId, note }) =>
+    (await apiClient()).resolveHelp({ sessionId, requestId, browserTabId, note }),
 })

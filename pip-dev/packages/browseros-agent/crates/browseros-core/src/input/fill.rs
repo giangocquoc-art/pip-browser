@@ -55,6 +55,7 @@ impl Input {
         scroll_into_view(session, target.backend_node_id).await;
         let point = get_element_center(session, target.backend_node_id).await?;
         self.check_click_point(session, &target, point).await?;
+        self.ensure_target_connected(session, &target).await?;
         // Native focus delivery can be deferred on background tabs until the
         // first input event. Click before checking focus so a page focus handler
         // cannot redirect the subsequent text insertion to another field.

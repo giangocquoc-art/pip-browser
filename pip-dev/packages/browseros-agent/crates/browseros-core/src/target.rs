@@ -128,6 +128,7 @@ pub struct TargetStatus {
 mod cdp_policy;
 mod events;
 pub(crate) mod page_access;
+pub use page_access::AgentInputLockCapability;
 use page_access::PageAccess;
 
 /// Both event attribution and OOPIF admission inspect the same native frame-tree shape.
@@ -930,11 +931,37 @@ impl BrowserView {
             .ok_or(CoreError::UnknownPage(page))
     }
     async fn page_access(&self, page: PageId) -> Result<Option<Arc<PageAccess>>, CoreError> {
-        if self.epoch_guard()?.is_none() {
+        let epoch_guard = self.epoch_guard()?;
+        if epoch_guard.is_none() {
             return Ok(None);
         }
         let fresh = self.page(page).await?;
-        Ok(Some(Arc::new(PageAccess::new(self.clone(), fresh))))
+        Ok(Some(Arc::new(PageAccess::new(
+            self.clone(),
+            fresh,
+            epoch_guard,
+        ))))
+    }
+
+    /// Capture a page-specific native input-lock capability. The capability pins the current
+    /// target and connection epoch, so stale handles fail closed instead of locking a reused id.
+    /// For unbound views, the view's call-entry epoch supplies the same reconnect guard.
+    pub async fn agent_input_lock_capability(
+        &self,
+        page: PageId,
+    ) -> Result<AgentInputLockCapability, CoreError> {
+        let epoch_guard = self
+            .epoch_guard()?
+            .unwrap_or(crate::connection::EpochGuard {
+                expected: self.initial_epoch,
+                invalidated: TargetError::PageTargetChanged(page.clone()),
+            });
+        epoch_guard.check(self.session.connection().as_ref())?;
+        let fresh = self.page(page).await?;
+        epoch_guard.check(self.session.connection().as_ref())?;
+        Ok(AgentInputLockCapability {
+            access: Arc::new(PageAccess::new(self.clone(), fresh, Some(epoch_guard))),
+        })
     }
     pub async fn page_session(&self, page: PageId) -> Result<PageSession, CoreError> {
         match self.page_access(page.clone()).await? {
@@ -1085,7 +1112,15 @@ impl BrowserView {
         // Seed the capability from the native create reply BEFORE its first refresh. Asking
         // page_access(PageId) here would adopt a replacement reconciled during that await.
         let creating_view = self.with_expected_created_page(&creation.original)?;
-        let access = PageAccess::new(creating_view.clone(), creation.original);
+        let access = PageAccess::new(
+            creating_view.clone(),
+            creation.original,
+            Some(
+                creating_view
+                    .epoch_guard()?
+                    .ok_or_else(|| CoreError::Message("missing bound page epoch".into()))?,
+            ),
+        );
         for _ in 0..crate::timeouts::NEW_PAGE_READY_ATTEMPTS {
             let fresh = access.fresh().await?;
             if !fresh.is_loading || fresh.load_progress >= 1.0 {

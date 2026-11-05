@@ -179,6 +179,7 @@ impl Input {
         match get_element_center(session, target.backend_node_id).await {
             Ok(point) => {
                 self.check_click_point(session, &target, point).await?;
+                self.ensure_target_connected(session, &target).await?;
                 dispatch_click(
                     session,
                     point.x,
@@ -191,6 +192,7 @@ impl Input {
                 Ok(Some(point))
             }
             Err(_err) => {
+                self.ensure_target_connected(session, &target).await?;
                 js_click(session, target.backend_node_id).await?;
                 Ok(None)
             }
@@ -222,6 +224,7 @@ impl Input {
         scroll_into_view(session, target.backend_node_id).await;
         let point = get_element_center(session, target.backend_node_id).await?;
         self.check_click_point(session, &target, point).await?;
+        self.ensure_target_connected(session, &target).await?;
         dispatch_hover(session, point.x, point.y).await?;
         Ok(point)
     }
@@ -448,6 +451,41 @@ impl Input {
         }
     }
 
+    async fn ensure_target_connected(
+        &self,
+        session: &ProtocolSession,
+        target: &InputTarget,
+    ) -> Result<(), CoreError> {
+        let connected = call_on_element(
+            session,
+            target.backend_node_id,
+            "function(){return this.isConnected === true}",
+            None,
+        )
+        .await?;
+        match connected.as_bool() {
+            Some(true) => Ok(()),
+            Some(false) => match (
+                &target.error_target.ref_id,
+                &target.error_target.role,
+                &target.error_target.name,
+            ) {
+                (Some(ref_id), Some(role), Some(name)) => Err(CoreError::StaleRef {
+                    ref_id: ref_id.clone(),
+                    role: role.clone(),
+                    name: name.clone(),
+                }),
+                _ => Err(CoreError::Message(
+                    "Element detached before input dispatch; take a new snapshot.".to_string(),
+                )),
+            },
+            None => Err(CoreError::Message(
+                "Could not confirm whether the input target is connected; take a new snapshot."
+                    .to_string(),
+            )),
+        }
+    }
+
     async fn with_page_session_retry<F, Fut, T>(&self, action: F) -> Result<T, CoreError>
     where
         F: Fn(ProtocolSession) -> Fut,
@@ -503,6 +541,8 @@ mod tests {
     struct HarnessState {
         hit_test: HitTestResponse,
         hit_test_calls: usize,
+        connectivity_checks: usize,
+        detach_before_action: bool,
         mouse_events: usize,
         page_scrolls: usize,
         select_calls: usize,
@@ -641,6 +681,19 @@ mod tests {
                 .get("functionDeclaration")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if function.contains("browserosPrepareFill") {
+                return Ok(json!({ "result": { "value": true } }));
+            }
+            if function.contains("function(){return this.isConnected === true}") {
+                let connected = match self.state.lock() {
+                    Ok(mut state) => {
+                        state.connectivity_checks += 1;
+                        !state.detach_before_action || state.connectivity_checks < 2
+                    }
+                    Err(_err) => false,
+                };
+                return Ok(json!({ "result": { "value": connected } }));
+            }
             if function.contains("elementFromPoint") {
                 let response = match self.state.lock() {
                     Ok(mut state) => {
@@ -680,14 +733,14 @@ mod tests {
     async fn input_harness(
         hit_test: HitTestResponse,
     ) -> Result<(Arc<HarnessConnection>, Input, Ref), CoreError> {
-        input_harness_for_target(hit_test, "button", "Submit", Some("Choice")).await
+        input_harness_for_target(hit_test, "button", "Submit", Some("Choice"), false).await
     }
 
     async fn select_input_harness(
         hit_test: HitTestResponse,
         select_result: Option<&'static str>,
     ) -> Result<(Arc<HarnessConnection>, Input, Ref), CoreError> {
-        input_harness_for_target(hit_test, "combobox", "Sort by:", select_result).await
+        input_harness_for_target(hit_test, "combobox", "Sort by:", select_result, false).await
     }
 
     async fn input_harness_for_target(
@@ -695,11 +748,14 @@ mod tests {
         target_role: &'static str,
         target_name: &'static str,
         select_result: Option<&'static str>,
+        detach_before_action: bool,
     ) -> Result<(Arc<HarnessConnection>, Input, Ref), CoreError> {
         let connection = Arc::new(HarnessConnection {
             state: Mutex::new(HarnessState {
                 hit_test,
                 hit_test_calls: 0,
+                connectivity_checks: 0,
+                detach_before_action,
                 mouse_events: 0,
                 page_scrolls: 0,
                 select_calls: 0,
@@ -752,6 +808,45 @@ mod tests {
                 ..AxNode::default()
             },
         ]
+    }
+
+    #[tokio::test]
+    async fn click_stops_when_ref_detaches_before_dispatch() -> Result<(), CoreError> {
+        let (connection, input, ref_id) =
+            input_harness_for_target(HitTestResponse::Clear, "button", "Submit", None, true)
+                .await?;
+
+        let result = input.click(&ref_id, ClickOptions::default()).await;
+
+        assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        assert_eq!(connection.mouse_events(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hover_stops_when_ref_detaches_before_dispatch() -> Result<(), CoreError> {
+        let (connection, input, ref_id) =
+            input_harness_for_target(HitTestResponse::Clear, "button", "Submit", None, true)
+                .await?;
+
+        let result = input.hover(&ref_id).await;
+
+        assert!(matches!(result, Err(CoreError::StaleRef { .. })));
+        assert_eq!(connection.mouse_events(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fill_stops_when_ref_detaches_before_click_dispatch() -> Result<(), CoreError> {
+        let (connection, input, ref_id) =
+            input_harness_for_target(HitTestResponse::Clear, "textbox", "Email", None, true)
+                .await?;
+
+        let result = input.fill(&ref_id, "pip@example.com", true).await;
+
+        assert!(result.is_err());
+        assert_eq!(connection.mouse_events(), 0);
+        Ok(())
     }
 
     #[tokio::test]

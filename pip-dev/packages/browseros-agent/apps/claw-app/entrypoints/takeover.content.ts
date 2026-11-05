@@ -59,6 +59,7 @@ export default defineContentScript({
             const result = (await chrome.runtime.sendMessage({
               type: 'takeover-resolve',
               sessionId: help.sessionId,
+              requestId: help.requestId,
               note: note || undefined,
             })) as { ok?: boolean } | undefined
             return result?.ok === true

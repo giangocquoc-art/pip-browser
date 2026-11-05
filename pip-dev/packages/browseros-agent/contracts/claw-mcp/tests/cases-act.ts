@@ -33,6 +33,26 @@ async function evalIn(
   )
 }
 
+async function visualObservation(
+  ctx: CaseContext,
+  page: number,
+): Promise<{ observationId: string; regions: Record<string, unknown>[] }> {
+  const result = await ctx.mcp.callTool('visual_targets', { page })
+  expectOk(result, 'visual_targets')
+  const observationId = result.structuredContent?.observationId
+  if (typeof observationId !== 'string' || observationId.length === 0) {
+    throw new Error('visual_targets did not return a structured observationId')
+  }
+  const regions = result.structuredContent?.regions
+  if (
+    !Array.isArray(regions) ||
+    !regions.every((region) => typeof region === 'object' && region !== null)
+  ) {
+    throw new Error('visual_targets did not return structured visual regions')
+  }
+  return { observationId, regions: regions as Record<string, unknown>[] }
+}
+
 export const actCases: ContractCase[] = [
   {
     name: 'act: click updates the page',
@@ -89,18 +109,27 @@ export const actCases: ContractCase[] = [
     },
   },
   {
-    name: 'act: click_at hits page coordinates',
+    name: 'act: click_at hits a currently observed visual target',
     async run(ctx) {
       const page = await ctx.openPage(ctx.fixture('/cursor.html'))
-      await snapshot(ctx, page)
+      const observation = await visualObservation(ctx, page)
+      if (!observation.regions.some((region) => region.type === 'svg')) {
+        throw new Error('visual_targets omitted the fixture SVG region')
+      }
       const box = await evalIn(
         ctx,
         page,
-        'const r = document.getElementById("cursor-div").getBoundingClientRect(); return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)})',
+        'const r = document.getElementById("visual-target").getBoundingClientRect(); return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)})',
       )
       const { x, y } = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}')
       expectOk(
-        await ctx.mcp.callTool('act', { page, kind: 'click_at', x, y }),
+        await ctx.mcp.callTool('act', {
+          page,
+          kind: 'click_at',
+          x,
+          y,
+          observationId: observation.observationId,
+        }),
         'act click_at',
       )
       await waitUntil(
@@ -111,9 +140,230 @@ export const actCases: ContractCase[] = [
               page,
               'return document.getElementById("cursor-result").textContent',
             )
-          ).includes('div-clicked'),
-        'click_at to fire the div handler',
+          ).includes('svg-clicked'),
+        'click_at to fire the observed SVG handler',
       )
+    },
+  },
+  {
+    name: 'act: click_at rejects a stale coordinate outside observed visual targets',
+    async run(ctx) {
+      const page = await ctx.openPage(ctx.fixture('/cursor.html'))
+      const observation = await visualObservation(ctx, page)
+      const box = await evalIn(
+        ctx,
+        page,
+        'const r = document.getElementById("cursor-div").getBoundingClientRect(); return JSON.stringify({x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)})',
+      )
+      const { x, y } = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}')
+      await evalIn(
+        ctx,
+        page,
+        'document.getElementById("cursor-div").style.transform = "translateY(24px)"; return true',
+      )
+      const afterMove = await visualObservation(ctx, page)
+      if (afterMove.observationId !== observation.observationId) {
+        throw new Error('moving a non-visual DOM target unexpectedly changed the visual observation')
+      }
+      const result = await ctx.mcp.callTool('act', {
+        page,
+        kind: 'click_at',
+        x,
+        y,
+        observationId: observation.observationId,
+      })
+      const text = expectError(result, 'stale click_at outside visual target')
+      if (!/within.*visual target|visual target.*coordinate|coordinate.*visual target/i.test(text)) {
+        throw new Error(`stale coordinate error did not identify the visual target requirement: ${text}`)
+      }
+      const untouched = await evalIn(
+        ctx,
+        page,
+        'return document.getElementById("cursor-result").textContent',
+      )
+      if (!untouched.includes('untouched')) {
+        throw new Error(`stale coordinate activated the moved DOM target: ${untouched}`)
+      }
+    },
+  },
+  {
+    name: 'act: every coordinate kind requires an observation token',
+    async run(ctx) {
+      const page = await ctx.openPage(ctx.fixture('/cursor.html'))
+      const box = await evalIn(
+        ctx,
+        page,
+        'const c = document.getElementById("cursor-div").getBoundingClientRect(); const e = document.getElementById("editable").getBoundingClientRect(); return JSON.stringify({ clickX: c.x + c.width / 2, clickY: c.y + c.height / 2, editX: e.x + 8, editY: e.y + 8 })',
+      )
+      const points = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}') as {
+        clickX: number
+        clickY: number
+        editX: number
+        editY: number
+      }
+      const actions = [
+        { kind: 'click_at', x: points.clickX, y: points.clickY },
+        {
+          kind: 'type_at',
+          x: points.editX,
+          y: points.editY,
+          text: 'must not type',
+        },
+        { kind: 'hover_at', x: points.clickX, y: points.clickY },
+        {
+          kind: 'drag_at',
+          startX: points.clickX,
+          startY: points.clickY,
+          endX: points.clickX + 2,
+          endY: points.clickY + 2,
+        },
+      ]
+      for (const action of actions) {
+        const result = await ctx.mcp.callTool('act', { page, ...action })
+        const text = expectError(result, `act ${action.kind}`)
+        if (
+          !/observationId.*visual_targets|visual_targets.*observationId/i.test(
+            text,
+          )
+        ) {
+          throw new Error(
+            `${action.kind} omitted fresh-observation guidance: ${text}`,
+          )
+        }
+      }
+      const unchanged = await evalIn(
+        ctx,
+        page,
+        'return JSON.stringify({ result: document.getElementById("cursor-result").textContent, editable: document.getElementById("editable").textContent })',
+      )
+      if (
+        !unchanged.includes('untouched') ||
+        !unchanged.includes('editable text')
+      ) {
+        throw new Error(
+          `coordinate actions without a token were dispatched: ${unchanged}`,
+        )
+      }
+    },
+  },
+  {
+    name: 'act: a changed visual layout invalidates coordinate observation',
+    async run(ctx) {
+      const page = await ctx.openPage(ctx.fixture('/cursor.html'))
+      const observation = await visualObservation(ctx, page)
+      if (!observation.regions.some((region) => region.type === 'svg')) {
+        throw new Error('visual_targets omitted the fixture SVG region')
+      }
+      const box = await evalIn(
+        ctx,
+        page,
+        'const r = document.getElementById("cursor-div").getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 })',
+      )
+      const { x, y } = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}') as {
+        x: number
+        y: number
+      }
+      await evalIn(
+        ctx,
+        page,
+        'document.getElementById("visual-target").style.width = "96px"; return "changed"',
+      )
+      const result = await ctx.mcp.callTool('act', {
+        page,
+        kind: 'click_at',
+        x,
+        y,
+        observationId: observation.observationId,
+      })
+      const text = expectError(result, 'stale coordinate observation')
+      if (!/layout changed.*visual_targets/i.test(text)) {
+        throw new Error(
+          `stale coordinate action omitted re-observation guidance: ${text}`,
+        )
+      }
+      const unchanged = await evalIn(
+        ctx,
+        page,
+        'return document.getElementById("cursor-result").textContent',
+      )
+      if (!unchanged.includes('untouched')) {
+        throw new Error(`stale coordinate action was dispatched: ${unchanged}`)
+      }
+    },
+  },
+  {
+    name: 'act: replacing a same-size visual element invalidates coordinate observation',
+    async run(ctx) {
+      const page = await ctx.openPage(ctx.fixture('/cursor.html'))
+      const observation = await visualObservation(ctx, page)
+      const box = await evalIn(
+        ctx,
+        page,
+        'const r = document.getElementById("visual-target").getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 })',
+      )
+      const { x, y } = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}') as {
+        x: number
+        y: number
+      }
+      await evalIn(
+        ctx,
+        page,
+        'return window.replaceVisualTargetWithSameSizeNode()',
+      )
+      const result = await ctx.mcp.callTool('act', {
+        page,
+        kind: 'click_at',
+        x,
+        y,
+        observationId: observation.observationId,
+      })
+      const text = expectError(result, 'same-size visual node replacement')
+      if (!/layout changed.*visual_targets/i.test(text)) {
+        throw new Error(`replacement did not request fresh visual_targets: ${text}`)
+      }
+      const unchanged = await evalIn(
+        ctx,
+        page,
+        'return document.getElementById("cursor-result").textContent',
+      )
+      if (!unchanged.includes('untouched')) {
+        throw new Error(`stale action reached the replacement visual node: ${unchanged}`)
+      }
+    },
+  },
+  {
+    name: 'act: coordinate action rejects a generic overlay over a visual target',
+    async run(ctx) {
+      const page = await ctx.openPage(ctx.fixture('/cursor.html'))
+      const observation = await visualObservation(ctx, page)
+      const box = await evalIn(
+        ctx,
+        page,
+        'return window.coverVisualTargetWithOverlay()',
+      )
+      const { x, y } = JSON.parse(box.match(/\{.*\}/)?.[0] ?? '{}') as {
+        x: number
+        y: number
+      }
+      const result = await ctx.mcp.callTool('act', {
+        page,
+        kind: 'click_at',
+        x,
+        y,
+        observationId: observation.observationId,
+      })
+      const text = expectError(result, 'visual target overlay')
+      if (!/covered by another element/i.test(text)) {
+        throw new Error(`covered coordinate did not report its blocker: ${text}`)
+      }
+      const unchanged = await evalIn(
+        ctx,
+        page,
+        'return document.getElementById("cursor-result").textContent',
+      )
+      if (!unchanged.includes('untouched')) {
+        throw new Error(`covered coordinate action was dispatched: ${unchanged}`)
+      }
     },
   },
   {
@@ -149,10 +399,13 @@ export const actCases: ContractCase[] = [
     },
   },
   {
-    name: 'act: type_at enters text at coordinates',
+    name: 'act: type_at rejects ordinary DOM controls outside visual targets',
     async run(ctx) {
       const page = await ctx.openPage(ctx.fixture('/form.html'))
-      await snapshot(ctx, page)
+      const observation = await visualObservation(ctx, page)
+      if (observation.regions.length > 0) {
+        throw new Error('form fixture unexpectedly contains a visual target')
+      }
       const box = await evalIn(
         ctx,
         page,
@@ -164,17 +417,20 @@ export const actCases: ContractCase[] = [
         kind: 'type_at',
         x,
         y,
-        text: 'typed at point',
+        text: 'must not type',
+        observationId: observation.observationId,
       })
-      if (!result.isError) {
-        const value = await evalIn(
-          ctx,
-          page,
-          'return document.getElementById("bio").value',
-        )
-        if (!value.includes('typed at point')) {
-          throw new Error(`type_at did not reach the textarea: ${value}`)
-        }
+      const message = expectError(result, 'type_at outside visual targets')
+      if (!/within.*visual target|visual target.*coordinate/i.test(message)) {
+        throw new Error(`type_at rejection did not explain the visual target requirement: ${message}`)
+      }
+      const value = await evalIn(
+        ctx,
+        page,
+        'return document.getElementById("bio").value',
+      )
+      if (value.includes('must not type')) {
+        throw new Error(`type_at unexpectedly wrote into an ordinary DOM control: ${value}`)
       }
     },
   },

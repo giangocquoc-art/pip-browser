@@ -179,6 +179,9 @@ packages/*/dist
 /build/
 target/
 
+!crates/browseros-core/src/target/
+!crates/browseros-core/src/target/*.rs
+
 # Compiled binaries
 browseros-server
 browseros-server.exe
@@ -204,3 +207,4 @@ test-results/
 .agent/
 .llm/
 .grove/
+

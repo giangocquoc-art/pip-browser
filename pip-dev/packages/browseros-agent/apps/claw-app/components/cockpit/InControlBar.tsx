@@ -8,7 +8,11 @@ import { needsYouTone } from './needsYouTone'
 
 interface InControlBarProps {
   session: LiveSessionCardRecord
-  onHandBack: (sessionId: string, note?: string) => void
+  onHandBack: (
+    sessionId: string,
+    target: { requestId: string; browserTabId: number },
+    note?: string,
+  ) => void
   onCancel: () => void
   isHandingBack: boolean
 }
@@ -62,7 +66,14 @@ export function InControlBar({
             type="button"
             size="default"
             data-hand-back={session.sessionId}
-            onClick={() => onHandBack(session.sessionId, note)}
+            onClick={() => {
+              if (!help) return
+              onHandBack(
+                session.sessionId,
+                { requestId: help.requestId, browserTabId: help.browserTabId },
+                note,
+              )
+            }}
             disabled={isHandingBack}
             className={needsYouTone.action}
           >

@@ -94,11 +94,11 @@ cancel:
 resolveHelp:
   post:
     operationId: resolveHelp
-    description: Hand control back to a waiting agent after a human has taken over its page.
+    description: Hand control back only if requestId and browserTabId still match the current live request and the pinned CDP page incarnation.
     parameters:
       - $ref: ../parameters.yaml#/SessionId
     requestBody:
-      required: false
+      required: true
       content:
         application/json:
           schema:

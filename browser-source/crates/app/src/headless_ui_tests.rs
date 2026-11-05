@@ -217,14 +217,170 @@ impl Check {
                 if !self.app.settings.google_dns{return Err("DNS toolbar did not save".into());}
                 self.query(id,true,"(()=>{const button=document.getElementById('googleDnsButton');const saved=button.title.includes('áp dụng')&&button.querySelector('span').textContent==='Áp dụng';window.__renderGoogleDns(true,true,false,null);const checking=button.title.includes('đang kiểm tra')&&button.querySelector('span').textContent==='G DNS';window.__renderGoogleDns(true,true,false,true);const verified=button.title.includes('đã xác minh');window.__renderGoogleDns(true,true,false,false);const routeFailure=button.dataset.failed==='true'&&button.dataset.pending==='false'&&button.title.includes('chưa kết nối');window.__renderGoogleDns(true,false,true,null);const startupFailure=button.dataset.failed==='true'&&button.dataset.pending==='false'&&button.title.includes('không khởi động được')&&button.querySelector('span').textContent==='Cài đặt';window.__renderGoogleDns(false,false,true,null);const pendingOff=button.dataset.pending==='true'&&button.querySelector('span').textContent==='Áp dụng'&&button.title.includes('chưa áp dụng');window.__renderGoogleDns(true,false,false,null);postIpc('OpenSettings');return saved&&checking&&verified&&routeFailure&&startupFailure&&pendingOff})()");
             }
-            2=>self.query(id,false,"(()=>{const dnsRow=document.getElementById('googleDnsRestartRow'),hint=document.getElementById('googleDnsHint'),dns=document.getElementById('googleDnsToggle'),input=document.getElementById('askWhereToSaveToggle'),clear=document.getElementById('clearSiteDataButton'),clearTypes=['clearDataHistory','clearDataSite','clearDataCache','clearDataPasswords','clearDataAutofill','clearDataDownloads'];if(!dnsRow||dnsRow.hidden||getComputedStyle(dnsRow).display==='none'||!hint.textContent.includes('proxy chưa được áp dụng')||!dns||!input||!clear||!clear.textContent.includes('Xóa dữ liệu website')||!clear.getAttribute('onclick').includes('ClearSiteData')||clearTypes.some(id=>!document.getElementById(id))||typeof clearSelectedBrowsingData!=='function'||!document.getElementById('clearSelectedBrowsingDataButton').getAttribute('onclick').includes('clearSelectedBrowsingData'))return false;window.__renderGoogleDns(true,false,true,null);const failure=hint.textContent.includes('không khởi động được')&&!dnsRow.hidden;window.__renderGoogleDns(true,false,false,null);dns.checked=false;dns.onchange();const before=input.checked;input.click();for(const id of clearTypes)document.getElementById(id).checked=false;clearSelectedBrowsingData();const emptySelection=document.getElementById('statusText').textContent.includes('ít nhất một loại');window.confirm=()=>true;document.getElementById('clearDataCache').checked=true;clearSelectedBrowsingData();return failure&&before&&!input.checked&&emptySelection&&typeof window.__pipSend==='function'})()"),
-            3=>{
-                if self.app.settings.downloads.ask_where_to_save {return Err("Settings checkbox did not reach native storage".into());}
-                if self.app.settings.google_dns {return Err("Google DNS setting did not return to its original state".into());}
-                let disk=evergreen_core::settings::Settings::load_from_path(&get_settings_path()).map_err(|e|e.to_string())?;
-                if disk.downloads.ask_where_to_save {return Err("Nested settings were not persisted".into());}
-                if disk.google_dns {return Err("Google DNS setting was not persisted".into());}
-                self.query(id,false,"document.getElementById('statusText')?.textContent.includes('Đã xóa dữ liệu đã chọn') ? true : null");
+            2 => self.query(
+                id,
+                false,
+                r#"(()=> {
+                    if (window.__pipDnsProbeTestsStarted) {
+                        const completed = window.__pipDnsProbeTestsResult;
+                        return completed ? (completed.pass ? true : JSON.stringify(completed)) : null;
+                    }
+
+                    const dnsRow=document.getElementById('googleDnsRestartRow');
+                    const hint=document.getElementById('googleDnsHint');
+                    const dns=document.getElementById('googleDnsToggle');
+                    const input=document.getElementById('askWhereToSaveToggle');
+                    const clear=document.getElementById('clearSiteDataButton');
+                    const clearTypes=['clearDataHistory','clearDataSite','clearDataCache','clearDataPasswords','clearDataAutofill','clearDataDownloads'];
+                    const details={dnsRow:!!dnsRow,rowHidden:dnsRow?.hidden,rowDisplay:dnsRow?getComputedStyle(dnsRow).display:null,hint:hint?.textContent,dnsToggle:!!dns,input:!!input,clear:!!clear,clearText:clear?.textContent,clearOnclick:clear?.getAttribute('onclick'),missingClearTypes:clearTypes.filter(id=>!document.getElementById(id)),clearFn:typeof clearSelectedBrowsingData,clearButtonOnclick:document.getElementById('clearSelectedBrowsingDataButton')?.getAttribute('onclick')};
+
+                    if (!dnsRow || dnsRow.hidden || getComputedStyle(dnsRow).display==='none' ||
+                        !hint.textContent.includes('proxy chưa được áp dụng') || !dns || !input || !clear ||
+                        !clear.textContent.includes('Xóa dữ liệu website') ||
+                        !clear.getAttribute('onclick').includes('ClearSiteData') ||
+                        clearTypes.some(id=>!document.getElementById(id)) ||
+                        typeof clearSelectedBrowsingData!=='function' ||
+                        !document.getElementById('clearSelectedBrowsingDataButton').getAttribute('onclick').includes('clearSelectedBrowsingData')) {
+                        return JSON.stringify(details);
+                    }
+
+                    window.__renderGoogleDns(true,false,true,null);
+                    const failure=hint.textContent.includes('không khởi động được')&&dnsRow.hidden;
+                    window.__renderGoogleDns(true,false,false,null);
+                    dns.checked=false;
+                    dns.onchange();
+                    const before=input.checked;
+                    input.click();
+                    for(const id of clearTypes)document.getElementById(id).checked=false;
+                    clearSelectedBrowsingData();
+                    const emptySelection=document.getElementById('statusText').textContent.includes('ít nhất một loại');
+                    window.confirm=()=>true;
+                    document.getElementById('clearDataCache').checked=true;
+                    clearSelectedBrowsingData();
+                    const settingsPass=failure&&before&&!input.checked&&emptySelection&&typeof window.__pipSend==='function';
+                    if (!settingsPass) {
+                        return JSON.stringify({failure,before,inputAfter:input.checked,emptySelection,pipSend:typeof window.__pipSend});
+                    }
+                    if (typeof window.__pipGoogleDnsWebViewProbe !== 'function') {
+                        return JSON.stringify({probeMissing:true});
+                    }
+
+                    window.__pipDnsProbeTestsStarted=true;
+                    (async()=>{
+                        let request;
+                        const resolved=await window.__pipGoogleDnsWebViewProbe((url,init)=>{
+                            request={
+                                url,
+                                method:init.method,
+                                mode:init.mode,
+                                credentials:init.credentials,
+                                referrer:init.referrer,
+                                referrerPolicy:init.referrerPolicy,
+                                cache:init.cache,
+                                hasSignal:!!init.signal
+                            };
+                            return Promise.resolve({type:'opaque',status:0});
+                        },100);
+                        const rejected=await window.__pipGoogleDnsWebViewProbe(
+                            ()=>Promise.reject(new TypeError('simulated network failure')),
+                            100
+                        );
+                        const timeout=await window.__pipGoogleDnsWebViewProbe(
+                            ()=>new Promise(()=>{}),
+                            20
+                        );
+                        window.__pipDnsProbeTestsResult={
+                            pass:resolved.ok===true&&resolved.kind==='response'&&
+                                rejected.ok===false&&rejected.kind==='network'&&
+                                timeout.ok===false&&timeout.kind==='timeout'&&
+                                request.url==='https://www.youtube.com/generate_204'&&
+                                request.method==='GET'&&request.mode==='no-cors'&&
+                                request.credentials==='omit'&&request.referrer===''&&
+                                request.referrerPolicy==='no-referrer'&&request.cache==='no-store'&&
+                                request.hasSignal,
+                            resolved,rejected,timeout,request
+                        };
+                    })().catch(error=>{
+                        window.__pipDnsProbeTestsResult={pass:false,error:String(error)};
+                    });
+                    return null;
+                })()"#,
+            ),
+            3 => {
+                let profile_id = self
+                    .app
+                    .windows
+                    .get(&id)
+                    .map(|window| window.profile_id.clone())
+                    .ok_or("Settings test window missing")?;
+                if profile_id != "Default" {
+                    return Err("Download preference test was not routed to the active profile".into());
+                }
+                if self
+                    .app
+                    .settings
+                    .for_profile(&profile_id)
+                    .downloads
+                    .ask_where_to_save
+                {
+                    return Err("Profile download toggle did not reach native settings".into());
+                }
+                if !self.app.settings.downloads.ask_where_to_save {
+                    return Err("Profile download toggle changed the legacy global fallback".into());
+                }
+                if self.app.settings.google_dns {
+                    return Err("Google DNS setting did not return to its original state".into());
+                }
+
+                let mut disk =
+                    evergreen_core::settings::Settings::load_from_path(&get_settings_path())
+                        .map_err(|error| error.to_string())?;
+                if !disk.downloads.ask_where_to_save {
+                    return Err("Profile download toggle overwrote the legacy global setting".into());
+                }
+                if disk.google_dns {
+                    return Err("Google DNS setting was not persisted".into());
+                }
+                let legacy_folder = disk.downloads.default_folder.clone();
+                let profile_folder = legacy_folder.with_file_name("downloads-profile-a");
+                if !update_profile_download_folder(&mut disk, &profile_id, profile_folder.clone()) {
+                    return Err("Could not update the active profile's download folder".into());
+                }
+                disk.save_to_path(&get_settings_path())
+                    .map_err(|error| error.to_string())?;
+                self.app.settings = disk;
+
+                let disk =
+                    evergreen_core::settings::Settings::load_from_path(&get_settings_path())
+                        .map_err(|error| error.to_string())?;
+                let other_profile_id = disk
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id != profile_id)
+                    .map(|profile| profile.id.clone())
+                    .ok_or("Second profile missing from download settings test")?;
+                let profile_a = disk.for_profile(&profile_id);
+                let profile_b = disk.for_profile(&other_profile_id);
+                if profile_a.downloads.ask_where_to_save
+                    || profile_a.downloads.default_folder != profile_folder
+                {
+                    return Err("Profile A download preferences were not persisted".into());
+                }
+                if !profile_b.downloads.ask_where_to_save
+                    || profile_b.downloads.default_folder != legacy_folder
+                {
+                    return Err("Profile A download changes altered profile B".into());
+                }
+                if !disk.downloads.ask_where_to_save
+                    || disk.downloads.default_folder != legacy_folder
+                {
+                    return Err("Profile-local download changes altered the legacy fallback".into());
+                }
+                self.query(
+                    id,
+                    false,
+                    "document.getElementById('statusText')?.textContent.includes('Đã xóa dữ liệu đã chọn') ? true : null",
+                );
             }
             4=>{
                 self.privacy_test_tab=self.app.windows[&id].tab_manager.active_tab_id();
@@ -271,15 +427,43 @@ impl Check {
                 if library.history.iter().any(|p|p.url.ends_with("/private")){return Err("Private history leaked".into());}
                 self.app.handle_navigate(id,&(self.url.clone()+"download"));self.step+=1;
             }
-            11=>{
-                let path=self.app.settings.downloads.default_folder.join("native-test.txt");
-                let completed=self.app.windows[&id].downloads.values().any(|download|download["state"]=="Completed"&&download["path"].as_str().is_some_and(|download_path|std::path::Path::new(download_path)==path));
-                if !completed||std::fs::read(&path).ok().as_deref()!=Some(b"Pip download test\n"){return Ok(())}
-                self.app.handle_navigate(id,&(self.url.clone()+"download"));self.step+=1;
+            11 => {
+                let profile_id = self.app.windows[&id].profile_id.clone();
+                let download_folder = self
+                    .app
+                    .settings
+                    .for_profile(&profile_id)
+                    .downloads
+                    .default_folder;
+                let path = download_folder.join("native-test.txt");
+                let completed = self.app.windows[&id].downloads.values().any(|download| {
+                    download["state"] == "Completed"
+                        && download["path"].as_str().is_some_and(|download_path| {
+                            std::path::Path::new(download_path) == path
+                        })
+                });
+                if !completed || std::fs::read(&path).ok().as_deref() != Some(b"Pip download test\n") {
+                    return Ok(());
+                }
+                self.app
+                    .handle_navigate(id, &(self.url.clone() + "download"));
+                self.step += 1;
             }
-            12=>{
-                let win=&self.app.windows[&id];
-                if win.downloads.len()!=2 || !win.downloads.values().all(|d|d["state"]=="Completed") || !self.app.settings.downloads.default_folder.join("native-test (1).txt").is_file(){return Ok(())}
+            12 => {
+                let profile_id = self.app.windows[&id].profile_id.clone();
+                let download_folder = self
+                    .app
+                    .settings
+                    .for_profile(&profile_id)
+                    .downloads
+                    .default_folder;
+                let win = &self.app.windows[&id];
+                if win.downloads.len() != 2
+                    || !win.downloads.values().all(|download| download["state"] == "Completed")
+                    || !download_folder.join("native-test (1).txt").is_file()
+                {
+                    return Ok(());
+                }
                 let restored=load_download_history("Default");
                 if restored.len()!=2||!restored.values().all(|entry|entry["state"]=="Completed"&&entry["path"].as_str().is_some_and(|path|std::path::Path::new(path).is_file())){return Err("Completed downloads were not safely persisted for the profile".into());}
                 self.query(id,true,"(()=>{document.getElementById('profileButton').click();const names=[...document.querySelectorAll('#profileList .profile-choice-name')].map(n=>n.textContent);const okay=names.includes('Kiểm thử');document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));return okay})()");
@@ -299,6 +483,61 @@ impl Check {
                 self.query_tab(id,tab,"(()=>{if(!window.__pipPrivacyCleanupStarted){window.__pipPrivacyCleanupStarted=true;window.__pipPrivacyCleanupDone=false;window.__pipPrivacyCleanupError=null;(async()=>{const registration=await navigator.serviceWorker.getRegistration('/');if(registration){const script=registration.active?.scriptURL||registration.waiting?.scriptURL||registration.installing?.scriptURL;if(!script?.endsWith('/privacy-isolation-sw.js'))throw new Error('unexpected service worker: '+script);if(!await registration.unregister())throw new Error('service worker unregister failed')}await caches.delete('pip-privacy-isolation');await new Promise((resolve,reject)=>{const request=indexedDB.deleteDatabase('pip-privacy-isolation');request.onsuccess=()=>resolve();request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('database delete blocked'))})})().then(()=>window.__pipPrivacyCleanupDone=true).catch(error=>window.__pipPrivacyCleanupError=String(error))}if(window.__pipPrivacyCleanupError)return JSON.stringify({cleanupError:window.__pipPrivacyCleanupError});return window.__pipPrivacyCleanupDone?true:null})()");
             }
             150=>self.query(id,true,"(()=>{const button=document.getElementById('profileButton');button.click();const names=[...document.querySelectorAll('#profileList .profile-choice-name')].map(n=>n.textContent);return !document.getElementById('profilePopover').hidden&&names.includes('Cá nhân')&&names.includes('Kiểm thử')})()"),
+            151 => {
+                let profile_id = self
+                    .app
+                    .windows
+                    .get(&id)
+                    .map(|window| window.profile_id.clone())
+                    .ok_or("Permission policy test window missing")?;
+                let global_before = self.app.settings.permissions.clone();
+                self.app.user_event(
+                    events,
+                    BrowserEvent::Ipc(
+                        id,
+                        UiToHostMessage::SaveSettings {
+                            settings_json: serde_json::json!({
+                                "permissions": { "camera": "block" }
+                            })
+                            .to_string(),
+                        },
+                    ),
+                );
+                if self.app.settings.for_profile(&profile_id).permissions.camera != "block" {
+                    return Err("Permission policy SaveSettings patch did not reach the active profile".into());
+                }
+                if self.app.settings.permissions != global_before {
+                    return Err("Profile-local permission policy changed the global fallback".into());
+                }
+                let other_profile_id = self
+                    .app
+                    .settings
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id != profile_id)
+                    .map(|profile| profile.id.clone())
+                    .ok_or("Second profile missing from permission policy test")?;
+                if self.app.settings.for_profile(&other_profile_id).permissions != global_before {
+                    return Err("Profile-local permission policy changed another profile".into());
+                }
+                let persisted =
+                    evergreen_core::settings::Settings::load_from_path(&get_settings_path())
+                        .map_err(|error| error.to_string())?;
+                if persisted.for_profile(&profile_id).permissions.camera != "block"
+                    || persisted.permissions != global_before
+                    || persisted.for_profile(&other_profile_id).permissions != global_before
+                {
+                    return Err("Profile-local permission policies did not persist independently".into());
+                }
+                if permission_policy_for_profile(&persisted, &profile_id, "Camera")
+                    != PermissionPolicy::Block
+                {
+                    return Err("Permission decision did not use the owning profile's policy".into());
+                }
+                self.app.settings = persisted;
+                self.step = 16;
+                self.next = Instant::now() + Duration::from_millis(400);
+            }
             16=>{
                 let win=&self.app.windows[&id];
                 if !win.profile_menu_open {return Err("Profile popup did not expand the native toolbar WebView".into());}
@@ -317,6 +556,25 @@ impl Check {
             }
             18=>self.query(id,false,"document.title==='Pip native test' ? (()=>{document.getElementById('draft').value='Nội dung chưa gửi';window.pipDraftKept=true;return true})() : null"),
             19=>{
+                let previous=self.app.windows.get(&id).and_then(|win|win.tab_manager.active_tab_id()).ok_or("No active page before library shortcut test")?;
+                let before_count=self.app.windows[&id].tab_manager.tabs().len();
+                for (shortcut,expected_route) in [
+                    ("Ctrl+H","evergreen://newtab?history"),
+                    ("Ctrl+Shift+O","evergreen://newtab?bookmarks"),
+                ] {
+                    self.app.user_event(events,BrowserEvent::Shortcut(id,shortcut.into()));
+                    let win=self.app.windows.get(&id).ok_or("Library shortcut closed its window")?;
+                    let active=win.tab_manager.active_tab_id().ok_or("Library shortcut did not open a tab")?;
+                    let route=win.tab_manager.get_tab_by_id(active).map(|tab|tab.url.as_str()).unwrap_or("");
+                    if win.tab_manager.tabs().len()!=before_count+1 || active==previous || route!=expected_route || !win.tabs.contains_key(&previous) {
+                        return Err(format!("{shortcut} did not open its manager in a new tab while preserving the active page"));
+                    }
+                    self.app.handle_close_tab(id,active,events);
+                    let win=self.app.windows.get(&id).ok_or("Closing the library tab closed its window")?;
+                    if win.tab_manager.tabs().len()!=before_count || win.tab_manager.active_tab_id()!=Some(previous) || !win.tabs.contains_key(&previous) {
+                        return Err(format!("Closing the {shortcut} tab did not return to the original page"));
+                    }
+                }
                 for index in 0..11 {
                     self.app.handle_create_tab(id,Some(format!("{}tabs?{index}",self.url)));
                 }
@@ -413,7 +671,17 @@ impl Check {
             }
             29=>{
                 if self.private_permission_check_phase == 0 {
-                    let private_id=self.app.windows.values().find(|window|window.private).ok_or("Private window missing for permission isolation check")?.id;
+                    let private_window = self.app.windows.values().find(|window|window.private).ok_or("Private window missing for permission isolation check")?;
+                    if private_window.profile_id != "Default"
+                        || permission_policy_for_profile(
+                            &self.app.settings,
+                            &private_window.profile_id,
+                            "Camera",
+                        ) != PermissionPolicy::Block
+                    {
+                        return Err("InPrivate permission defaults did not inherit the owning profile override".into());
+                    }
+                    let private_id=private_window.id;
                     self.query(private_id,false,"(()=>{if(!window.__pipPrivatePermissionProbeStarted){window.__pipPrivatePermissionProbeStarted=true;window.__pipPrivatePermissionProbeResult=null;navigator.permissions.query({name:'camera'}).then(permission=>window.__pipPrivatePermissionProbeResult=permission.state==='prompt').catch(()=>window.__pipPrivatePermissionProbeResult=false)}return window.__pipPrivatePermissionProbeResult===null?null:window.__pipPrivatePermissionProbeResult===true})()");
                 } else {
                     let origin=serde_json::to_string(self.url.trim_end_matches('/')).unwrap();
@@ -1063,7 +1331,7 @@ impl ApplicationHandler<BrowserEvent> for Check {
                     return;
                 }
                 if self.step == 150 {
-                    self.step = 16;
+                    self.step = 151;
                     self.next = Instant::now() + Duration::from_millis(400);
                     return;
                 }
@@ -1812,7 +2080,7 @@ pub fn run() {
     }
     let artifact = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/native-ui-verification.json");
-    std::fs::write(&artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","bookmarks/history","native local bookmark/history omnibox suggestions through IPC, keyboard navigation, safe text rendering, and Alt+Home","profile-local quick-link add/remove through the native IPC with persistence","InPrivate storage/history","distinct downloads/no overwrite","profile cookie/storage isolation","profile-scoped persistent download history","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","idle inactive WebView2 tab suspends after configured delay, exposes an accessible sleeping state, and preserves unsent form after waking","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search","Tab group action syncs to native state and draws a visible group indicator","Page translation invokes local Translator API and restores original text","disabled downloads manager stays closed","unpacked WebView2 extension installs, content script runs, and removal stops it","procedural cosmetic ad filter removes matching ad nodes in real WebView2","service-worker and shared-worker requests pass through Brave network filtering","uBlock noop redirect resource reaches a native WebView2 response","native WebView2 profile password/autofill flags track settings and remain off in InPrivate","Alt+Shift+P leaves multiple saved logins untouched and fills the only exact-origin match","Pip password save uses the selected open tab's Rust-derived origin; stale, non-web, and private requests are rejected and summaries omit secrets","toolbar Home button and Alt+Home navigate the current tab to Pip's start page","version checker offers only a newer Pip release on the official GitHub repository"]})).unwrap()).unwrap();
+    std::fs::write(&artifact,serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","all_windows_hidden":true,"checks":["chrome dimensions","DNS toolbar/persistence","nested settings/IPC","Settings WebView2 YouTube probe handles response, network failure, and timeout without credentials or referrer","bookmarks/history","Chrome-style history/bookmarks shortcuts open a new tab while preserving the current page","native local bookmark/history omnibox suggestions through IPC, keyboard navigation, safe text rendering, and Alt+Home","profile-local quick-link add/remove through the native IPC with persistence","InPrivate storage/history","profile-local download folder and ask-where-to-save leave another profile unchanged","distinct downloads/no overwrite","profile cookie/storage isolation","profile-scoped persistent download history","quick profile popup and create flow","native toolbar WebView stays above page while open and restores page order on close","12 local page tabs preserve unsent form and JS state while switching","exactly one tab view visible; hidden views request LOW memory and active NORMAL when supported","idle inactive WebView2 tab suspends after configured delay, exposes an accessible sleeping state, and preserves unsent form after waking","session restore creates one WebView regardless of background tab count; selecting deferred tab creates only that view","large centered search over mascot background and quick guide","native disk cache cleanup callback succeeds and preserves cookies/localStorage","completed download COM handles released on window close","history records navigation when page title is unchanged","native Page.reload ignores cache; document reload verified","Find menu opens and focuses search","Tab group action syncs to native state and draws a visible group indicator","Page translation invokes local Translator API and restores original text","disabled downloads manager stays closed","unpacked WebView2 extension installs, content script runs, and removal stops it","procedural cosmetic ad filter removes matching ad nodes in real WebView2","service-worker and shared-worker requests pass through Brave network filtering","uBlock noop redirect resource reaches a native WebView2 response","native WebView2 profile password/autofill flags track settings and remain off in InPrivate","Alt+Shift+P leaves multiple saved logins untouched and fills the only exact-origin match","Pip password save uses the selected open tab's Rust-derived origin; stale, non-web, and private requests are rejected and summaries omit secrets","toolbar Home button and Alt+Home navigate the current tab to Pip's start page","version checker offers only a newer Pip release on the official GitHub repository"]})).unwrap()).unwrap();
     let mut report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&artifact).unwrap()).unwrap();
     report["checks"]
@@ -1874,6 +2142,12 @@ pub fn run() {
         .unwrap()
         .push(serde_json::json!(
             "Tab group IPC changes are written to the profile session snapshot immediately"
+        ));
+    report["checks"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(
+            "Permission policy SaveSettings IPC applies a local camera override to one profile, keeps the root fallback and other profile unchanged after reload, and resolves InPrivate defaults through its owning profile"
         ));
     std::fs::write(&artifact, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     let _ = std::fs::remove_dir_all(stage);

@@ -3,6 +3,7 @@ import {
   NativeInputLockManager,
   nativeInputLockSessionIds,
   releaseAndGetNativeInputLockStatus,
+  requireAcknowledgedNativeInputLock,
   type NativeInputDebugger,
 } from './native-input-lock'
 
@@ -49,6 +50,7 @@ describe('NativeInputLockManager', () => {
       helpRequest: {
         mode: 'help' as const,
         sessionId: 'session-help',
+        requestId: 'help-1',
         agentLabel: 'Codex',
         reason: 'Enter the one-time code',
         requestedAt: 2,
@@ -89,6 +91,7 @@ describe('NativeInputLockManager', () => {
       helpRequest: {
         mode: 'help' as const,
         sessionId: 'session-help',
+        requestId: 'help-1',
         agentLabel: 'Claude',
         reason: 'Enter the one-time code',
         requestedAt: 2,
@@ -320,6 +323,84 @@ describe('NativeInputLockManager', () => {
       ['Input.setAgentInputLock', 7],
       ['detach', 7],
     ])
+  })
+
+  it('requires an acknowledged lock and propagates debugger errors before hand-back', async () => {
+    const unavailable = { sync: async () => 'unavailable' as const }
+    await expect(
+      requireAcknowledgedNativeInputLock(unavailable, 7, ['session-a']),
+    ).rejects.toThrow('native input lock was not acknowledged')
+
+    const failed = {
+      sync: async () => {
+        throw new Error('debugger disconnected')
+      },
+    }
+    await expect(
+      requireAcknowledgedNativeInputLock(failed, 7, ['session-a']),
+    ).rejects.toThrow('debugger disconnected')
+
+    const locked = { sync: async () => 'locked' as const }
+    await expect(
+      requireAcknowledgedNativeInputLock(locked, 7, ['session-a']),
+    ).resolves.toBeUndefined()
+  })
+
+  it('reacquires the native lock on the next poll after a confirmed lease is detached', async () => {
+    const { api, calls, detach } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+
+    expect(await locks.sync(7, ['session-a'])).toBe('locked')
+    detach(7)
+    expect(locks.status(7)).toBe('unavailable')
+
+    // Recovery is one attach/lock attempt per owner poll; there is no hidden
+    // retry loop that can keep the extension worker busy during a failure.
+    expect(await locks.sync(7, ['session-a'])).toBe('locked')
+    expect(calls).toEqual([
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('keeps detached-lock recovery bounded to one attempt per poll and retries later', async () => {
+    const { api, calls, detach } = makeDebugger()
+    const locks = new NativeInputLockManager(api)
+    await locks.sync(7, ['session-a'])
+    detach(7)
+
+    let failNextAttach = true
+    api.attach = async ({ tabId }) => {
+      calls.push(['attach', tabId])
+      if (failNextAttach) throw new Error('debugger is temporarily unavailable')
+    }
+
+    expect(await locks.sync(7, ['session-a'])).toBe('unavailable')
+    expect(calls.slice(-1)).toEqual([['attach', 7]])
+    expect(locks.status(7)).toBe('unavailable')
+
+    failNextAttach = false
+    expect(await locks.sync(7, ['session-a'])).toBe('locked')
+    expect(calls.slice(-2)).toEqual([
+      ['attach', 7],
+      ['Input.setAgentInputLock', 7],
+    ])
+  })
+
+  it('does not retry a lock command that Chromium rejected for the same owner', async () => {
+    const { api, calls } = makeDebugger()
+    api.sendCommand = async ({ tabId }, method) => {
+      calls.push([method, tabId])
+      if (method === 'Input.setAgentInputLock') throw new Error('method not found')
+    }
+    const locks = new NativeInputLockManager(api)
+
+    expect(await locks.sync(7, ['session-a'])).toBe('unavailable')
+    const firstAttempt = [...calls]
+    expect(await locks.sync(7, ['session-a'])).toBe('unavailable')
+    expect(calls).toEqual(firstAttempt)
   })
 
   it('reports browser debugger detachment instead of leaving a stale locked state', async () => {

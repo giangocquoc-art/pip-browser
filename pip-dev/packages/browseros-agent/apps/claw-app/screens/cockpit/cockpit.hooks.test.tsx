@@ -12,7 +12,12 @@ import * as _helpHooks from '@/modules/api/help.hooks'
 import type { LiveSessionCardRecord } from './cockpit.helpers'
 
 const focusCalls: Array<{ browserTabId: number }> = []
-const resolveCalls: Array<{ sessionId: string; note?: string }> = []
+const resolveCalls: Array<{
+  sessionId: string
+  requestId: string
+  browserTabId: number
+  note?: string
+}> = []
 let resolveResult = { resolved: true }
 let focusShouldFail = false
 
@@ -57,7 +62,12 @@ mock.module('@/modules/api/help.hooks', () => ({
     isPending: false,
     variables: undefined,
     mutate: (
-      variables: { sessionId: string; note?: string },
+      variables: {
+        sessionId: string
+        requestId: string
+        browserTabId: number
+        note?: string
+      },
       options?: { onSuccess?: (result: { resolved: boolean }) => void },
     ) => {
       resolveCalls.push(variables)
@@ -277,7 +287,12 @@ describe('cockpit human-help takeover', () => {
     await click('[data-hand-back="session-blocked"]')
 
     expect(resolveCalls).toHaveLength(1)
-    expect(resolveCalls[0]?.sessionId).toBe('session-blocked')
+    expect(resolveCalls[0]).toEqual({
+      sessionId: 'session-blocked',
+      requestId: 'help-1',
+      browserTabId: 77,
+      note: undefined,
+    })
     expect(container.querySelector('[data-hand-back]')).toBeNull()
   })
 

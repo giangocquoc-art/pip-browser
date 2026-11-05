@@ -5,10 +5,17 @@ This smoke test checks the Windows server, Pip Dev extension, patched Chromium C
 ## Prerequisites
 
 - The custom Pip Dev/BrowserOS `chrome.exe` has finished building. Use that executable, not Chrome or Edge installed for normal browsing: the native browser API used by `tabs` includes BrowserOS-specific CDP methods.
-- The Rust MCP server binary exists at `packages/browseros-agent/target/debug/browseros-claw-server-rs.exe` (or pass `-ServerExe`). The smoke script does not invoke Cargo.
+- The Rust MCP server binary exists at `packages/browseros-agent/target/debug/browseros-claw-server-rs.exe` (or pass `-ServerExe`). The Windows launcher places Cargo intermediate output in `.cargo-target` but final executables in the workspace's `target` directory. The smoke script does not invoke Cargo.
 - The unpacked Pip Dev extension has been built and its directory contains `manifest.json`. From `D:\pip-browser-work\pip-dev\packages\browseros-agent`, build it with the repository's pinned Bun installation:
 
   ```powershell
+  $cacheRoot = Join-Path (Get-Location) '.data/windows-dev'
+  $env:BUN_INSTALL_CACHE_DIR = Join-Path $cacheRoot 'bun-cache'
+  $env:BUN_RUNTIME_TRANSPILER_CACHE_PATH = Join-Path $cacheRoot 'bun-runtime-cache'
+  $env:NPM_CONFIG_CACHE = Join-Path $cacheRoot 'npm-cache'
+  $env:TEMP = Join-Path $cacheRoot 'temp'
+  $env:TMP = $env:TEMP
+  New-Item -ItemType Directory -Force -Path @($env:BUN_INSTALL_CACHE_DIR, $env:BUN_RUNTIME_TRANSPILER_CACHE_PATH, $env:NPM_CONFIG_CACHE, $env:TEMP) | Out-Null
   bun install --frozen-lockfile
   bun run --filter '@browseros/claw-app' build:dev
   ```
@@ -30,6 +37,8 @@ From `D:\pip-browser-work\pip-dev`:
 The script starts a loopback-only fixture, the prebuilt Rust server, and the specified custom browser with a fresh user-data directory. It negotiates MCP Streamable HTTP, checks health and browser readiness, lists tools, creates and selects the fixture tab, reads a DOM snapshot, clicks by a fresh element reference, and verifies the resulting diff and state. It then checks that `visual_targets` sees the fixture canvas, reads its structured `observationId`, and requests one bounded inline crop. Use `-RequireCrop` to make missing crop-token exposure a failing gate. No crop bytes are written to a file by the test.
 
 The script terminates only its own server/browser process trees and its own fixture job. On success it removes only its uniquely named run directory. Failures retain that run directory for inspection; `-KeepArtifacts` also retains it after success. It never calls `Stop-Process` by a browser process name or modifies a persistent browser profile.
+
+Coordinate actions (`click_at`, `type_at`, `hover_at`, and `drag_at`) require the current `observationId` returned by `visual_targets`, and every action point must lie inside a visible region from that observation. Use semantic element references for ordinary DOM controls. The token is bound to the observed visual DOM node identities as well as page/layout geometry, so replacing a canvas or image invalidates it even when its bounds are unchanged. Before dispatch, the same page evaluation hit-tests action points and rejects an obstruction. Re-observe before each coordinate action after page movement or layout changes. For changing canvas pixels such as a game board, observe the pixels again and verify the resulting state after each move; the token does not fingerprint canvas pixels.
 
 ## What still needs the custom browser
 

@@ -4,13 +4,21 @@ import {
   SessionStatus,
   type SessionSummary,
 } from '@browseros/claw-api'
+import { nativeInputLockSessionIds } from './native-input-lock'
 
 let sessions: SessionSummary[] = []
 let sessionsUnavailable = false
 let listCalls = 0
-const resolveCalls: Array<{ sessionId: string; note?: string }> = []
+const resolveCalls: Array<{
+  sessionId: string
+  requestId: string
+  browserTabId: number
+  note?: string
+}> = []
 const resolveOrder: string[] = []
 let resolveResult = true
+let resolveDeferred: Promise<{ resolved: boolean }> | null = null
+let onResolveStarted: (() => void) | null = null
 const cancelCalls: Array<{ sessionId: string }> = []
 
 mock.module('@browseros/claw-api-client', () => ({
@@ -20,9 +28,16 @@ mock.module('@browseros/claw-api-client', () => ({
       if (sessionsUnavailable) throw new Error('session service unavailable')
       return { items: sessions }
     }
-    async resolveHelp(request: { sessionId: string; note?: string }) {
+    async resolveHelp(request: {
+      sessionId: string
+      requestId: string
+      browserTabId: number
+      note?: string
+    }) {
       resolveCalls.push(request)
       resolveOrder.push('server-resolve')
+      onResolveStarted?.()
+      if (resolveDeferred) return resolveDeferred
       return { resolved: resolveResult }
     }
     async cancelSession(request: { sessionId: string }) {
@@ -60,6 +75,25 @@ function session(
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+async function currentLockOwners(
+  bridge: ReturnType<typeof createTakeoverBridge>,
+  tabId: number,
+): Promise<string[]> {
+  const response = await bridge.refreshForTab(tabId)
+  if (!response.active || response.context.mode !== 'agent-control') return []
+  return nativeInputLockSessionIds(response.context)
+}
+
 beforeEach(() => {
   sessions = []
   sessionsUnavailable = false
@@ -67,6 +101,8 @@ beforeEach(() => {
   resolveCalls.length = 0
   resolveOrder.length = 0
   resolveResult = true
+  resolveDeferred = null
+  onResolveStarted = null
   cancelCalls.length = 0
 })
 
@@ -82,6 +118,7 @@ describe('takeover bridge', () => {
       context: {
         mode: 'help',
         sessionId: 'session-1',
+        requestId: 'help-1',
         agentLabel: 'Claude-code',
         reason: 'Enter the login',
         resumeHint: undefined,
@@ -126,6 +163,7 @@ describe('takeover bridge', () => {
         helpRequest: {
           mode: 'help',
           sessionId: 'session-help',
+          requestId: 'help-2',
           agentLabel: 'Claude-code',
           reason: 'Enter the login',
           resumeHint: undefined,
@@ -188,9 +226,14 @@ describe('takeover bridge', () => {
     })
 
     await bridge.pollForTab(77)
-    await expect(bridge.resolve(77, 'session-1', 'signed in')).resolves.toBe(true)
+    await expect(bridge.resolve(77, 'session-1', 'help-1', 'signed in')).resolves.toBe(true)
     expect(resolveCalls).toEqual([
-      { sessionId: 'session-1', note: 'signed in' },
+      {
+        sessionId: 'session-1',
+        requestId: 'help-1',
+        browserTabId: 77,
+        note: 'signed in',
+      },
     ])
 
     await bridge.pollForTab(77)
@@ -222,7 +265,7 @@ describe('takeover bridge', () => {
     })
 
     await expect(
-      bridge.resolve(77, 'session-1', 'signed in', async (control) => {
+      bridge.resolve(77, 'session-1', 'help-1', 'signed in', async (control) => {
         expect(control?.sessionIds).toEqual(['session-1'])
         resolveOrder.push('native-lock')
       }),
@@ -231,14 +274,122 @@ describe('takeover bridge', () => {
     expect(resolveOrder).toEqual(['native-lock', 'server-resolve'])
   })
 
-  it('does not report a hand-back when the server says the help request is gone', async () => {
+  it('unlocks a paused-only tab when the server declines the hand-back', async () => {
     sessions = [session(77)]
     resolveResult = false
     const bridge = createTakeoverBridge({
       resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
     })
+    let lockOwners = ['session-1']
+    let reconciliations = 0
 
-    await expect(bridge.resolve(77, 'session-1')).resolves.toBe(false)
+    await expect(
+      bridge.resolve(
+        77,
+        'session-1',
+        'help-1',
+        undefined,
+        async () => {},
+        async () => {
+          reconciliations += 1
+          lockOwners = await currentLockOwners(bridge, 77)
+        },
+      ),
+    ).resolves.toBe(false)
+
+    expect(reconciliations).toBe(1)
+    expect(lockOwners).toEqual([])
+  })
+
+  it('does not resume when the native lock is unavailable or throws', async () => {
+    sessions = [session(77)]
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+    let lockOwners = ['session-1']
+    let reconciliations = 0
+
+    for (const failure of ['unavailable', 'debugger threw']) {
+      await expect(
+        bridge.resolve(
+          77,
+          'session-1',
+          'help-1',
+          undefined,
+          async () => {
+            throw new Error(failure)
+          },
+          async () => {
+            reconciliations += 1
+            lockOwners = await currentLockOwners(bridge, 77)
+          },
+        ),
+      ).rejects.toThrow(failure)
+    }
+
+    expect(resolveCalls).toEqual([])
+    expect(reconciliations).toBe(2)
+    expect(lockOwners).toEqual([])
+  })
+
+  it('reconciles current owners after a deferred resolve request rejects', async () => {
+    const controlledTab = {
+      browserTabId: 77,
+      url: 'https://example.com/page',
+      title: 'Example',
+      toolCount: 1,
+      recentTools: [],
+    }
+    sessions = [
+      {
+        ...session(99),
+        sessionId: 'session-active',
+        live: { state: 'active' as const, browserTabs: [controlledTab] },
+      },
+      { ...session(77), sessionId: 'session-help' },
+    ]
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+    const response = deferred<{ resolved: boolean }>()
+    const started = deferred<void>()
+    resolveDeferred = response.promise
+    onResolveStarted = () => started.resolve()
+    let lockOwners: string[] = []
+    let reconciliations = 0
+    const resolving = bridge.resolve(
+      77,
+      'session-help',
+      'help-1',
+      undefined,
+      async (control) => {
+        expect(control?.sessionIds).toEqual(['session-active'])
+        lockOwners = control ? nativeInputLockSessionIds(control) : []
+      },
+      async () => {
+        reconciliations += 1
+        lockOwners = await currentLockOwners(bridge, 77)
+      },
+    )
+
+    await started.promise
+    expect(lockOwners).toEqual(['session-active'])
+    expect(reconciliations).toBe(0)
+    response.reject(new Error('resolve response lost'))
+
+    await expect(resolving).rejects.toThrow('resolve response lost')
+    expect(reconciliations).toBe(1)
+    expect(lockOwners).toEqual(['session-active'])
+  })
+
+  it('does not resolve a newer help request using a stale request ID', async () => {
+    sessions = [session(77, { requestId: 'help-2' })]
+    const bridge = createTakeoverBridge({
+      resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
+    })
+
+    await expect(bridge.resolve(77, 'session-1', 'help-1')).resolves.toBe(false)
+    expect(resolveCalls).toEqual([])
   })
 
   it('does not resolve a help request from a different tab', async () => {
@@ -247,7 +398,7 @@ describe('takeover bridge', () => {
       resolveServerBaseUrl: async () => 'http://127.0.0.1:9000',
     })
 
-    await expect(bridge.resolve(42, 'session-1')).resolves.toBe(false)
+    await expect(bridge.resolve(42, 'session-1', 'help-1')).resolves.toBe(false)
     expect(resolveCalls).toEqual([])
   })
 
