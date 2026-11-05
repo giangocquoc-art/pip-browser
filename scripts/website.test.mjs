@@ -108,6 +108,51 @@ test("homepage fallback version matches the public version manifest", async () =
   assert.equal(fallbackVersion, manifest.version);
 });
 
+test("download version refreshes stale caches and rejects releases without a current Windows installer", async () => {
+  const source = await readFile(path.join(root, "app.js"), "utf8");
+  const script = source.slice(source.indexOf("  const pageVersion ="), source.lastIndexOf("})();"));
+  const metadata = (version, assets = [{ name: "PipSetup.exe", size: 123 }]) => ({ tag_name: `v${version}`, assets });
+  async function evaluate(cachedVersion, release, fallbackVersion = "0.1.16") {
+    const nodes = {
+      "#version": { textContent: "0.1.16" },
+      "#download-link": { textContent: "Tải Pip mới nhất", href: "https://download.pip.psharehub.com/" },
+      "#update-note": { append() {} },
+    };
+    const requests = [];
+    const cached = cachedVersion && { checkedAt: Date.now(), release: {
+      version: cachedVersion, downloadAvailable: true, url: "https://download.pip.psharehub.com/",
+    } };
+    runInNewContext(`(() => {${script}})()`, {
+      $: (selector) => nodes[selector], URL, Date,
+      location: { origin: "https://pip.psharehub.com" },
+      document: { createElement: () => ({}) },
+      localStorage: { getItem: () => JSON.stringify(cached), setItem() {} },
+      fetch: async (url) => {
+        requests.push(url);
+        return { ok: true, json: async () => url === "/version.json" ? {
+          version: fallbackVersion, downloadAvailable: true, url: "https://download.pip.psharehub.com/",
+        } : release };
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    return { version: nodes["#version"].textContent, text: nodes["#download-link"].textContent, requests };
+  }
+
+  const refreshed = await evaluate("0.1.15", metadata("0.1.18"));
+  assert.equal(refreshed.version, "0.1.18");
+  assert.match(refreshed.text, /0\.1\.18/);
+  assert.equal(refreshed.requests.length, 1, "an older cache must trigger a release lookup");
+  const current = await evaluate("0.1.16", metadata("0.1.18"));
+  assert.equal(current.requests.length, 0, "a fresh current cache still avoids an unnecessary lookup");
+  for (const release of [metadata("0.1.15"), metadata("0.1.18", []), metadata("broken")]) {
+    const fallback = await evaluate(null, release);
+    assert.equal(fallback.version, "0.1.16");
+    assert.deepEqual(fallback.requests.slice(-1), ["/version.json"]);
+  }
+  const olderFallback = await evaluate(null, metadata("0.1.15"), "0.1.14");
+  assert.equal(olderFallback.version, "0.1.16", "stale fallback metadata must not downgrade the page");
+});
+
 test("fallback release manifest has a valid version, installer, SHA-256 and size", async () => {
   const manifest = JSON.parse(await readFile(path.join(root, "version.json"), "utf8"));
   assert.match(manifest.version ?? "", /^\d+\.\d+\.\d+$/);
