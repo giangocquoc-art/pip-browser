@@ -356,3 +356,126 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod agent_control_http_tests {
+    use crate::services::agent_control::LeaseAck;
+    use crate::{
+        api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+        services::agent_control::AgentControlService,
+    };
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn stop(
+        state: crate::AppState,
+        tab_id: i64,
+        target_id: &str,
+        authorized: bool,
+    ) -> anyhow::Result<StatusCode> {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agent-control/tabs/{tab_id}/stop"))
+            .header("Content-Type", "application/json");
+        if authorized {
+            request = request.header("Authorization", "Bearer test-secret");
+        }
+        let response = super::build_router(state)
+            .oneshot(request.body(axum::body::Body::from(
+                json!({"targetId": target_id}).to_string(),
+            ))?)
+            .await?;
+        Ok(response.status())
+    }
+
+    #[tokio::test]
+    async fn tab_stop_rejects_stale_target_before_recording_stop_intent() -> anyhow::Result<()> {
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call("tabs", json!({})).await?;
+        call.state.browser.set_session_for_testing(browser).await;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        assert_eq!(
+            stop(
+                call.state.clone(),
+                page.tab_id.0,
+                page.target_id.as_str(),
+                false
+            )
+            .await?,
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            stop(call.state.clone(), page.tab_id.0, "old-target", true).await?,
+            StatusCode::CONFLICT,
+        );
+        let probe = call
+            .state
+            .agent_control
+            .begin(
+                "owner",
+                page.page_id.0,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                false,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .abort("owner", &probe.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .acknowledge(
+                &probe.lease_id,
+                probe.generation,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            call.state
+                .agent_control
+                .leases_for_extension()
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            stop(
+                call.state.clone(),
+                page.tab_id.0,
+                page.target_id.as_str(),
+                true
+            )
+            .await?,
+            StatusCode::NO_CONTENT,
+        );
+        assert!(
+            call.state
+                .agent_control
+                .begin(
+                    "late-owner",
+                    page.page_id.0,
+                    page.tab_id.0,
+                    page.target_id.as_str(),
+                    false
+                )
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+}
