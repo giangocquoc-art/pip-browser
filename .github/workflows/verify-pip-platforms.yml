@@ -144,7 +144,7 @@ jobs:
           with tempfile.TemporaryDirectory(prefix='pip-native-ui-') as directory:
               subprocess.run(['ditto', '-x', '-k', str(archives[0]), directory], check=True)
               executable = pathlib.Path(directory) / 'Pip.app/Contents/MacOS/Pip'
-              result = subprocess.run([str(executable), '--verify-ui'], capture_output=True, text=True, timeout=35)
+              result = subprocess.run([str(executable), '--verify-ui'], capture_output=True, text=True, timeout=120)
               print(result.stdout)
               print(result.stderr)
               reports = []

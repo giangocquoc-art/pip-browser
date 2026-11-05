@@ -1,9 +1,13 @@
 use super::navigation::{allows_page_url, destination};
+#[path = "adblock.rs"]
+mod adblock;
 use evergreen_core::tabs::{TabId, TabManager};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    cell::Cell,
     collections::HashMap,
+    rc::Rc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use winit::{
@@ -45,6 +49,8 @@ enum Event {
     Notice(String),
     VerifyContent(String),
     VerifyTimeout,
+    AdblockPrepared(Result<adblock::Prepared, String>),
+    AdblockChanged,
 }
 
 #[derive(Default)]
@@ -57,6 +63,9 @@ struct Verification {
     content_dom: Option<bool>,
     content_ipc_absent: Option<bool>,
     failure: Option<String>,
+    fixture_loaded: bool,
+    adblock_requests: Option<bool>,
+    adblock_stats: Option<adblock::Stats>,
 }
 
 impl Verification {
@@ -64,6 +73,7 @@ impl Verification {
         self.toolbar_ipc.is_some()
             && self.content_dom.is_some()
             && self.content_ipc_absent.is_some()
+            && self.adblock_requests.is_some()
     }
 
     fn report(&self) -> serde_json::Value {
@@ -73,6 +83,7 @@ impl Verification {
             && self.toolbar_ipc == Some(true)
             && self.content_dom == Some(true)
             && self.content_ipc_absent == Some(true);
+        let ok = ok && self.adblock_requests == Some(true);
         json!({
             "mode": "pip-macos-native-ui",
             "ok": ok,
@@ -80,7 +91,10 @@ impl Verification {
             "contentDom": self.content_dom.unwrap_or(false),
             "contentIpcAbsent": self.content_ipc_absent.unwrap_or(false),
             "createSwitchCloseTabs": self.tabs_checked,
-            "networkUsed": false,
+            "adblockRequests": self.adblock_requests.unwrap_or(false),
+            "adblock": self.adblock_stats,
+            "networkUsed": true,
+            "networkScope": "loopback-only",
             "screenshotsUsed": false,
             "error": self.failure,
         })
@@ -90,12 +104,15 @@ impl Verification {
 struct App {
     // Drop native views before their containing window.
     views: HashMap<TabId, WebView>,
+    protected: HashMap<TabId, Rc<Cell<bool>>>,
+    adblock: adblock::Blocker,
     toolbar: Option<WebView>,
     window: Option<Window>,
     tabs: TabManager,
     proxy: EventLoopProxy<Event>,
     modifiers: ModifiersState,
     verification: Option<Verification>,
+    fixture: Option<adblock::Fixture>,
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
@@ -133,7 +150,7 @@ impl App {
             if let Some(view) = self.views.get(&tab.id) {
                 if let Ok(url) = view.url() {
                     if allows_page_url(&url) && tab.url != "evergreen://newtab" {
-                        tab.url = url;
+                        tab.url = url.clone();
                     }
                 }
                 tab.can_go_back = view.can_go_back().unwrap_or(false);
@@ -152,6 +169,8 @@ impl App {
                 "url": active.map(|tab| if tab.url == "evergreen://newtab" { "" } else { &tab.url }).unwrap_or(""),
                 "back": active.is_some_and(|tab| tab.can_go_back),
                 "forward": active.is_some_and(|tab| tab.can_go_forward),
+                "adblock": self.adblock.message(),
+                "adblockReady": self.adblock.ready(),
             });
             let _ = toolbar.evaluate_script(&format!("window.pipState({state});"));
         }
@@ -174,6 +193,9 @@ impl App {
         let load_proxy = self.proxy.clone();
         let popup_proxy = self.proxy.clone();
         let download_proxy = self.proxy.clone();
+        let navigation_proxy = self.proxy.clone();
+        let protected = Rc::new(Cell::new(false));
+        let navigation_protected = protected.clone();
         let home = if self.verification.is_some() {
             VERIFY_FIXTURE.to_string()
         } else {
@@ -187,7 +209,25 @@ impl App {
             // The preview has no permission picker yet; never implicitly grant
             // camera/microphone access or trigger missing macOS usage prompts.
             .with_permission_handler(|_| PermissionResponse::Deny)
-            .with_navigation_handler(allows_page_url_owned)
+            .with_navigation_handler(move |url| {
+                if url == "about:blank" {
+                    return true;
+                }
+                if !navigation_protected.get() {
+                    let _ = navigation_proxy.send_event(Event::Notice(
+                        "Bộ lọc chưa sẵn sàng. Pip giữ trang web đóng để tránh tải thiếu bảo vệ."
+                            .into(),
+                    ));
+                    return false;
+                }
+                if adblock::blocks_navigation(&url) {
+                    let _ = navigation_proxy.send_event(Event::Notice(
+                        "Pip đã chặn điều hướng tới tên miền cờ bạc trong danh sách bảo vệ.".into(),
+                    ));
+                    return false;
+                }
+                allows_page_url(&url)
+            })
             .with_document_title_changed_handler(move |title| {
                 let _ = title_proxy.send_event(Event::Title(id, title));
             })
@@ -214,6 +254,8 @@ impl App {
             .build_as_child(self.window.as_ref().expect("window initialized"));
         match result {
             Ok(view) => {
+                protected.set(self.adblock.attach(&view));
+                self.protected.insert(id, protected);
                 self.views.insert(id, view);
             }
             Err(error) => {
@@ -243,6 +285,16 @@ impl App {
                                     &include_str!("home.html").replace("{{LOGO}}", LOGO.trim()),
                                 )
                             } else {
+                                if !self.protected.get(&id).is_some_and(|state| state.get()) {
+                                    self.notice(&self.adblock.message());
+                                    return;
+                                }
+                                if adblock::blocks_navigation(&url) {
+                                    self.notice(
+                                        "Pip đã chặn tên miền cờ bạc trong danh sách bảo vệ.",
+                                    );
+                                    return;
+                                }
                                 view.load_url(&url)
                             };
                             if result.is_ok() {
@@ -267,6 +319,7 @@ impl App {
             }
             Command::Close { id } => {
                 self.views.remove(&TabId(id));
+                self.protected.remove(&TabId(id));
                 self.tabs.close_tab(TabId(id));
                 if self.views.is_empty() {
                     self.new_tab()
@@ -292,7 +345,11 @@ impl App {
 
     fn verify_if_ready(&mut self, event_loop: &ActiveEventLoop) {
         let ready = self.verification.as_ref().is_some_and(|verification| {
-            verification.toolbar_ready && verification.first_page_ready && !verification.started
+            verification.toolbar_ready
+                && verification.first_page_ready
+                && verification.fixture_loaded
+                && self.adblock.ready()
+                && !verification.started
         });
         if !ready {
             return;
@@ -340,7 +397,8 @@ impl App {
                         }
                         return {
                             dom: !!element && element.textContent === '42' && element.dataset.changed === 'native-evaluation',
-                            contentIpcAbsent: !(window.ipc && typeof window.ipc.postMessage === 'function')
+                            contentIpcAbsent: !(window.ipc && typeof window.ipc.postMessage === 'function'),
+                            adblockRequests: window.__pipAllowed === true && window.__pipException === true && window.__pipBlocked !== true
                         };
                     })()"#,
                     move |result| { let _ = proxy.send_event(Event::VerifyContent(result)); },
@@ -372,10 +430,6 @@ impl App {
             event_loop.exit();
         }
     }
-}
-
-fn allows_page_url_owned(url: String) -> bool {
-    allows_page_url(&url)
 }
 
 impl ApplicationHandler<Event> for App {
@@ -443,13 +497,20 @@ impl ApplicationHandler<Event> for App {
                 if let Some(tab) = self.tabs.tabs_mut().iter_mut().find(|tab| tab.id == id) {
                     tab.is_loading = loading;
                     if allows_page_url(&url) && url != "about:blank" {
-                        tab.url = url;
+                        tab.url = url.clone();
                     }
                 }
                 self.sync();
                 if let Some(verification) = &mut self.verification {
                     if !verification.started && !loading && self.tabs.active_tab_id() == Some(id) {
                         verification.first_page_ready = true;
+                        if self
+                            .fixture
+                            .as_ref()
+                            .is_some_and(|fixture| fixture.url == url)
+                        {
+                            verification.fixture_loaded = true;
+                        }
                     }
                 }
                 self.verify_if_ready(event_loop);
@@ -469,10 +530,22 @@ impl ApplicationHandler<Event> for App {
                                     .and_then(serde_json::Value::as_bool)
                                     == Some(true),
                             );
+                            verification.adblock_requests = Some(
+                                value
+                                    .get("adblockRequests")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true)
+                                    && self
+                                        .fixture
+                                        .as_ref()
+                                        .is_some_and(adblock::Fixture::network_passed),
+                            );
+                            verification.adblock_stats = self.adblock.stats();
                         }
                         Err(error) => {
                             verification.content_dom = Some(false);
                             verification.content_ipc_absent = Some(false);
+                            verification.adblock_requests = Some(false);
                             verification.failure =
                                 Some(format!("native DOM callback was not JSON: {error}"));
                         }
@@ -484,10 +557,51 @@ impl ApplicationHandler<Event> for App {
                 if let Some(verification) = &mut self.verification {
                     if !verification.complete() {
                         verification.failure =
-                            Some("native UI verification timed out after 20 seconds".into());
+                            Some("native UI verification timed out after 90 seconds".into());
                         event_loop.exit();
                     }
                 }
+            }
+            Event::AdblockPrepared(result) => match result {
+                Ok(prepared) => {
+                    let proxy = self.proxy.clone();
+                    self.adblock.compile(prepared, move || {
+                        let _ = proxy.send_event(Event::AdblockChanged);
+                    });
+                    self.sync();
+                }
+                Err(error) => {
+                    self.adblock.fail(error);
+                    let _ = self.proxy.send_event(Event::AdblockChanged);
+                }
+            },
+            Event::AdblockChanged => {
+                if self.adblock.ready() {
+                    for (id, view) in &self.views {
+                        if let Some(protected) = self.protected.get(id) {
+                            if !protected.get() {
+                                protected.set(self.adblock.attach(view));
+                            }
+                        }
+                    }
+                    if let (Some(fixture), Some(id)) = (&self.fixture, self.tabs.active_tab_id()) {
+                        if let Some(view) = self.views.get(&id) {
+                            if let Err(error) = view.load_url(&fixture.url) {
+                                if let Some(verification) = &mut self.verification {
+                                    verification.failure = Some(error.to_string());
+                                }
+                                event_loop.exit();
+                            }
+                        }
+                    }
+                } else {
+                    self.notice(&self.adblock.message());
+                    if let Some(verification) = &mut self.verification {
+                        verification.failure = Some(self.adblock.message());
+                        event_loop.exit();
+                    }
+                }
+                self.sync();
             }
         }
     }
@@ -551,17 +665,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
         views: HashMap::new(),
+        protected: HashMap::new(),
+        adblock: adblock::Blocker::new(),
         toolbar: None,
         window: None,
         tabs: TabManager::new(),
         proxy: event_loop.create_proxy(),
         modifiers: ModifiersState::empty(),
         verification: verify_ui.then(Verification::default),
+        fixture: if verify_ui {
+            Some(adblock::Fixture::start()?)
+        } else {
+            None
+        },
     };
+    let adblock_proxy = app.proxy.clone();
+    std::thread::spawn(move || {
+        let _ = adblock_proxy.send_event(Event::AdblockPrepared(adblock::prepare(verify_ui)));
+    });
     if verify_ui {
         let proxy = app.proxy.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(20));
+            std::thread::sleep(Duration::from_secs(90));
             let _ = proxy.send_event(Event::VerifyTimeout);
         });
     }

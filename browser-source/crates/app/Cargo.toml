@@ -8,7 +8,7 @@ description = "Ultra-lightweight, privacy-first desktop browser shell for Window
 license = "MIT OR Apache-2.0"
 
 [features]
-macos-shell = []
+macos-shell = ["adblock/content-blocking"]
 
 [[bin]]
 name = "pip-macos"
@@ -29,6 +29,12 @@ sha2 = "0.10"
 semver = "1.0"
 thiserror = "2.0"
 adblock = { version = "0.13.3", default-features = false, features = ["css-validation", "embedded-domain-resolver", "full-regex-handling", "single-thread"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController"] }
+block2 = "0.6"
 
 [target."cfg(windows)".dependencies]
 webview2-com = "0.39"
