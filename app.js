@@ -59,11 +59,23 @@
 
   const pageVersion = $('#version').textContent.trim();
   const directDownloadUrl = 'https://download.pip.psharehub.com/';
+  const compareVersions = (left, right) => {
+    const a = left.split('.').map(Number);
+    const b = right.split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const difference = (a[i] || 0) - (b[i] || 0);
+      if (difference) return difference;
+    }
+    return 0;
+  };
+  const isCurrentVersion = (version) => typeof version === 'string'
+    && /^\d+\.\d+\.\d+$/.test(version) && compareVersions(version, pageVersion) >= 0;
   async function fetchLatestRelease() {
     const cacheKey = 'pip-latest-release-v2';
     try {
       const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
-      if (cached?.release && Date.now() - cached.checkedAt < 600000) return cached.release;
+      if (isCurrentVersion(cached?.release?.version) && cached.release.downloadAvailable
+        && Date.now() - cached.checkedAt >= 0 && Date.now() - cached.checkedAt < 600000) return cached.release;
     } catch { /* Fetch the release when browser storage is unavailable. */ }
     try {
       const response = await fetch('https://api.github.com/repos/giangocquoc-art/pip-browser/releases/latest', {
@@ -73,7 +85,11 @@
       if (!response.ok) throw new Error('GitHub release lookup failed');
       const metadata = await response.json();
       const version = metadata.tag_name?.replace(/^v/, '');
-      if (!version) throw new Error('Latest release has no version');
+      const installer = metadata.assets?.find((asset) => asset.name === 'PipSetup.exe'
+        || asset.name === `Pip-Setup-${version}-Windows-x64.exe`);
+      if (!isCurrentVersion(version) || !installer || !(installer.size > 0)) {
+        throw new Error('Latest release has no current Windows installer');
+      }
       const release = { version, downloadAvailable: true, url: directDownloadUrl };
       try { localStorage.setItem(cacheKey, JSON.stringify({ checkedAt: Date.now(), release })); }
       catch { /* The current page still uses the release response. */ }
@@ -85,17 +101,8 @@
       } catch { return null; }
     }
   }
-  const compareVersions = (left, right) => {
-    const a = left.split('.').map(Number);
-    const b = right.split('.').map(Number);
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const difference = (a[i] || 0) - (b[i] || 0);
-      if (difference) return difference;
-    }
-    return 0;
-  };
   fetchLatestRelease().then((release) => {
-    if (!release?.version) return;
+    if (!isCurrentVersion(release?.version)) return;
     $('#version').textContent = release.version;
     if (!release.downloadAvailable || !release.url) return;
     let downloadUrl;
