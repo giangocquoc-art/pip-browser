@@ -1,10 +1,19 @@
 [package]
 name = "evergreen-browser"
+default-run = "evergreen-browser"
 version = "0.1.16"
 edition = "2021"
 authors = ["Evergreen Browser Contributors"]
 description = "Ultra-lightweight, privacy-first desktop browser shell for Windows"
 license = "MIT OR Apache-2.0"
+
+[features]
+macos-shell = []
+
+[[bin]]
+name = "pip-macos"
+path = "src/macos_main.rs"
+required-features = ["macos-shell"]
 
 [dependencies]
 evergreen-core = { path = "../core" }
