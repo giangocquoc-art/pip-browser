@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{
     collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use winit::{
     application::ApplicationHandler,
@@ -21,6 +21,7 @@ use wry::{
 const BAR_HEIGHT: f64 = 110.0;
 const MAX_TABS: usize = 32;
 const LOGO: &str = include_str!("../../ui/logo.b64");
+const VERIFY_FIXTURE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Pip runtime verification</title></head><body><p id=\"pip-runtime-probe\">pending</p></body></html>";
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -33,6 +34,7 @@ enum Command {
     Back,
     Forward,
     Reload,
+    VerifyToolbar { dom: bool },
 }
 
 #[derive(Debug)]
@@ -41,6 +43,48 @@ enum Event {
     Title(TabId, String),
     Load(TabId, String, bool),
     Notice(String),
+    VerifyContent(String),
+    VerifyTimeout,
+}
+
+#[derive(Default)]
+struct Verification {
+    toolbar_ready: bool,
+    first_page_ready: bool,
+    started: bool,
+    tabs_checked: bool,
+    toolbar_ipc: Option<bool>,
+    content_dom: Option<bool>,
+    content_ipc_absent: Option<bool>,
+    failure: Option<String>,
+}
+
+impl Verification {
+    fn complete(&self) -> bool {
+        self.toolbar_ipc.is_some()
+            && self.content_dom.is_some()
+            && self.content_ipc_absent.is_some()
+    }
+
+    fn report(&self) -> serde_json::Value {
+        let ok = self.complete()
+            && self.failure.is_none()
+            && self.tabs_checked
+            && self.toolbar_ipc == Some(true)
+            && self.content_dom == Some(true)
+            && self.content_ipc_absent == Some(true);
+        json!({
+            "mode": "pip-macos-native-ui",
+            "ok": ok,
+            "toolbarIpc": self.toolbar_ipc.unwrap_or(false),
+            "contentDom": self.content_dom.unwrap_or(false),
+            "contentIpcAbsent": self.content_ipc_absent.unwrap_or(false),
+            "createSwitchCloseTabs": self.tabs_checked,
+            "networkUsed": false,
+            "screenshotsUsed": false,
+            "error": self.failure,
+        })
+    }
 }
 
 struct App {
@@ -51,6 +95,7 @@ struct App {
     tabs: TabManager,
     proxy: EventLoopProxy<Event>,
     modifiers: ModifiersState,
+    verification: Option<Verification>,
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
@@ -129,7 +174,11 @@ impl App {
         let load_proxy = self.proxy.clone();
         let popup_proxy = self.proxy.clone();
         let download_proxy = self.proxy.clone();
-        let home = include_str!("home.html").replace("{{LOGO}}", LOGO.trim());
+        let home = if self.verification.is_some() {
+            VERIFY_FIXTURE.to_string()
+        } else {
+            include_str!("home.html").replace("{{LOGO}}", LOGO.trim())
+        };
         let result = WebViewBuilder::new()
             .with_bounds(self.content_bounds())
             .with_html(home)
@@ -183,6 +232,7 @@ impl App {
                 self.sync();
                 return;
             }
+            Command::VerifyToolbar { .. } => return,
             Command::NewTab => self.new_tab(),
             Command::Navigate { input } => match destination(&input) {
                 Ok(url) => {
@@ -239,6 +289,89 @@ impl App {
         }
         self.sync();
     }
+
+    fn verify_if_ready(&mut self, event_loop: &ActiveEventLoop) {
+        let ready = self.verification.as_ref().is_some_and(|verification| {
+            verification.toolbar_ready && verification.first_page_ready && !verification.started
+        });
+        if !ready {
+            return;
+        }
+        self.verification
+            .as_mut()
+            .expect("verification mode")
+            .started = true;
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let first = self
+                .tabs
+                .active_tab_id()
+                .ok_or("first native tab missing")?;
+            self.new_tab()?;
+            let second = self
+                .tabs
+                .active_tab_id()
+                .ok_or("second native tab missing")?;
+            if first == second || self.views.len() != 2 || self.tabs.tabs().len() != 2 {
+                return Err("native tab creation failed".into());
+            }
+            self.execute(Command::Select { id: first.0 });
+            if self.tabs.active_tab_id() != Some(first) {
+                return Err("native tab switch failed".into());
+            }
+            self.execute(Command::Close { id: second.0 });
+            if self.views.len() != 1
+                || self.tabs.tabs().len() != 1
+                || self.tabs.active_tab_id() != Some(first)
+            {
+                return Err("native tab close failed".into());
+            }
+            self.verification
+                .as_mut()
+                .expect("verification mode")
+                .tabs_checked = true;
+            let proxy = self.proxy.clone();
+            self.views.get(&first).ok_or("first native view disappeared")?
+                .evaluate_script_with_callback(
+                    r#"(() => {
+                        const element = document.querySelector('#pip-runtime-probe');
+                        if (element) {
+                            element.textContent = String(6 * 7);
+                            element.dataset.changed = 'native-evaluation';
+                        }
+                        return {
+                            dom: !!element && element.textContent === '42' && element.dataset.changed === 'native-evaluation',
+                            contentIpcAbsent: !(window.ipc && typeof window.ipc.postMessage === 'function')
+                        };
+                    })()"#,
+                    move |result| { let _ = proxy.send_event(Event::VerifyContent(result)); },
+                )?;
+            self.toolbar.as_ref().ok_or("native toolbar missing")?
+                .evaluate_script(
+                    r#"window.ipc.postMessage(JSON.stringify({
+                        action: 'verifyToolbar',
+                        dom: !!document.querySelector('#address') && typeof window.pipState === 'function'
+                    }));"#,
+                )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.verification
+                .as_mut()
+                .expect("verification mode")
+                .failure = Some(error.to_string());
+            event_loop.exit();
+        }
+    }
+
+    fn finish_verification(&self, event_loop: &ActiveEventLoop) {
+        if self
+            .verification
+            .as_ref()
+            .is_some_and(Verification::complete)
+        {
+            event_loop.exit();
+        }
+    }
 }
 
 fn allows_page_url_owned(url: String) -> bool {
@@ -278,12 +411,28 @@ impl ApplicationHandler<Event> for App {
         })();
         if let Err(error) = result {
             eprintln!("Pip macOS failed to start: {error}");
+            if let Some(verification) = &mut self.verification {
+                verification.failure = Some(error.to_string());
+            }
             event_loop.exit();
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Event) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
         match event {
+            Event::Command(Command::Ready) => {
+                self.execute(Command::Ready);
+                if let Some(verification) = &mut self.verification {
+                    verification.toolbar_ready = true;
+                }
+                self.verify_if_ready(event_loop);
+            }
+            Event::Command(Command::VerifyToolbar { dom }) => {
+                if let Some(verification) = &mut self.verification {
+                    verification.toolbar_ipc = Some(dom);
+                }
+                self.finish_verification(event_loop);
+            }
             Event::Command(command) => self.execute(command),
             Event::Title(id, title) => {
                 self.tabs
@@ -298,8 +447,48 @@ impl ApplicationHandler<Event> for App {
                     }
                 }
                 self.sync();
+                if let Some(verification) = &mut self.verification {
+                    if !verification.started && !loading && self.tabs.active_tab_id() == Some(id) {
+                        verification.first_page_ready = true;
+                    }
+                }
+                self.verify_if_ready(event_loop);
             }
             Event::Notice(message) => self.notice(&message),
+            Event::VerifyContent(result) => {
+                if let Some(verification) = &mut self.verification {
+                    let parsed = serde_json::from_str::<serde_json::Value>(&result);
+                    match parsed {
+                        Ok(value) => {
+                            verification.content_dom = Some(
+                                value.get("dom").and_then(serde_json::Value::as_bool) == Some(true),
+                            );
+                            verification.content_ipc_absent = Some(
+                                value
+                                    .get("contentIpcAbsent")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true),
+                            );
+                        }
+                        Err(error) => {
+                            verification.content_dom = Some(false);
+                            verification.content_ipc_absent = Some(false);
+                            verification.failure =
+                                Some(format!("native DOM callback was not JSON: {error}"));
+                        }
+                    }
+                }
+                self.finish_verification(event_loop);
+            }
+            Event::VerifyTimeout => {
+                if let Some(verification) = &mut self.verification {
+                    if !verification.complete() {
+                        verification.failure =
+                            Some("native UI verification timed out after 20 seconds".into());
+                        event_loop.exit();
+                    }
+                }
+            }
         }
     }
 
@@ -357,6 +546,7 @@ impl ApplicationHandler<Event> for App {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let verify_ui = std::env::args_os().any(|argument| argument == "--verify-ui");
     let event_loop = EventLoop::<Event>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
@@ -366,7 +556,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         tabs: TabManager::new(),
         proxy: event_loop.create_proxy(),
         modifiers: ModifiersState::empty(),
+        verification: verify_ui.then(Verification::default),
     };
+    if verify_ui {
+        let proxy = app.proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(20));
+            let _ = proxy.send_event(Event::VerifyTimeout);
+        });
+    }
     event_loop.run_app(&mut app)?;
+    if let Some(verification) = app.verification {
+        let report = verification.report();
+        println!("{report}");
+        if report.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err("Pip macOS native UI verification failed".into());
+        }
+    }
     Ok(())
 }

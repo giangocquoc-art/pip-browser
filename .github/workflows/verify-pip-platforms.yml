@@ -132,9 +132,40 @@ jobs:
         run: cargo build -p evergreen-browser --bin pip-macos --features macos-shell --release --locked --target ${{ matrix.target }}
       - name: Package development app
         run: bash scripts/package-macos.sh ${{ matrix.target }}
+      - name: Verify packaged native WebView and toolbar
+        env:
+          PIP_VERIFY_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, tempfile
+          arch = os.environ['PIP_VERIFY_ARCH']
+          archives = list(pathlib.Path('dist').glob(f'Pip-macOS-{arch}-*.zip'))
+          assert len(archives) == 1, 'Expected exactly one packaged macOS app'
+          with tempfile.TemporaryDirectory(prefix='pip-native-ui-') as directory:
+              subprocess.run(['ditto', '-x', '-k', str(archives[0]), directory], check=True)
+              executable = pathlib.Path(directory) / 'Pip.app/Contents/MacOS/Pip'
+              result = subprocess.run([str(executable), '--verify-ui'], capture_output=True, text=True, timeout=35)
+              print(result.stdout)
+              print(result.stderr)
+              reports = []
+              for line in result.stdout.splitlines():
+                  try:
+                      report = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(report, dict) and report.get('mode') == 'pip-macos-native-ui':
+                      reports.append(report)
+              assert len(reports) == 1, 'Native app did not emit its verification report'
+              report = reports[0]
+              pathlib.Path(f'dist/Pip-macOS-{arch}-native-ui.json').write_text(json.dumps(report, indent=2))
+              assert result.returncode == 0 and report.get('ok') is True, 'Native UI verification failed'
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: Pip-macOS-${{ matrix.arch }}-development
-          path: browser-source/dist/Pip-macOS-*.zip
+          path: |
+            browser-source/dist/Pip-macOS-*.zip
+            browser-source/dist/Pip-macOS-*.sha256
+            browser-source/dist/Pip-macOS-*-native-ui.json
           if-no-files-found: error
           retention-days: 7
