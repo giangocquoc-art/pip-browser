@@ -148,9 +148,13 @@ impl Check {
         }
         .unwrap();
         let proxy = self.app.proxy.clone();
+        let worker_diagnostic = self.step == 52;
         self.pending = true;
         self.pending_started = Some(Instant::now());
         view.evaluate_script_with_callback(script, move |value| {
+            if worker_diagnostic {
+                eprintln!("[native-ui] worker probe reply: {value}");
+            }
             let _ = proxy.send_event(BrowserEvent::CommandDone(
                 "__headless_check".into(),
                 true,
@@ -794,7 +798,13 @@ impl Check {
                 self.app.handle_navigate(id,&(self.worker_url.clone()+"worker-test"));
                 self.step=52;
             }
-            52=>self.query(id,false,"document.body.dataset.workerTest==='done'&&document.body.dataset.sharedWorkerTest==='done' ? true : null"),
+            52=>{
+                if let Some(view)=self.app.windows[&id].tab_manager.active_tab_id().and_then(|tab|self.app.windows[&id].tabs.get(&tab)){
+                    let script=r#"JSON.stringify({href:location.href,readyState:document.readyState,worker:document.body?.dataset.workerTest,shared:document.body?.dataset.sharedWorkerTest,error:window.__pipWorkerError||null,controller:navigator.serviceWorker?.controller?.scriptURL||null})"#;
+                    let _=view.evaluate_script_with_callback(script,|state|eprintln!("[native-ui] worker state: {state}"));
+                }
+                self.query(id,false,r#"(()=>{const state={href:location.href,readyState:document.readyState,worker:document.body?.dataset.workerTest,shared:document.body?.dataset.sharedWorkerTest,error:window.__pipWorkerError||null,controller:navigator.serviceWorker?.controller?.scriptURL||null};console.log('[native-ui] worker fixture',JSON.stringify(state));if(state.error||state.worker==='failed'||state.shared==='failed')return JSON.stringify(state);return state.worker==='done'&&state.shared==='done'?true:null})()"#);
+            },
             53=>{
                 if self.app.adblock.borrow().blocked<self.blocked_before_worker_test+2{return Err("Service/shared-worker request bypassed WebView2 ad filtering".into())}
                 self.redirected_before_test=self.app.adblock.borrow().redirected;
@@ -1466,6 +1476,8 @@ impl ApplicationHandler<BrowserEvent> for Check {
                         self.discard_safe_tab?
                     } else if (100..=108).contains(&self.step) {
                         self.discard_dirty_tab?
+                    } else if self.step == 52 {
+                        self.app.windows.get(&window_id)?.tab_manager.active_tab_id()?
                     } else {
                         self.draft_tab?
                     };
@@ -1902,6 +1914,9 @@ pub fn run() {
             };
             let request = String::from_utf8_lossy(&bytes[..n]);
             let path = request.split_whitespace().nth(1).unwrap_or("");
+            if matches!(path, "/worker-test" | "/sw.js" | "/shared-worker.js") {
+                eprintln!("[native-ui] fixture served {path}");
+            }
             let (extra, body) = if path == "/download" {
                 (
                     "Content-Disposition: attachment; filename=\"native-test.txt\"\r\n",
@@ -1910,7 +1925,7 @@ pub fn run() {
             } else if path == "/worker-test" {
                 (
                     "Content-Type: text/html\r\n",
-                    "<!doctype html><title>Pip native test</title><body><script>navigator.serviceWorker.addEventListener('message',event=>{document.body.dataset.workerTest=event.data;if(event.data==='done'){const shared=new SharedWorker('/shared-worker.js');shared.port.onmessage=message=>document.body.dataset.sharedWorkerTest=message.data;shared.port.start();shared.port.postMessage('probe')}});navigator.serviceWorker.register('/sw.js').then(async()=>{await navigator.serviceWorker.ready;const send=()=>navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage('probe');if(navigator.serviceWorker.controller)send();else navigator.serviceWorker.addEventListener('controllerchange',send,{once:true})}).catch(()=>document.body.dataset.workerTest='failed')</script></body>",
+                    "<!doctype html><title>Pip native test</title><body><script>const fail=(stage,error)=>{window.__pipWorkerError=stage+': '+String(error?.message||error);document.body.dataset.workerTest='failed'};window.addEventListener('error',event=>fail('window error',event.message));window.addEventListener('unhandledrejection',event=>fail('unhandled rejection',event.reason));document.body.dataset.workerTest='registering';navigator.serviceWorker.addEventListener('message',event=>{document.body.dataset.workerTest=event.data;if(event.data==='done'){try{document.body.dataset.sharedWorkerTest='creating';const shared=new SharedWorker('/shared-worker.js');window.__pipSharedWorker=shared;shared.onerror=event=>{document.body.dataset.sharedWorkerTest='failed';fail('shared worker',event.message)};shared.port.onmessageerror=event=>fail('shared message',event);shared.port.onmessage=message=>document.body.dataset.sharedWorkerTest=message.data;shared.port.start();shared.port.postMessage('probe');document.body.dataset.sharedWorkerTest='waiting-message'}catch(error){fail('shared creation',error)}}});navigator.serviceWorker.register('/sw.js').then(async()=>{document.body.dataset.workerTest='waiting-ready';await navigator.serviceWorker.ready;const send=()=>{if(navigator.serviceWorker.controller){document.body.dataset.workerTest='waiting-message';navigator.serviceWorker.controller.postMessage('probe')}};if(navigator.serviceWorker.controller)send();else{document.body.dataset.workerTest='waiting-controller';navigator.serviceWorker.addEventListener('controllerchange',send,{once:true})}}).catch(error=>fail('service worker registration',error))</script></body>",
                 )
             } else if path == "/sw.js" {
                 (

@@ -13,15 +13,19 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     rc::Rc,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use webview2_com::{
-    AddScriptToExecuteOnDocumentCreatedCompletedHandler, NewWindowRequestedEventHandler,
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_WEB_ERROR_STATUS,
 };
-use windows::core::{HSTRING, PWSTR};
+use webview2_com::{
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
+};
+use windows::core::{BOOL, HSTRING, PWSTR};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -40,26 +44,106 @@ struct Smoke {
     deadline: Instant,
     requests: Arc<Mutex<HashMap<String, u32>>>,
     youtube_script_id: Option<String>,
+    failure: Option<String>,
 }
 impl ApplicationHandler<String> for Smoke {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
+        let startup = Instant::now();
+        println!("SMOKE startup: creating hidden window");
         let window = event_loop
             .create_window(Window::default_attributes().with_visible(false))
             .unwrap();
         let proxy = self.proxy.clone();
+        println!(
+            "SMOKE startup: creating WebView2 at {:?}",
+            startup.elapsed()
+        );
         let view = wry::WebViewBuilder::new()
             // Test-only loopback host aliases: EasyList exempts cosmetic rules on localhost.
             .with_additional_browser_args("--host-resolver-rules=\"MAP pip-adblock.test 127.0.0.1, MAP frame.pip-adblock.test 127.0.0.1, MAP casino.pip-adblock.test 127.0.0.1\" --no-proxy-server")
+            .with_on_page_load_handler(|event, url| {
+                let event = match event {
+                    wry::PageLoadEvent::Started => "Started",
+                    wry::PageLoadEvent::Finished => "Finished",
+                };
+                println!("SMOKE page_load {event}: {url}");
+            })
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(req.body().clone());
             })
             .build_as_child(&window)
             .unwrap();
-        adblock::attach(&view, self.blocker.clone()).unwrap();
+        println!("SMOKE startup: WebView2 built at {:?}", startup.elapsed());
+        let mut runtime = PWSTR::null();
+        match unsafe { view.environment().BrowserVersionString(&mut runtime) } {
+            Ok(()) if !runtime.is_null() => {
+                println!("SMOKE runtime: {}", webview2_com::take_pwstr(runtime));
+            }
+            result => println!("SMOKE runtime query: {result:?}"),
+        }
         let core = unsafe { view.controller().CoreWebView2() }.unwrap();
+        let starting = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+            if let Some(args) = args {
+                let mut raw = PWSTR::null();
+                let result = unsafe { args.Uri(&mut raw) };
+                let url = if result.is_ok() && !raw.is_null() {
+                    webview2_com::take_pwstr(raw)
+                } else {
+                    String::new()
+                };
+                println!("SMOKE navigation_starting: url={url:?} result={result:?}");
+            }
+            Ok(())
+        }));
+        let navigation = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+            if let Some(args) = args {
+                let mut success = BOOL(0);
+                let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
+                let success_read = unsafe { args.IsSuccess(&mut success) };
+                let status_read = unsafe { args.WebErrorStatus(&mut status) };
+                let mut raw = PWSTR::null();
+                let source = sender
+                    .and_then(|sender| {
+                        unsafe { sender.Source(&mut raw) }.ok()?;
+                        (!raw.is_null()).then(|| webview2_com::take_pwstr(raw))
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "SMOKE navigation_completed: source={source:?} success={} web_error_status={} success_read={success_read:?} status_read={status_read:?}",
+                    success.as_bool(),
+                    status.0,
+                );
+            }
+            Ok(())
+        }));
+        let process_failed = ProcessFailedEventHandler::create(Box::new(move |_, args| {
+            if let Some(args) = args {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(0);
+                let result = unsafe { args.ProcessFailedKind(&mut kind) };
+                println!("SMOKE process_failed: kind={} result={result:?}", kind.0);
+            }
+            Ok(())
+        }));
+        let mut starting_token = 0;
+        let mut navigation_token = 0;
+        let mut failed_token = 0;
+        unsafe {
+            core.add_NavigationStarting(&starting, &mut starting_token)
+                .unwrap();
+            core.add_NavigationCompleted(&navigation, &mut navigation_token)
+                .unwrap();
+            core.add_ProcessFailed(&process_failed, &mut failed_token)
+                .unwrap();
+        }
+        println!(
+            "SMOKE startup: attaching blocker at {:?}",
+            startup.elapsed()
+        );
+        adblock::attach(&view, self.blocker.clone()).unwrap();
+        println!("SMOKE startup: blocker attached at {:?}", startup.elapsed());
         let popup_proxy = self.proxy.clone();
         let popup_blocker = self.blocker.clone();
         let popup_handler =
@@ -110,18 +194,30 @@ impl ApplicationHandler<String> for Smoke {
             }));
         let mut popup_token = 0;
         unsafe { core.add_NewWindowRequested(&popup_handler, &mut popup_token) }.unwrap();
-        view.load_url(&(self.url.clone() + "popup-test")).unwrap();
+        let initial = self.url.clone() + "popup-test";
+        println!("SMOKE navigate: {initial} at {:?}", startup.elapsed());
+        view.load_url(&initial).unwrap();
+        println!(
+            "SMOKE startup: navigation queued at {:?}",
+            startup.elapsed()
+        );
         self.view = Some(view);
         self.window = Some(window);
     }
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        assert!(
-            Instant::now() < self.deadline,
-            "WebView2 smoke test timed out at phase {}: {:?}",
-            self.phase,
-            self.requests.lock().unwrap()
-        );
+        if Instant::now() >= self.deadline {
+            let source = self.view.as_ref().map(|view| view.url());
+            let message = format!(
+                "WebView2 smoke test timed out at phase {}: requests={:?}, source={source:?}",
+                self.phase,
+                self.requests.lock().unwrap()
+            );
+            eprintln!("{message}");
+            self.failure = Some(message);
+            event_loop.exit();
+            return;
+        }
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.deadline));
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, message: String) {
@@ -301,8 +397,9 @@ fn install_document_start_script(
     }
     Ok(())
 }
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let preflight_address = listener.local_addr().unwrap();
     let url = format!(
         "http://pip-adblock.test:{}/",
         listener.local_addr().unwrap().port()
@@ -325,12 +422,16 @@ fn main() {
             };
             let request = String::from_utf8_lossy(&buffer[..n]);
             let path = request.split_whitespace().nth(1).unwrap_or("");
-            *server_requests
-                .lock()
-                .unwrap()
-                .entry(path.to_owned())
-                .or_default() += 1;
+            println!("SMOKE loopback request: {path}");
+            if path != "/health" {
+                *server_requests
+                    .lock()
+                    .unwrap()
+                    .entry(path.to_owned())
+                    .or_default() += 1;
+            }
             let (mime, body) = match path {
+                "/health" => ("text/plain", "pip-smoke-ready"),
                 "/popup-test" => (
                     "text/html",
                     "<!doctype html><script>window.open(__POPUP_URL__,'_blank')</script>",
@@ -380,6 +481,21 @@ fn main() {
             let _ = socket.write_all(response.as_bytes());
         }
     });
+    // Prove that the fixture accepts and responds before involving WebView2.
+    // A distinct endpoint keeps existing request-count assertions unchanged.
+    let mut preflight = TcpStream::connect_timeout(&preflight_address, Duration::from_secs(3))?;
+    preflight.set_read_timeout(Some(Duration::from_secs(3)))?;
+    preflight.set_write_timeout(Some(Duration::from_secs(3)))?;
+    preflight.write_all(
+        b"GET /health HTTP/1.1\r\nHost: pip-adblock.test\r\nConnection: close\r\n\r\n",
+    )?;
+    let mut health = String::new();
+    preflight.read_to_string(&mut health)?;
+    assert!(
+        health.starts_with("HTTP/1.1 200 OK") && health.ends_with("pip-smoke-ready"),
+        "loopback fixture preflight failed: {health:?}"
+    );
+    println!("SMOKE loopback preflight passed: {preflight_address}");
     let directory = std::env::temp_dir().join(format!("pip-smoke-{}", std::process::id()));
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", directory.join("webview"));
     let event_loop = EventLoop::<String>::with_user_event().build().unwrap();
@@ -396,9 +512,14 @@ fn main() {
         deadline: Instant::now() + Duration::from_secs(40),
         requests,
         youtube_script_id: None,
+        failure: None,
     };
     event_loop.run_app(&mut smoke).unwrap();
+    if let Some(error) = smoke.failure {
+        return Err(error.into());
+    }
     assert_eq!(smoke.phase, 5);
     assert!(directory.join("adblock-exceptions.json").is_file());
     // Runtime may still hold its temporary profile; leave it for OS temp cleanup.
+    Ok(())
 }

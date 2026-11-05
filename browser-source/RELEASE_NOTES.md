@@ -1,3 +1,11 @@
+# Pip 0.1.18
+
+- Download folder and “ask where to save” preferences are now separate for each profile. Profiles without overrides keep their previous settings.
+- Saved location, camera, microphone and notification permission choices are now profile-specific. These local permission and download preferences are not included in Pip Sync; changing a permission does not promise to immediately revoke an already-running stream.
+- Ctrl+H and Ctrl+Shift+O open history and bookmarks in a new tab, preserving the page you were viewing.
+- Settings can check a YouTube connection from WebView2. This checks request completion, errors or timeout; it does not establish successful video playback or ad removal.
+- Corrected the bundled ad88vip6.com popup override so it is included in the active popup engine. Ad and popup blocking remains best-effort, including on YouTube.
+
 # Pip 0.1.17
 
 The default download folder and “ask where to save” choice are now profile-specific. Profiles without an override continue to inherit the existing shared settings, preserving their current behavior; new downloads use the active profile’s effective folder.
