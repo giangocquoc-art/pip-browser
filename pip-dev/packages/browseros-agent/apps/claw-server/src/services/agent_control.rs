@@ -1381,11 +1381,16 @@ mod tests {
             .begin("owner", 1, 42, "target-a", false)
             .await
             .map_err(anyhow::Error::msg)?;
-        assert!(!action.action_ref);
+        assert!(action.action_ref);
         service
             .abort_action("owner", &action)
             .await
             .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            service.inner.lock().await.leases[&action.lease_id].action_refs,
+            0,
+            "aborted actions must not leak references on persistent leases"
+        );
         assert_eq!(
             service.pending_for_extension().await[0].status,
             "locking",
@@ -1422,7 +1427,7 @@ mod tests {
             .map_err(anyhow::Error::msg)?;
         let old_revision = service.leases_for_extension().await[0].snapshot_revision;
         service
-            .request_release(&old.lease_id, old.generation, 42, "target-a")
+            .abort("owner", &old.lease_id)
             .await
             .map_err(anyhow::Error::msg)?;
         service
