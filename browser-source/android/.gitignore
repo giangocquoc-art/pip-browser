@@ -3,3 +3,4 @@
 local.properties
 *.jks
 *.keystore
+app/src/main/jniLibs/

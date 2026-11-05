@@ -17,4 +17,9 @@
     <string name="ssl_error">Kết nối bảo mật không hợp lệ. Pip đã dừng tải trang.</string>
     <string name="download_unavailable">Tải tệp chưa có trong bản Android thử nghiệm.</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
+    <string name="adblock_loading">Đang nạp bộ lọc quảng cáo…</string>
+    <string name="adblock_ready">Chặn quảng cáo đang bật · %1$d yêu cầu đã chặn</string>
+    <string name="adblock_unavailable">Bộ lọc quảng cáo không hoạt động. Chạm để chọn tiếp tục không bảo vệ.</string>
+    <string name="adblock_failure_prompt">Không nạp được bộ lọc quảng cáo. Trang đang chờ; bạn có muốn duyệt không bảo vệ trong cửa sổ này?</string>
+    <string name="continue_unprotected">Tiếp tục không bảo vệ</string>
 </resources>

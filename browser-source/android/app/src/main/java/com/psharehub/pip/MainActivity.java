@@ -21,6 +21,7 @@ import android.webkit.SslErrorHandler;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -45,15 +46,24 @@ public final class MainActivity extends Activity {
     private Button tabButton;
     private FrameLayout content;
     private TextView status;
+    private TextView filteringStatus;
     private ProgressBar progress;
     private boolean paused;
     private boolean destroying;
+    private boolean allowUnprotected;
 
     private static final class Tab {
         String url;
+        volatile String documentUrl;
+        volatile String explicitNavigationUrl;
         String title = "";
         WebView view;
-        Tab(String url) { this.url = url; }
+        String pendingLoadUrl;
+        Tab(String url) {
+            this.url = url;
+            this.documentUrl = url;
+            this.explicitNavigationUrl = url;
+        }
     }
 
     @Override public void onCreate(Bundle state) {
@@ -61,6 +71,13 @@ public final class MainActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         CookieManager.getInstance().setAcceptCookie(true);
         buildUi();
+        AdblockRequests.installServiceWorkerFiltering();
+        NativeAdblock.initialize().whenComplete((ready, failure) -> runOnUiThread(() -> {
+            if (!destroying) {
+                updateFilteringStatus();
+                if (NativeAdblock.isReady()) drainPendingLoads();
+            }
+        }));
         ArrayList<String> saved = state == null ? null : state.getStringArrayList("tabUrls");
         if (saved != null) {
             for (String url : saved) {
@@ -126,6 +143,7 @@ public final class MainActivity extends Activity {
         Button reload = button(R.string.reload, () -> {
             Tab tab = tabs.get(selected);
             if (tab.view == null) selectTab(selected);
+            else if (tab.pendingLoadUrl != null || !NativeAdblock.isReady()) loadWhenProtected(tab);
             else tab.view.reload();
         });
         tabButton = button(R.string.tabs, this::showTabs);
@@ -143,6 +161,20 @@ public final class MainActivity extends Activity {
         status.setVisibility(View.GONE);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         root.addView(status);
+        filteringStatus = new TextView(this);
+        filteringStatus.setTextSize(14);
+        filteringStatus.setPadding(dp(12), dp(3), dp(12), dp(3));
+        filteringStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        root.addView(filteringStatus);
+        filteringStatus.setOnClickListener(v -> {
+            if (!NativeAdblock.hasFailed()) return;
+            new AlertDialog.Builder(this).setMessage(R.string.adblock_failure_prompt)
+                    .setPositiveButton(R.string.continue_unprotected, (dialog, which) -> {
+                        allowUnprotected = true;
+                        drainPendingLoads();
+                    }).setNegativeButton(R.string.cancel, null).show();
+        });
+        updateFilteringStatus();
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         setContentView(root);
@@ -167,8 +199,9 @@ public final class MainActivity extends Activity {
         if (url == null) { showStatus(R.string.blocked_address); return; }
         Tab tab = tabs.get(selected);
         tab.url = url;
+        tab.explicitNavigationUrl = url;
         if (tab.view == null) selectTab(selected);
-        else tab.view.loadUrl(url);
+        else loadWhenProtected(tab);
         address.clearFocus();
         ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                 .hideSoftInputFromWindow(address.getWindowToken(), 0);
@@ -199,7 +232,7 @@ public final class MainActivity extends Activity {
         if (!paused) tab.view.onResume();
         status.setVisibility(View.GONE);
         address.setText(tab.url);
-        if (created && load) tab.view.loadUrl(tab.url);
+        if (created && load) loadWhenProtected(tab);
         updateControls();
     }
 
@@ -225,6 +258,13 @@ public final class MainActivity extends Activity {
             }
         });
         view.setWebViewClient(new WebViewClient() {
+            @Override public WebResourceResponse shouldInterceptRequest(
+                    WebView webView, WebResourceRequest request) {
+                // Android invokes this on a background thread. Never read the
+                // Activity's tab collection or query the WebView from here.
+                return AdblockRequests.intercept(request, tab.documentUrl, tab.explicitNavigationUrl);
+            }
+
             @Override public boolean shouldOverrideUrlLoading(WebView webView, WebResourceRequest request) {
                 if (!isLiveView(tab, webView)) return true;
                 boolean allowed = Address.isWebUrl(request.getUrl().toString());
@@ -236,16 +276,23 @@ public final class MainActivity extends Activity {
 
             @Override public void onPageStarted(WebView webView, String url, android.graphics.Bitmap icon) {
                 if (!isLiveView(tab, webView)) return;
-                if (Address.isWebUrl(url)) tab.url = url;
+                if (Address.isWebUrl(url)) {
+                    tab.url = url;
+                    tab.documentUrl = url;
+                }
                 if (isCurrentView(tab, webView)) {
                     status.setVisibility(View.GONE);
                     if (!address.hasFocus()) address.setText(tab.url);
                     updateControls();
+                    updateFilteringStatus();
                 }
             }
 
             @Override public void onPageFinished(WebView webView, String url) {
-                if (isCurrentView(tab, webView)) updateControls();
+                if (isCurrentView(tab, webView)) {
+                    updateControls();
+                    updateFilteringStatus();
+                }
             }
 
             @Override public void onReceivedError(WebView webView, WebResourceRequest request, WebResourceError error) {
@@ -354,6 +401,36 @@ public final class MainActivity extends Activity {
         progress.setVisibility(View.INVISIBLE);
     }
 
+    private void updateFilteringStatus() {
+        if (filteringStatus == null) return;
+        long blocked = NativeAdblock.blockedCount();
+        if (NativeAdblock.hasFailed()) filteringStatus.setText(R.string.adblock_unavailable);
+        else if (NativeAdblock.isReady()) filteringStatus.setText(
+                getString(R.string.adblock_ready, blocked));
+        else filteringStatus.setText(R.string.adblock_loading);
+    }
+
+    // UI-thread queue stores only the latest requested URL per live tab. No UI waits.
+    private void loadWhenProtected(Tab tab) {
+        tab.pendingLoadUrl = tab.url;
+        if (destroying || tab.view == null) return;
+        if (!NativeAdblock.isReady() && !allowUnprotected) {
+            tab.view.stopLoading();
+            updateFilteringStatus();
+            return;
+        }
+        String url = tab.pendingLoadUrl;
+        tab.pendingLoadUrl = null;
+        tab.view.loadUrl(url);
+    }
+
+    private void drainPendingLoads() {
+        for (Tab tab : tabs) if (tab.pendingLoadUrl != null) {
+            tab.url = tab.pendingLoadUrl;
+            loadWhenProtected(tab);
+        }
+    }
+
     private void navigateBack() {
         WebView view = activeView();
         if (view != null && view.canGoBack()) view.goBack();
@@ -378,6 +455,7 @@ public final class MainActivity extends Activity {
         paused = false;
         WebView view = activeView();
         if (view != null) view.onResume();
+        updateFilteringStatus();
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {

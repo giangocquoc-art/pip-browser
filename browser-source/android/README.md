@@ -1,7 +1,7 @@
 # Pip Android — bản phát triển đầu tiên
 
 Ứng dụng Android native dùng WebView sẵn có trên thiết bị, không đóng gói Chromium.
-Mã này dùng API Android có sẵn; không bổ sung framework UI hoặc thư viện chạy nền.
+Giao diện dùng API Android có sẵn; bộ lọc mạng dùng Brave adblock-rust qua JNI.
 Hiện chưa có APK phát hành công khai, chữ ký release hay chứng nhận Google Play.
 
 ## Có trong source
@@ -14,16 +14,26 @@ Hiện chưa có APK phát hành công khai, chữ ký release hay chứng nhậ
 - Safe Browsing, chặn mixed content, không vượt lỗi chứng chỉ, tắt file/content access.
 - Không tạo JavaScript interface cho website; camera/mic/quyền website bị từ chối.
 - Chỉ xin quyền INTERNET. Debug WebView chỉ bật ở debug build.
+- Engine Rust thật đọc snapshot EasyList, uBlock filters/quick-fixes/unbreak, popup-overrides
+  và youtube từ cùng nguồn đã đóng gói trong repo; không tải/copy các danh sách sang Android.
+- WebViewClient và ServiceWorkerClient gọi engine trên thread callback nền. Nạp native library
+  và phân tích bộ lọc chạy một lần ngoài UI thread. Điều hướng đầu tiên và URL được nhập chờ
+  engine sẵn sàng; mỗi tab chỉ giữ URL chờ mới nhất. Nếu nạp thất bại, trang tiếp tục chờ đến
+  khi người dùng chạm thông báo và chọn rõ việc duyệt không bảo vệ.
 
 ## Build và kiểm tra
 
-Cần JDK 17, Gradle **8.13**, Android SDK **36**, Build Tools **35.0.0**.
+Cần JDK 17, Gradle **8.13**, Android SDK **36**, Build Tools **35.0.0**, NDK **27.2.12479018**,
+Rust stable cùng targets `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android`.
 Android Gradle Plugin được pin **8.11.1** trong build.gradle.kts.
 Đường dẫn SDK đặt bằng ANDROID_HOME hoặc local.properties (không commit).
 Dùng Android Studio import thư mục này hoặc Gradle đã cài; repo chưa chứa wrapper JAR.
 
 ```sh
 cd browser-source/android
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+cargo test --manifest-path native/Cargo.toml --locked
+bash native/build-android.sh
 gradle --no-daemon --max-workers=2 testDebugUnitTest lintDebug assembleDebug
 ```
 
@@ -32,11 +42,19 @@ Chỉ coi artifact tồn tại sau khi job build thành công và tải được
 APK debug ký bằng debug key của môi trường build, không dùng để cập nhật bản public.
 Chưa cấu hình release keystore; không thêm secret hoặc keystore vào repo.
 
+Script native hiện dành cho Linux/hosted CI, dùng NDK clang API 26, xuất `.so` cho
+arm64-v8a, armeabi-v7a và x86_64. Không gọi Gradle trước khi build/download đủ native libraries.
+Cargo workspace và lockfile của Android độc lập với desktop để tránh feature `single-thread`.
+CI build JNI một lần, kiểm tra đủ ABI trong APK và chuyển cùng thư viện sang job emulator.
+Native link dùng max/common page size 16 KB; CI kiểm ELF LOAD alignment và APK zipalign.
+Các check này không thay thế việc chạy thật trên thiết bị/emulator có page size 16 KB.
+Không cần cài NDK hoặc build trên ổ HDD của máy làm việc để dùng CI.
+
 ## Giới hạn cần hoàn tất trước khi phát hành
 
 Đây là nền Android ban đầu, chưa ngang chức năng Pip Windows:
 
-- Chưa tích hợp Brave Adblock Rust, Google DNS, Pip Sync, tải tệp, bookmarks/history UI,
+- Chưa tích hợp Google DNS, Pip Sync, tải tệp, bookmarks/history UI,
   dịch trang, quản lý mật khẩu, file chooser, camera/mic hoặc quy trình default browser.
 - Không có chế độ ẩn danh hoặc nhiều hồ sơ: các tab dùng chung kho cookie WebView của app.
   Không thể gọi một tab không ghi lịch sử là hồ sơ riêng tư.
@@ -45,6 +63,19 @@ Chưa cấu hình release keystore; không thêm secret hoặc keystore vào rep
   Tab background được pause nhưng WebView vẫn có thể giữ bộ nhớ; giới hạn tab không chứng minh
   mức RAM hoặc pin tốt hơn trình duyệt khác.
 - Chưa có engine Android của Pip Dev, MCP native lock, hay chức năng điều khiển agent.
+- Chặn mạng hiện chỉ xử lý network rules. Chưa có cosmetic filtering, scriptlets hay redirect
+  resource replacements; không bảo đảm chặn mọi quảng cáo YouTube. Rule `$popup` không thay thế
+  policy chặn casino/same-tab redirect; phần này chưa ngang bản Windows. URL main-frame do người
+  dùng nhập/khôi phục được mở trực tiếp, subresource vẫn lọc. WebView không đưa đủ resource type;
+  host suy ra từ request headers và path, nếu không biết dùng `other`.
+- ServiceWorker không đưa tab/client ID. Có Referer thì dùng làm source; thiếu thì dùng chính
+  URL request theo ngữ cảnh cùng origin, nên có thể bỏ sót rule chỉ dành cho third-party.
+  WebView interception không bao phủ mọi redirect endpoint, WebSocket hoặc URL blob/javascript.
+  Engine lỗi không làm proxy hoặc giả thành lỗi Internet: callback để mạng bình thường và UI
+  báo bộ lọc lỗi khi cập nhật trạng thái trang. Không công bố bảo vệ tuyệt đối.
+- Snapshot filter chưa có updater Android. Trước phát hành công khai cần đóng gói notices/
+  giấy phép tương ứng adblock-rust, JNI và từng nguồn filter; metadata nguồn hiện ở
+  `../crates/app/filters/sources.json`. CI debug không phải bản public đã hoàn tất gate này.
 - Icon dùng lại mascot Pip đang có trong repo; chưa có bộ adaptive icon riêng cho Android.
 - Cần emulator/thiết bị thật để xác minh layout nhỏ, rotation, bàn phím, HTTPS/video, lỗi mạng,
   nhiều tab, renderer crash, accessibility và behavior background/foreground trước release.
@@ -74,6 +105,13 @@ Nhánh renderer exit được kiểm bằng callback mô phỏng, không phải 
 renderer. Vẫn cần kiểm tra renderer crash thật, Back gesture, video, bàn phím và thiết bị thật.
 
 Việc có source test chưa chứng minh test đã chạy; dùng kết quả CI tương ứng với đúng commit.
+
+`AdblockRequestTest` bắt buộc load JNI thật, rồi cho WebView thật tải trang HTTPS fixture
+và các script được trả cục bộ trong callback chỉ của test. Nó kiểm chứng callback production
+chặn host quảng cáo bằng 204 nhưng cho control request qua; test thứ hai đăng ký ServiceWorker
+thật, yêu cầu worker fetch cả hai URL và kiểm chứng hook ServiceWorker production riêng.
+Không gọi live Google/DoubleClick, không bỏ qua lỗi TLS, không thêm JavaScript interface.
+Unit Rust kiểm tra engine với toàn bộ bundled network inputs, exception và resource types.
 
 ## Nguồn nền tảng
 
