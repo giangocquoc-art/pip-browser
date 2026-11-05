@@ -4,7 +4,7 @@
 
 Trang giới thiệu và tải Pip cho Windows: https://pip.psharehub.com
 
-Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoài hay thư viện hoạt ảnh. Pip dùng Microsoft Edge WebView2 Runtime có sẵn trên Windows.
+Website là HTML, CSS và JavaScript thuần. Không dùng framework, font ngoài hay thư viện hoạt ảnh. Pip dùng Microsoft Edge WebView2 Runtime do Microsoft cập nhật; bộ cài hướng dẫn cài Runtime chính thức nếu máy chưa có.
 
 ## Cấu trúc
 
@@ -39,6 +39,12 @@ Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, ki�
 ## Thông tin cài đặt
 
 Pip hỗ trợ Windows 10/11 64-bit và cài riêng cho tài khoản Windows hiện tại. Bộ cài chưa ký số; SmartScreen có thể cảnh báo. Trang giới thiệu ghi rõ giới hạn của chế độ ẩn danh, DNS và bộ lọc quảng cáo.
+
+## Android và macOS đang phát triển
+
+Android dùng Android System WebView và Brave Rust qua JNI; macOS dùng WKWebView qua Wry, bộ lọc WebKit native và hộp thoại lưu tệp hệ thống. Đây là các bản phát triển riêng, chưa ngang chức năng Windows và chưa có nút tải công khai. iOS để sau.
+
+Xem [phạm vi, bằng chứng kiểm thử và điều kiện phát hành đa nền tảng](browser-source/MULTIPLATFORM.md), [build Android](browser-source/android/README.md) và [workflow hosted](.github/workflows/verify-pip-platforms.yml). Có thể dùng GitHub Actions để build thay vì cài SDK hoặc biên dịch trên máy Windows. Artifact thử nghiệm chỉ giữ 7 ngày, cần đăng nhập GitHub để tải; chúng dùng chữ ký debug/ad-hoc, không phải gói phát hành chính thức.
 
 ## Pip Dev cho Codex và agent AI
 
