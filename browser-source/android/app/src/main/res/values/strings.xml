@@ -7,6 +7,7 @@
     <string name="forward">Tiến tới</string>
     <string name="reload">Tải lại</string>
     <string name="tabs">Tab</string>
+    <string name="tabs_count">Tab %1$d</string>
     <string name="new_tab">Tab mới</string>
     <string name="close_tab">Đóng tab hiện tại</string>
     <string name="cancel">Đóng</string>
@@ -16,5 +17,4 @@
     <string name="ssl_error">Kết nối bảo mật không hợp lệ. Pip đã dừng tải trang.</string>
     <string name="download_unavailable">Tải tệp chưa có trong bản Android thử nghiệm.</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
-    <string name="untitled_tab">Tab mới</string>
 </resources>

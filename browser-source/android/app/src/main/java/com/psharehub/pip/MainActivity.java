@@ -345,7 +345,7 @@ public final class MainActivity extends Activity {
         WebView view = activeView();
         back.setEnabled(view != null && view.canGoBack());
         forward.setEnabled(view != null && view.canGoForward());
-        tabButton.setText(getString(R.string.tabs) + " " + tabs.size());
+        tabButton.setText(getString(R.string.tabs_count, tabs.size()));
     }
 
     private void showStatus(int message) {

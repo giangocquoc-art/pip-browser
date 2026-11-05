@@ -57,10 +57,30 @@ index, hoặc xóa view thay thế. Khi Activity bị hủy, callback trễ ph�
 Tests JVM hiện kiểm tra route URL/search và từ chối scheme/credential không an toàn.
 Build/lint/unit pass không thay thế kiểm thử WebView chạy thật hoặc chứng minh chặn quảng cáo.
 
+## Kiểm thử Activity và WebView trên emulator
+
+Source instrumentation dùng AndroidX Test chỉ trong APK test, không thêm dependency chạy
+vào ứng dụng chính. Cấu hình runner là `androidx.test.runner.AndroidJUnitRunner`.
+
+```sh
+gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
+```
+
+`MainActivityTest` mở Activity/WebView thật và kiểm tra chọn tab, khôi phục URL cùng tab
+đang chọn sau `ActivityScenario.recreate()`, đóng tab cuối và callback của view cũ sau khi
+tạo view thay thế. Test không chờ Google hoặc website bên ngoài trả kết quả: URL `.invalid`
+được nhập qua omnibox và WebView dừng tải ngay; có thể tắt Wi-Fi/data của emulator.
+Nhánh renderer exit được kiểm bằng callback mô phỏng, không phải chủ động crash tiến trình
+renderer. Vẫn cần kiểm tra renderer crash thật, Back gesture, video, bàn phím và thiết bị thật.
+
+Việc có source test chưa chứng minh test đã chạy; dùng kết quả CI tương ứng với đúng commit.
+
 ## Nguồn nền tảng
 
 - [AGP 8.11: Gradle 8.13, JDK 17, API 36](https://developer.android.com/build/releases/agp-8-11-0-release-notes)
 - [WebSettings: file access, mixed content, Safe Browsing](https://developer.android.com/reference/android/webkit/WebSettings)
 - [WebView](https://developer.android.com/reference/android/webkit/WebView)
+- [AndroidX Test dependencies](https://developer.android.com/jetpack/androidx/releases/test)
+- [ActivityScenario](https://developer.android.com/reference/androidx/test/core/app/ActivityScenario)
 
 iOS nằm ngoài đợt triển khai này.
