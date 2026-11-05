@@ -20,7 +20,7 @@ Mã Windows phụ thuộc WebView2 khá sâu. Shell macOS và Android phải có
 - Điều hướng HTTPS, Google mặc định, tab, quay lại/tiến tới/tải lại và khôi phục phiên an toàn.
 - Quyền website theo nền tảng; TLS lỗi phải bị từ chối; không cho website gọi bridge điều khiển giao diện trình duyệt.
 - Dữ liệu hồ sơ độc lập và chế độ riêng tư thật. Nhiều WebView dùng chung cookie store không được quảng bá là nhiều hồ sơ độc lập.
-- Chặn quảng cáo/popup qua hook mạng đúng engine. macOS đã có mã chuyển Brave filters sang WKContentRuleList và policy điều hướng cờ bạc, đang chờ CI native riêng; chưa có scriptlet/YouTube parity. Android cần adapter JNI và kiểm thử WebView/service worker riêng.
+- Chặn quảng cáo/popup qua hook mạng đúng engine. macOS đã chạy thử bộ lọc Brave chuyển sang WKContentRuleList và policy điều hướng cờ bạc; chưa có scriptlet/YouTube parity. Android đã có adapter Rust/JNI cho WebView và service worker; phải kiểm chứng callback native, source context và các giới hạn riêng.
 - Google DNS phải đi qua đường mạng thật của tab và có kiểm tra bật/tắt; không hiển thị nút báo thành công nếu chỉ cấu hình một HTTP client khác.
 - Lịch sử/dấu trang/tải xuống, mật khẩu theo kho an toàn của hệ điều hành và Pip Sync có mã hóa; dữ liệu website không chuyển ngầm giữa các engine.
 - Giao diện phù hợp chuột/phím trên desktop và cảm ứng trên Android, hỗ trợ cỡ chữ hệ thống, nhãn truy cập và không thêm hoạt ảnh nặng.
@@ -57,6 +57,10 @@ Android xem [android/README.md](android/README.md). Toolchain được pin: JDK 
 - Artifact phát triển được giữ 7 ngày trên run trên; APK ký debug và macOS ký ad-hoc. Kích thước nhỏ của shell không bao gồm engine WebView hệ thống, không dùng để so sánh tổng dung lượng hay RAM với Chrome.
 
 Bằng chứng này chỉ áp dụng đúng commit và phạm vi nêu trên; thay đổi tiếp theo cần CI riêng. Chặn quảng cáo, Google DNS, đồng bộ, hồ sơ riêng, mạng/video thật và trải nghiệm trên thiết bị vẫn cần hoàn thiện/kiểm chứng theo các gate bên dưới.
+
+[Run 42092953077](https://github.com/giangocquoc-art/pip-browser/actions/runs/42092953077), commit `502868658f8f77dd1100874ffa0197cb656acbf5`, kiểm chứng thêm native adblock macOS trên cả hai kiến trúc. WebKit biên dịch 81.271 quy tắc, converter dùng 81.145 quy tắc nguồn trong 91.653 dòng không phải comment. Fixture loopback xác nhận script thường và ngoại lệ được tải, script bị chặn không đến server; `adblockRequests: true` và `ok: true`. Các con số này không chứng minh bao phủ đầy đủ syntax hay quảng cáo YouTube thực tế.
+
+Mã tải tệp macOS tiếp theo dùng NSSavePanel và WKDownload, không tự mở tệp hoặc ghi đè tệp đã có. Cần CI kiểm tra attachment thật trước khi công bố chức năng đã hoạt động. Android JNI ở commit `7ecca94248137bd5f69f1882ed1d6c4163e313fd` đã qua host Rust tests, build ba ABI, lint/APK và kiểm tra alignment; kết quả WebView/service-worker emulator phải xem đúng run [42108484729](https://github.com/giangocquoc-art/pip-browser/actions/runs/42108484729).
 
 ## Điều kiện phát hành
 

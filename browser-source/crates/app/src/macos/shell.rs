@@ -1,6 +1,8 @@
 use super::navigation::{allows_page_url, destination};
 #[path = "adblock.rs"]
 mod adblock;
+#[path = "download.rs"]
+mod download;
 use evergreen_core::tabs::{TabId, TabManager};
 use serde::Deserialize;
 use serde_json::json;
@@ -51,6 +53,7 @@ enum Event {
     VerifyTimeout,
     AdblockPrepared(Result<adblock::Prepared, String>),
     AdblockChanged,
+    DownloadFinished(String, bool),
 }
 
 #[derive(Default)]
@@ -66,6 +69,7 @@ struct Verification {
     fixture_loaded: bool,
     adblock_requests: Option<bool>,
     adblock_stats: Option<adblock::Stats>,
+    download: Option<bool>,
 }
 
 impl Verification {
@@ -74,6 +78,7 @@ impl Verification {
             && self.content_dom.is_some()
             && self.content_ipc_absent.is_some()
             && self.adblock_requests.is_some()
+            && self.download.is_some()
     }
 
     fn report(&self) -> serde_json::Value {
@@ -83,7 +88,7 @@ impl Verification {
             && self.toolbar_ipc == Some(true)
             && self.content_dom == Some(true)
             && self.content_ipc_absent == Some(true);
-        let ok = ok && self.adblock_requests == Some(true);
+        let ok = ok && self.adblock_requests == Some(true) && self.download == Some(true);
         json!({
             "mode": "pip-macos-native-ui",
             "ok": ok,
@@ -93,6 +98,7 @@ impl Verification {
             "createSwitchCloseTabs": self.tabs_checked,
             "adblockRequests": self.adblock_requests.unwrap_or(false),
             "adblock": self.adblock_stats,
+            "nativeDownload": self.download.unwrap_or(false),
             "networkUsed": true,
             "networkScope": "loopback-only",
             "screenshotsUsed": false,
@@ -113,6 +119,7 @@ struct App {
     modifiers: ModifiersState,
     verification: Option<Verification>,
     fixture: Option<adblock::Fixture>,
+    download_fixture: Option<download::Fixture>,
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
@@ -193,6 +200,12 @@ impl App {
         let load_proxy = self.proxy.clone();
         let popup_proxy = self.proxy.clone();
         let download_proxy = self.proxy.clone();
+        let completed_download_proxy = self.proxy.clone();
+        let verify_download = self
+            .download_fixture
+            .as_ref()
+            .map(|fixture| (fixture.url.clone(), fixture.destination.clone()));
+        let verifying = self.verification.is_some();
         let navigation_proxy = self.proxy.clone();
         let protected = Rc::new(Cell::new(false));
         let navigation_protected = protected.clone();
@@ -244,11 +257,47 @@ impl App {
                 ));
                 NewWindowResponse::Deny
             })
-            .with_download_started_handler(move |_, _| {
-                let _ = download_proxy.send_event(Event::Notice(
-                    "Tải tệp chưa được hỗ trợ trong bản macOS thử nghiệm.".into(),
-                ));
-                false
+            .with_download_started_handler(move |url, path| {
+                if !allows_page_url(&url) || adblock::blocks_navigation(&url) {
+                    let _ = download_proxy.send_event(Event::Notice(
+                        "Pip đã chặn địa chỉ tải không an toàn.".into(),
+                    ));
+                    return false;
+                }
+                if verifying {
+                    // This bypass is available only to --verify-ui and only
+                    // for the exact loopback fixture URL/private destination.
+                    if let Some((expected_url, destination)) = &verify_download {
+                        if url == *expected_url && !destination.exists() {
+                            *path = destination.clone();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                match download::choose_destination(path) {
+                    Ok(Some(destination)) => {
+                        let name = destination
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        let _ =
+                            download_proxy.send_event(Event::Notice(format!("Đang tải: {name}")));
+                        *path = destination;
+                        true
+                    }
+                    Ok(None) => {
+                        let _ = download_proxy.send_event(Event::Notice("Đã hủy tải tệp.".into()));
+                        false
+                    }
+                    Err(error) => {
+                        let _ = download_proxy.send_event(Event::Notice(error));
+                        false
+                    }
+                }
+            })
+            .with_download_completed_handler(move |url, _, success| {
+                let _ = completed_download_proxy.send_event(Event::DownloadFinished(url, success));
             })
             // Remote pages deliberately get no native IPC handler.
             .build_as_child(self.window.as_ref().expect("window initialized"));
@@ -516,6 +565,22 @@ impl ApplicationHandler<Event> for App {
                 self.verify_if_ready(event_loop);
             }
             Event::Notice(message) => self.notice(&message),
+            Event::DownloadFinished(url, success) => {
+                if let Some(verification) = &mut self.verification {
+                    if let Some(fixture) = &self.download_fixture {
+                        if fixture.url == url {
+                            verification.download = Some(success && fixture.passed());
+                        }
+                    }
+                    self.finish_verification(event_loop);
+                } else {
+                    self.notice(if success {
+                        "Tải xuống hoàn tất. Tệp đã được lưu tại vị trí bạn chọn."
+                    } else {
+                        "Không tải được tệp. Hãy kiểm tra kết nối, dung lượng và thử lại."
+                    });
+                }
+            }
             Event::VerifyContent(result) => {
                 if let Some(verification) = &mut self.verification {
                     let parsed = serde_json::from_str::<serde_json::Value>(&result);
@@ -548,6 +613,20 @@ impl ApplicationHandler<Event> for App {
                             verification.adblock_requests = Some(false);
                             verification.failure =
                                 Some(format!("native DOM callback was not JSON: {error}"));
+                        }
+                    }
+                }
+                // Observe the previous fixture before initiating attachment
+                // navigation, so it cannot cancel the pending DOM callback.
+                if let (Some(fixture), Some(id)) =
+                    (&self.download_fixture, self.tabs.active_tab_id())
+                {
+                    if let Some(view) = self.views.get(&id) {
+                        if let Err(error) = view.load_url(&fixture.url) {
+                            if let Some(verification) = &mut self.verification {
+                                verification.download = Some(false);
+                                verification.failure = Some(error.to_string());
+                            }
                         }
                     }
                 }
@@ -675,6 +754,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         verification: verify_ui.then(Verification::default),
         fixture: if verify_ui {
             Some(adblock::Fixture::start()?)
+        } else {
+            None
+        },
+        download_fixture: if verify_ui {
+            Some(download::Fixture::start()?)
         } else {
             None
         },
