@@ -6,7 +6,7 @@ on:
       - 'browser-source/**'
       - '.github/workflows/verify-pip-platforms.yml'
   push:
-    branches: [main, 'codex/pip-multiplatform-*']
+    branches: [main]
     paths:
       - 'browser-source/**'
       - '.github/workflows/verify-pip-platforms.yml'
