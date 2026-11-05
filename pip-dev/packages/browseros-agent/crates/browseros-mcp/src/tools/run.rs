@@ -2469,7 +2469,6 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
     async fn object_shaped_tool_args_cannot_bypass_page_authorization() -> anyhow::Result<()> {
         let connection = Arc::new(RunFakeConnection::new());
