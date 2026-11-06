@@ -1,0 +1,20 @@
+diff --git a/components/vector_icons/BUILD.gn b/components/vector_icons/BUILD.gn
+index 74b4515d8820387320813371a396073d35a21f7e..e059ff229f7fefb603f7cb12ac5f10e3dd64befc 100644
+--- a/components/vector_icons/BUILD.gn
++++ b/components/vector_icons/BUILD.gn
+@@ -92,6 +92,7 @@ if (current_toolchain == default_toolchain) {
+       "certificate_old.icon",
+       "chat.icon",
+       "chat_old.icon",
++      "chat_orange.icon",
+       "chat_spark.icon",
+       "chat_spark_old.icon",
+       "check_circle_filled.icon",
+@@ -533,7 +534,6 @@ if (current_toolchain == default_toolchain) {
+ 
+     if (is_chrome_branded) {
+       sources += [
+-        "google_chrome/audio_spark.icon",
+         "google_chrome/fast_forward_circle_spark.icon",
+         "google_chrome/google_agentspace_monochrome_logo.icon",
+         "google_chrome/google_agentspace_monochrome_logo_25.icon",

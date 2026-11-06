@@ -1,0 +1,20 @@
+{
+  "name": "pip-dev-plugins",
+  "interface": {
+    "displayName": "Pip Dev"
+  },
+  "plugins": [
+    {
+      "name": "pip-dev-browser",
+      "source": {
+        "source": "local",
+        "path": "./pip-dev/plugins/pip-dev-browser"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

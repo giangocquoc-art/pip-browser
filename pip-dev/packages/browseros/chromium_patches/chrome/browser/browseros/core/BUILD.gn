@@ -1,0 +1,89 @@
+diff --git a/chrome/browser/browseros/core/BUILD.gn b/chrome/browser/browseros/core/BUILD.gn
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab0b5c28624b4347aac2ea370fabd28b62eaea3e
+--- /dev/null
++++ b/chrome/browser/browseros/core/BUILD.gn
+@@ -0,0 +1,83 @@
++# Copyright 2024 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# BrowserOS core constants and utilities.
++
++source_set("core") {
++  sources = [
++    "browseros_constants.h",
++    "browseros_switches.h",
++  ]
++
++  deps = [
++    "//base",
++  ]
++}
++
++source_set("product") {
++  sources = [
++    "browseros_product.cc",
++    "browseros_product.h",
++    "browseros_product_state.cc",
++    "browseros_product_state.h",
++  ]
++
++  deps = [
++    ":core",
++    "//base",
++    "//chrome/browser/browseros:buildflags",
++  ]
++}
++
++source_set("prefs") {
++  sources = [
++    "browseros_prefs.cc",
++    "browseros_prefs.h",
++  ]
++
++  deps = [
++    ":core",
++    ":product",
++    "//base",
++    "//chrome/browser/ui/actions:actions_headers",
++    "//chrome/common:constants",
++    "//components/bookmarks/common",
++    "//components/pref_registry",
++    "//components/prefs",
++    "//ui/actions:actions_headers",
++  ]
++}
++
++source_set("unit_tests") {
++  testonly = true
++  sources = [ "browseros_prefs_unittest.cc" ]
++
++  deps = [
++    ":prefs",
++    ":product",
++    "//base/test:test_support",
++    "//chrome/browser/browseros:buildflags",
++    "//components/bookmarks/browser",
++    "//components/bookmarks/common",
++    "//components/pref_registry",
++    "//components/sync_preferences:test_support",
++    "//testing/gtest",
++  ]
++}
++
++source_set("action_utils") {
++  sources = [
++    "browseros_action_utils.h",
++  ]
++
++  deps = [
++    ":core",
++    "//base",
++    "//chrome/browser/ui:ui_features",
++    "//chrome/browser/ui/actions:actions_headers",
++    "//chrome/browser/ui/views/side_panel",
++    "//chrome/common:chrome_features",
++    "//ui/actions",
++  ]
++}

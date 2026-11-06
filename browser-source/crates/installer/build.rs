@@ -1,0 +1,62 @@
+#[cfg(windows)]
+fn main() {
+    let mut res = winres::WindowsResource::new();
+    res.set("ProductName", "Pip Setup");
+    res.set("FileDescription", "Pip installer");
+    res.set_icon("../app/ui/icon.ico");
+    if let Some(sdk_bin) = find_windows_sdk_bin() {
+        res.set_toolkit_path(&sdk_bin);
+    }
+    if let Err(e) = res.compile() {
+        eprintln!("cargo:warning=Failed to compile Windows resource: {}", e);
+    }
+
+    // Ensure assets directory and fallback binary exist so cargo check / test succeed
+    let assets_dir = std::path::Path::new("assets");
+    if !assets_dir.exists() {
+        let _ = std::fs::create_dir_all(assets_dir);
+    }
+    let payload_path = assets_dir.join("evergreen-browser.exe");
+    if !payload_path.exists() {
+        let _ = std::fs::write(&payload_path, b"");
+    }
+    println!("cargo:rerun-if-changed=assets");
+    println!("cargo:rerun-if-changed=../app/ui/icon.ico");
+    if std::env::var("PROFILE").as_deref() == Ok("release") {
+        for name in [
+            "evergreen-browser.exe",
+            "Pip-source.zip",
+            "MicrosoftEdgeWebview2Setup.exe",
+        ] {
+            assert!(
+                std::fs::metadata(assets_dir.join(name))
+                    .map(|m| m.len() > 1000)
+                    .unwrap_or(false),
+                "Missing release payload {name}; run scripts/build-installer.ps1"
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn find_windows_sdk_bin() -> Option<String> {
+    let prog_files = std::env::var("ProgramFiles(x86)")
+        .or_else(|_| std::env::var("ProgramFiles"))
+        .unwrap_or_else(|_| r"C:\Program Files (x86)".to_string());
+    let base = std::path::PathBuf::from(prog_files).join(r"Windows Kits\10\bin");
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        let mut sdk_dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir() && e.path().join("x64").join("rc.exe").exists())
+            .map(|e| e.path().join("x64"))
+            .collect();
+        sdk_dirs.sort();
+        if let Some(highest) = sdk_dirs.pop() {
+            return Some(highest.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn main() {}

@@ -1,0 +1,35 @@
+pub mod agent_session_ends;
+pub mod agent_session_starts;
+pub mod feedback_invite;
+pub mod recording_batches;
+pub mod recording_payloads;
+pub mod recording_streams;
+pub mod run_error_budget;
+pub mod session_efficiency_stats;
+pub mod session_tabs;
+pub mod skill_run_marks;
+pub mod skill_runs;
+pub mod skills;
+pub mod tab_claims;
+pub mod tab_recordings;
+pub mod tasks;
+pub mod tool_dispatches;
+
+pub mod prelude {
+    pub use super::agent_session_ends::Entity as AgentSessionEnds;
+    pub use super::agent_session_starts::Entity as AgentSessionStarts;
+    pub use super::feedback_invite::Entity as FeedbackInvite;
+    pub use super::recording_batches::Entity as RecordingBatches;
+    pub use super::recording_payloads::Entity as RecordingPayloads;
+    pub use super::recording_streams::Entity as RecordingStreams;
+    pub use super::run_error_budget::Entity as RunErrorBudget;
+    pub use super::session_efficiency_stats::Entity as SessionEfficiencyStats;
+    pub use super::session_tabs::Entity as SessionTabs;
+    pub use super::skill_run_marks::Entity as SkillRunMarks;
+    pub use super::skill_runs::Entity as SkillRuns;
+    pub use super::skills::Entity as Skills;
+    pub use super::tab_claims::Entity as TabClaims;
+    pub use super::tab_recordings::Entity as TabRecordings;
+    pub use super::tasks::Entity as Tasks;
+    pub use super::tool_dispatches::Entity as ToolDispatches;
+}

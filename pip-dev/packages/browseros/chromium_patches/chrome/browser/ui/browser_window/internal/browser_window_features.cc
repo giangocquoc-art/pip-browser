@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/ui/browser_window/internal/browser_window_features.cc b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
+index f911366792f8af3d948ccdf081890a12009714e5..b16714e445524233a579f6c1563222001ca0e095 100644
+--- a/chrome/browser/ui/browser_window/internal/browser_window_features.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
+@@ -150,6 +150,7 @@
+ #include "chrome/browser/ui/views/side_panel/reading_list/reading_list_side_panel_coordinator.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
+ #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
++#include "chrome/browser/ui/views/side_panel/third_party_llm/third_party_llm_panel_coordinator.h"
+ #include "chrome/browser/ui/views/tabs/groups/recent_activity_bubble_dialog_view.h"
+ #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip_action_container.h"
+@@ -567,6 +568,12 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
+                 *browser, browser, profile);
+   }
+ 
++  if (base::FeatureList::IsEnabled(features::kThirdPartyLlmPanel)) {
++    third_party_llm_panel_coordinator_ =
++        std::make_unique<ThirdPartyLlmPanelCoordinator>(
++            profile, browser->GetTabStripModel());
++  }
++
+   translate_bubble_controller_ =
+       GetUserDataFactory().CreateInstance<TranslateBubbleController>(
+           *browser, browser, browser_actions_->root_action_item());

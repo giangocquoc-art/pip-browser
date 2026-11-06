@@ -1,0 +1,12 @@
+diff --git a/tools/metrics/histograms/metadata/sql/histograms.xml b/tools/metrics/histograms/metadata/sql/histograms.xml
+index 55f07550ca9011f1fd20339b9e7e8d1a7487c368..a26a1105f5e9e96cf907b1798db1e674a8381571 100644
+--- a/tools/metrics/histograms/metadata/sql/histograms.xml
++++ b/tools/metrics/histograms/metadata/sql/histograms.xml
+@@ -58,6 +58,7 @@ chromium-metrics-reviews@google.com.
+   <variant name="DownloadRecord" summary="DownloadRecord"/>
+   <variant name="FileIndexService" summary="FileIndexService"/>
+   <variant name="FirefoxImporter" summary="FirefoxImporter"/>
++  <variant name="ChromeImporter" summary="ChromeImporter"/>
+   <variant name="FirstPartySets" summary="FirstPartySets"/>
+   <variant name="FSPContextDatabase" summary="FSPContextDatabase"/>
+   <variant name="History" summary="History"/>

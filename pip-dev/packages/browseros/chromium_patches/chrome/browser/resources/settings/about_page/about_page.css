@@ -1,0 +1,16 @@
+diff --git a/chrome/browser/resources/settings/about_page/about_page.css b/chrome/browser/resources/settings/about_page/about_page.css
+index 2987e61a89e98daf3271f9b5af84b3aa7424ea2a..822cc4e181741c44cf0db3c8d3600294e0274620 100644
+--- a/chrome/browser/resources/settings/about_page/about_page.css
++++ b/chrome/browser/resources/settings/about_page/about_page.css
+@@ -15,10 +15,7 @@
+ 
+ .info-sections {
+   padding: var(--cr-section-vertical-padding) var(--cr-section-padding);
+-}
+-
+-.info-section {
+-  margin-bottom: 12px;
++  line-height: 1.8;
+ }
+ 
+ .product-title {

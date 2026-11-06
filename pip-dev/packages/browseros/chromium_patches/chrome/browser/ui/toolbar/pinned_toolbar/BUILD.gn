@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/toolbar/pinned_toolbar/BUILD.gn b/chrome/browser/ui/toolbar/pinned_toolbar/BUILD.gn
+index 9c30ac7d1569433cbf3190489cafdc690fae24e8..30637ea109075e74e6baff1ea5f63e6fbac45e11 100644
+--- a/chrome/browser/ui/toolbar/pinned_toolbar/BUILD.gn
++++ b/chrome/browser/ui/toolbar/pinned_toolbar/BUILD.gn
+@@ -40,6 +40,8 @@ source_set("impl") {
+     ]
+     deps = [
+       "//chrome/browser:primitives",
++      "//chrome/browser/browseros/core:action_utils",
++      "//chrome/browser/browseros/core:prefs",
+       "//chrome/browser/translate",
+       "//chrome/browser/ui:browser_actions",
+       "//chrome/browser/ui:browser_element_identifiers",
+@@ -62,6 +64,7 @@ if (!is_android) {
+     sources = [ "pinned_toolbar_actions_model_browsertest.cc" ]
+     deps = [
+       ":pinned_toolbar",
++      "//chrome/browser/browseros/core:prefs",
+       "//chrome/browser/ui:ui_features",
+       "//chrome/browser/ui/actions:actions_headers",
+       "//chrome/browser/ui/browser_window",

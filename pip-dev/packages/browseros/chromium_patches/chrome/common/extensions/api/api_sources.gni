@@ -1,0 +1,12 @@
+diff --git a/chrome/common/extensions/api/api_sources.gni b/chrome/common/extensions/api/api_sources.gni
+index 194386bf5e2a788140a888a1dc9f58e4625538d2..c44cf6d6dd8b15ff324fc0b2ebc4ac74eec481bb 100644
+--- a/chrome/common/extensions/api/api_sources.gni
++++ b/chrome/common/extensions/api/api_sources.gni
+@@ -80,6 +80,7 @@ if (enable_extensions) {
+     "autotest_private.webidl",
+     "bookmark_manager_private.json",
+     "braille_display_private.webidl",
++    "browser_os.idl",
+     "command_line_private.json",
+     "crash_report_private.webidl",
+     "dictation_private.webidl",

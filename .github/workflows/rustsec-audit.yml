@@ -1,0 +1,41 @@
+name: Rust dependency audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'browser-source/Cargo.lock'
+      - 'browser-source/**/Cargo.toml'
+      - '.github/workflows/rustsec-audit.yml'
+      - '.github/workflows/release-pip.yml'
+  pull_request:
+    paths:
+      - 'browser-source/Cargo.lock'
+      - 'browser-source/**/Cargo.toml'
+      - '.github/workflows/rustsec-audit.yml'
+      - '.github/workflows/release-pip.yml'
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: RustSec advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit locked Rust dependencies
+        run: cargo audit --file browser-source/Cargo.lock

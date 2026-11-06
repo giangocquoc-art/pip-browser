@@ -1,0 +1,31 @@
+diff --git a/chrome/browser/ui/views/side_panel/BUILD.gn b/chrome/browser/ui/views/side_panel/BUILD.gn
+index f51ca03ca233cd31098de9cd2bf80cd9e129b28e..190eaa45a91253db924d82a3a6bbc5596b46f552 100644
+--- a/chrome/browser/ui/views/side_panel/BUILD.gn
++++ b/chrome/browser/ui/views/side_panel/BUILD.gn
+@@ -11,6 +11,8 @@ source_set("side_panel") {
+   sources = [
+     "bookmarks/bookmarks_side_panel_coordinator.cc",
+     "bookmarks/bookmarks_side_panel_coordinator.h",
++    "browseros_simple_page_extractor.cc",
++    "browseros_simple_page_extractor.h",
+     "comments/comments_side_panel_coordinator.cc",
+     "comments/comments_side_panel_coordinator.h",
+     "extensions/extension_side_panel_action_item_util.cc",
+@@ -53,11 +55,17 @@ source_set("side_panel") {
+     "tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h",
+     "tabs_from_other_devices/tabs_from_other_devices_side_panel_metrics.cc",
+     "tabs_from_other_devices/tabs_from_other_devices_side_panel_metrics.h",
++    "third_party_llm/third_party_llm_panel_coordinator.cc",
++    "third_party_llm/third_party_llm_panel_coordinator.h",
++    "third_party_llm/third_party_llm_view.cc",
++    "third_party_llm/third_party_llm_view.h",
+   ]
+   public_deps = [
+     "//base",
+     "//chrome/browser:browser_public_dependencies",
+     "//chrome/browser:primitives",
++    "//chrome/browser/browseros/core:prefs",
++    "//chrome/browser/browseros/metrics",
+     "//chrome/browser/history_clusters",
+     "//chrome/browser/optimization_guide",
+     "//chrome/browser/profiles:profile",

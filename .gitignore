@@ -1,0 +1,26 @@
+.vercel
+.DS_Store
+Thumbs.db
+Pip-Setup-*.exe
+
+PipSetup.exe
+browser-source/target/
+browser-source/ui-review/
+browser-source/tools/__pycache__/
+browser-source/crates/installer/assets/
+browser-source/dist/
+browser-source/dist-pip/
+browser-source/store/out/
+.data/
+.cargo-home/
+__pycache__/
+
+# Local website QA artifacts; keep these out of public releases.
+.npm-cache/
+.tmp-*/
+.tmp-*.cjs
+.tmp-*.html
+pip-audit-*.png
+pip-guide-mobile.png
+pip-home-mobile-*.png
+pip-live-*.png

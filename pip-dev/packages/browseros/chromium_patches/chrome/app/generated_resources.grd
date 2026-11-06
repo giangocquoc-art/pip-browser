@@ -1,0 +1,24 @@
+diff --git a/chrome/app/generated_resources.grd b/chrome/app/generated_resources.grd
+index 29f655d33e0447e556f75e6e9fc546e6e586f66f..cf8659daa5b2f00db1a0d06964602ffe08fab6d0 100644
+--- a/chrome/app/generated_resources.grd
++++ b/chrome/app/generated_resources.grd
+@@ -9371,6 +9371,9 @@ Keep your key file in a safe place. You will need it to create new versions of y
+       <message name="IDS_READ_LATER_COLLAPSE_BUTTON_ARIA_LABEL" desc="Aria label for the Read later list collapse button.">
+         Collapse <ph name="HEADER">$1<ex>Unread</ex></ph>
+       </message>
++      <message name="IDS_THIRD_PARTY_LLM_TITLE" desc="Title for 3rd party LLM side panel">
++        Chat 
++      </message>
+       <message name="IDS_READ_LATER_MENU_UNREAD_HEADER" desc="Header for section of unread Read later items.">
+         Unread
+       </message>
+@@ -11767,6 +11770,9 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google
+         <message name="IDS_IMPORT_FROM_FIREFOX" desc="browser combo box: Mozilla Firefox">
+           Mozilla Firefox
+         </message>
++        <message name="IDS_IMPORT_FROM_CHROME" desc="browser combo box: Google Chrome">
++          Google Chrome
++        </message>
+         <!-- TODO(thestig) Should this be Linux only? Add #ifdefs to external_process_importer_client.cc -->
+         <message name="IDS_IMPORT_FROM_ICEWEASEL" desc="browser combo box: Iceweasel">
+           Iceweasel

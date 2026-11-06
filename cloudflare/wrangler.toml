@@ -1,0 +1,8 @@
+name = "pip-latest-download"
+main = "download-worker.mjs"
+compatibility_date = "2026-10-16"
+workers_dev = false
+
+[[routes]]
+pattern = "download.pip.psharehub.com"
+custom_domain = true

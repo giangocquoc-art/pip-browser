@@ -1,0 +1,1205 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::{ErrorKind, Write},
+    path::{Path, PathBuf},
+};
+
+use sha2::{Digest, Sha256};
+use tempfile::Builder;
+
+use crate::{
+    catalog::{AgentId, PerOsPaths, resolve_harness_definition},
+    error::Error,
+};
+
+use super::{
+    manifest::{
+        MARKER_FILE, OwnershipMarker, SkillManifest, SkillManifestEntry, marker_content,
+        read_manifest, read_marker, write_manifest,
+    },
+    types::{SkillEnvironment, SkillReconcileOutcome, SkillSpec, SkillWarning, TargetPlatform},
+};
+
+/// Reconciles product-supplied skills into provisioned and connected-harness roots.
+#[derive(Debug, Clone)]
+pub struct SkillReconciler {
+    workspace_dir: PathBuf,
+    provisioned_roots: Vec<PathBuf>,
+    owned_name: Option<String>,
+}
+
+impl SkillReconciler {
+    #[must_use]
+    pub fn new(workspace_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            workspace_dir: workspace_dir.into(),
+            provisioned_roots: Vec::new(),
+            owned_name: None,
+        }
+    }
+
+    /// Configures skill roots to provision before any consuming application is installed.
+    /// These share the normal ownership, repair and cleanup plan with connected consumers;
+    /// an empty consumer list therefore cannot delete a proactively provisioned skill.
+    #[must_use]
+    pub fn with_provisioned_roots(mut self, roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.provisioned_roots = roots.into_iter().collect();
+        self
+    }
+
+    /// Claims one product-owned skill name, including older installs without a
+    /// marker. Its packaged content is authoritative; all other skill names still
+    /// require ownership evidence before replacement or cleanup.
+    #[must_use]
+    pub fn with_owned_name(mut self, name: impl Into<String>) -> Self {
+        self.owned_name = Some(name.into());
+        self
+    }
+
+    /// Converges every desired physical target and removes stale controlled targets.
+    pub fn reconcile(
+        &self,
+        spec: &SkillSpec,
+        consumers: &BTreeSet<AgentId>,
+        environment: &SkillEnvironment,
+    ) -> Result<SkillReconcileOutcome, Error> {
+        self.reconcile_with(
+            spec,
+            Some(consumers),
+            environment,
+            replace_managed_directory,
+        )
+    }
+
+    /// Repairs baseline targets when connection discovery is unavailable. Unknown
+    /// consumers are different from an empty set: preserve their records and
+    /// directories until a successful discovery can authorize cleanup again.
+    pub fn repair_provisioned(
+        &self,
+        spec: &SkillSpec,
+        environment: &SkillEnvironment,
+    ) -> Result<SkillReconcileOutcome, Error> {
+        self.reconcile_with(spec, None, environment, replace_managed_directory)
+    }
+
+    /// One-time, idempotent migration for a renamed managed skill: removes the
+    /// directories a previous name installed across every catalog harness and purges
+    /// their manifest records, so a subsequent [`reconcile`](Self::reconcile) with the
+    /// new spec replants the skill under the current name. Only directories whose
+    /// ownership marker confirms this product controls `legacy_name` are removed;
+    /// user-authored directories sharing the legacy name are left untouched, and
+    /// anything that cannot be inspected is left in place. Returns the agents whose
+    /// legacy directory was removed (for logging).
+    pub fn remove_legacy_directories(
+        &self,
+        legacy_name: &str,
+        environment: &SkillEnvironment,
+    ) -> Result<BTreeSet<AgentId>, Error> {
+        let mut removed = BTreeSet::new();
+        for agent in AgentId::ALL {
+            if resolve_harness_definition(agent).skill.is_none() {
+                continue;
+            }
+            let Ok(target) = resolve_agent_skill_target(agent, legacy_name, environment) else {
+                continue;
+            };
+            let metadata = match fs::symlink_metadata(&target) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                // Best-effort: never delete a directory we could not inspect.
+                Err(_) => continue,
+            };
+            if !metadata.is_dir() {
+                continue;
+            }
+            // Ownership proof: only remove directories this product planted under the
+            // legacy name. An unreadable or foreign marker leaves the directory alone.
+            let controlled = read_marker(&target)
+                .ok()
+                .flatten()
+                .is_some_and(|marker| marker.controls(legacy_name));
+            if !controlled {
+                continue;
+            }
+            if remove_path(&target).is_ok() {
+                removed.insert(agent);
+            }
+        }
+
+        let mut manifest = read_manifest(&self.workspace_dir)?;
+        let before = manifest.targets.len();
+        // Only drop a legacy record once its directory is actually gone. A directory
+        // we could not remove (or could not inspect) still exists, so keeping its
+        // record leaves disk and manifest consistent and lets the next reconcile retry.
+        manifest
+            .targets
+            .retain(|entry| entry.skill_name != legacy_name || entry.target_path.exists());
+        if manifest.targets.len() != before {
+            write_manifest(&self.workspace_dir, &manifest)?;
+        }
+        Ok(removed)
+    }
+
+    fn reconcile_with(
+        &self,
+        spec: &SkillSpec,
+        consumers: Option<&BTreeSet<AgentId>>,
+        environment: &SkillEnvironment,
+        mut replace: impl FnMut(&Path, &SkillSpec, &str) -> std::io::Result<()>,
+    ) -> Result<SkillReconcileOutcome, Error> {
+        self.reconcile_with_identity(
+            spec,
+            consumers,
+            environment,
+            physical_skill_target,
+            &mut replace,
+        )
+    }
+
+    fn reconcile_with_identity(
+        &self,
+        spec: &SkillSpec,
+        consumers: Option<&BTreeSet<AgentId>>,
+        environment: &SkillEnvironment,
+        mut identity: impl FnMut(&Path) -> Result<PathBuf, Error>,
+        mut replace: impl FnMut(&Path, &SkillSpec, &str) -> std::io::Result<()>,
+    ) -> Result<SkillReconcileOutcome, Error> {
+        let owns_name = self.owned_name.as_deref() == Some(spec.name.as_str());
+        let original = read_manifest(&self.workspace_dir)?;
+        let plan = plan_reconciliation(
+            &original,
+            spec,
+            consumers,
+            environment,
+            &self.provisioned_roots,
+            &mut identity,
+        )?;
+        let mut records = plan.records;
+        let desired_hash = content_hash(spec.content.as_bytes());
+        let mut outcome = SkillReconcileOutcome::default();
+        let mut preserve_original_records = BTreeSet::new();
+
+        for (target, target_consumers) in &plan.desired {
+            let record_controls = records
+                .get(target)
+                .is_some_and(|record| record.skill_name == spec.name)
+                && plan.manifest_controlled_targets.contains(target);
+            let metadata = match fs::symlink_metadata(target) {
+                Ok(metadata) => Some(metadata),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => {
+                    preserve_original_records.insert(target.clone());
+                    outcome.warnings.push(SkillWarning {
+                        target: target.clone(),
+                        message: format!("Could not inspect managed skill target: {error}"),
+                    });
+                    continue;
+                }
+            };
+            let marker = if metadata.as_ref().is_some_and(|value| value.is_dir()) {
+                match read_marker(target) {
+                    Ok(marker) => marker,
+                    Err(_) if owns_name => None,
+                    Err(error) => {
+                        preserve_original_records.insert(target.clone());
+                        outcome.warnings.push(SkillWarning {
+                            target: target.clone(),
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let marker_controls = marker
+                .as_ref()
+                .is_some_and(|marker| marker.controls(&spec.name));
+            if metadata.is_some() && !owns_name && !record_controls && !marker_controls {
+                preserve_original_records.insert(target.clone());
+                outcome.warnings.push(SkillWarning {
+                    target: target.clone(),
+                    message: format!(
+                        "Existing {} directory is not managed by BrowserOS neo; left unchanged",
+                        spec.name
+                    ),
+                });
+                continue;
+            }
+
+            let desired_consumers = target_consumers.iter().copied().collect::<Vec<_>>();
+            let entry = SkillManifestEntry {
+                target_path: target.clone(),
+                skill_name: spec.name.clone(),
+                content_hash: desired_hash.clone(),
+                consumers: desired_consumers,
+            };
+            let actual_hash = if metadata.as_ref().is_some_and(|value| value.is_dir()) {
+                match read_content_hash(&target.join("SKILL.md")) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        preserve_original_records.insert(target.clone());
+                        outcome.warnings.push(SkillWarning {
+                            target: target.clone(),
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let marker_matches = marker.as_ref().is_some_and(|marker| {
+                marker.controls(&spec.name) && marker.content_hash == desired_hash
+            });
+            let needs_replace = metadata.is_none()
+                || actual_hash.as_deref() != Some(desired_hash.as_str())
+                || !marker_matches;
+
+            if needs_replace {
+                // Ownership covers the instructions, not arbitrary sibling assets.
+                // File-level replacement also preserves matching SKILL.md timestamps
+                // when only a missing/outdated ownership marker needs repair.
+                let result = if owns_name {
+                    replace_owned_instructions(target, spec, &desired_hash, actual_hash.as_deref())
+                } else {
+                    replace(target, spec, &desired_hash)
+                };
+                match result {
+                    Ok(()) => {
+                        if metadata.is_some() {
+                            outcome.updated += 1;
+                        } else {
+                            outcome.installed += 1;
+                        }
+                        records.insert(target.clone(), entry);
+                    }
+                    Err(error) => {
+                        preserve_original_records.insert(target.clone());
+                        outcome.warnings.push(SkillWarning {
+                            target: target.clone(),
+                            message: format!("Could not replace managed skill: {error}"),
+                        });
+                    }
+                }
+            } else {
+                outcome.unchanged += 1;
+                records.insert(target.clone(), entry);
+            }
+        }
+
+        for target in plan.cleanup_targets {
+            if plan.desired.contains_key(&target) {
+                continue;
+            }
+            let record_matches_skill = records
+                .get(&target)
+                .is_some_and(|record| record.skill_name == spec.name);
+            if records.contains_key(&target) && !record_matches_skill {
+                preserve_original_records.insert(target);
+                continue;
+            }
+            let record_controls =
+                record_matches_skill && plan.manifest_controlled_targets.contains(&target);
+            let metadata = match fs::symlink_metadata(&target) {
+                Ok(metadata) => Some(metadata),
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => {
+                    preserve_original_records.insert(target.clone());
+                    outcome.warnings.push(SkillWarning {
+                        target: target.clone(),
+                        message: format!("Could not inspect stale managed skill: {error}"),
+                    });
+                    continue;
+                }
+            };
+            if metadata.is_none() && record_matches_skill {
+                records.remove(&target);
+                continue;
+            }
+            let marker_controls = if record_controls || owns_name {
+                false
+            } else if metadata.as_ref().is_some_and(|value| value.is_dir()) {
+                match read_marker(&target) {
+                    Ok(marker) => marker
+                        .as_ref()
+                        .is_some_and(|marker| marker.controls(&spec.name)),
+                    Err(error) => {
+                        preserve_original_records.insert(target.clone());
+                        outcome.warnings.push(SkillWarning {
+                            target: target.clone(),
+                            message: error.to_string(),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                false
+            };
+            if !owns_name && !record_controls && !marker_controls {
+                continue;
+            }
+            match metadata {
+                Some(_) => match if owns_name {
+                    remove_owned_instructions(&target)
+                } else {
+                    remove_path(&target).map(|()| true)
+                } {
+                    Ok(removed) => {
+                        outcome.removed += usize::from(removed);
+                        records.remove(&target);
+                    }
+                    Err(error) => {
+                        preserve_original_records.insert(target.clone());
+                        outcome.warnings.push(SkillWarning {
+                            target: target.clone(),
+                            message: format!("Could not remove managed skill: {error}"),
+                        });
+                    }
+                },
+                None => {
+                    records.remove(&target);
+                }
+            }
+        }
+
+        let mut targets = Vec::new();
+        for (target, record) in records {
+            if preserve_original_records.contains(&target)
+                && let Some(original_records) = plan.original_records.get(&target)
+            {
+                targets.extend(original_records.iter().cloned());
+                continue;
+            }
+            targets.push(record);
+        }
+        targets.sort_by(|left, right| {
+            left.target_path
+                .cmp(&right.target_path)
+                .then_with(|| left.skill_name.cmp(&right.skill_name))
+        });
+        let next = SkillManifest {
+            version: 1,
+            targets,
+        };
+        if next != original {
+            write_manifest(&self.workspace_dir, &next)?;
+        }
+        Ok(outcome)
+    }
+}
+
+struct ReconciliationPlan {
+    desired: BTreeMap<PathBuf, BTreeSet<AgentId>>,
+    records: BTreeMap<PathBuf, SkillManifestEntry>,
+    original_records: BTreeMap<PathBuf, Vec<SkillManifestEntry>>,
+    /// Migrated aliases need a marker before they can control an existing destination.
+    manifest_controlled_targets: BTreeSet<PathBuf>,
+    cleanup_targets: BTreeSet<PathBuf>,
+}
+
+fn plan_reconciliation(
+    original: &SkillManifest,
+    spec: &SkillSpec,
+    consumers: Option<&BTreeSet<AgentId>>,
+    environment: &SkillEnvironment,
+    provisioned_roots: &[PathBuf],
+    identity: &mut impl FnMut(&Path) -> Result<PathBuf, Error>,
+) -> Result<ReconciliationPlan, Error> {
+    let mut desired = consumers
+        .map(|consumers| desired_targets(consumers, &spec.name, environment, identity))
+        .transpose()?
+        .unwrap_or_default();
+    for root in provisioned_roots {
+        // Provisioning records deliberately have no fictional MCP consumers. The
+        // desired physical destination, not connection presence, keeps them alive.
+        desired
+            .entry(identity(&root.join(&spec.name))?)
+            .or_default();
+    }
+    let mut records = BTreeMap::<PathBuf, SkillManifestEntry>::new();
+    let mut original_records = BTreeMap::<PathBuf, Vec<SkillManifestEntry>>::new();
+    let mut manifest_controlled_targets = BTreeSet::new();
+    for original_entry in &original.targets {
+        let target = identity(&original_entry.target_path)?;
+        if original_entry.target_path == target {
+            manifest_controlled_targets.insert(target.clone());
+        }
+        original_records
+            .entry(target.clone())
+            .or_default()
+            .push(original_entry.clone());
+
+        let mut entry = original_entry.clone();
+        entry.target_path = target.clone();
+        entry.consumers.sort();
+        entry.consumers.dedup();
+        if let Some(existing) = records.get_mut(&target) {
+            if existing.skill_name != entry.skill_name
+                || existing.content_hash != entry.content_hash
+            {
+                return Err(Error::Manifest {
+                    message: format!(
+                        "Skill manifest contains conflicting records for physical target {}.",
+                        target.display()
+                    ),
+                });
+            }
+            let consumers = existing
+                .consumers
+                .iter()
+                .chain(&entry.consumers)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            existing.consumers = consumers.into_iter().collect();
+        } else {
+            records.insert(target, entry);
+        }
+    }
+
+    for target in desired.keys() {
+        if let Some(record) = records.get(target)
+            && record.skill_name != spec.name
+        {
+            return Err(Error::Manifest {
+                message: format!(
+                    "Skill manifest target {} belongs to skill {}; cannot reconcile {} there.",
+                    target.display(),
+                    record.skill_name,
+                    spec.name
+                ),
+            });
+        }
+    }
+
+    let mut cleanup_targets = BTreeSet::new();
+    if consumers.is_some() {
+        cleanup_targets.extend(records.keys().cloned());
+        for agent in AgentId::ALL {
+            if resolve_harness_definition(agent).skill.is_some() {
+                let target = resolve_agent_skill_target(agent, &spec.name, environment)?;
+                cleanup_targets.insert(identity(&target)?);
+            }
+        }
+    } else {
+        // Repair may update content at a common destination, but must not erase
+        // its last known consumers merely because MCP state could not be read.
+        for (target, consumers) in &mut desired {
+            if let Some(record) = records.get(target) {
+                consumers.extend(&record.consumers);
+            }
+        }
+    }
+    Ok(ReconciliationPlan {
+        desired,
+        records,
+        original_records,
+        manifest_controlled_targets,
+        cleanup_targets,
+    })
+}
+
+/// Resolves one harness's preferred global directory for a named skill.
+pub fn resolve_agent_skill_target(
+    agent: AgentId,
+    skill_name: &str,
+    environment: &SkillEnvironment,
+) -> Result<PathBuf, Error> {
+    SkillSpec::new(skill_name, "")?;
+    let surface =
+        resolve_harness_definition(agent)
+            .skill
+            .ok_or_else(|| Error::UnresolvedSkillTarget {
+                agent,
+                reason: "catalog has no global skill surface".to_string(),
+            })?;
+    selected_paths(&surface.global_roots, environment.platform)
+        .iter()
+        .find_map(|candidate| expand_root(candidate, environment))
+        .map(|root| root.join(skill_name))
+        .ok_or_else(|| Error::UnresolvedSkillTarget {
+            agent,
+            reason: "no global skill root resolves from the available environment".to_string(),
+        })
+}
+
+fn desired_targets(
+    consumers: &BTreeSet<AgentId>,
+    skill_name: &str,
+    environment: &SkillEnvironment,
+    identity: &mut impl FnMut(&Path) -> Result<PathBuf, Error>,
+) -> Result<BTreeMap<PathBuf, BTreeSet<AgentId>>, Error> {
+    let mut targets = BTreeMap::<PathBuf, BTreeSet<AgentId>>::new();
+    for consumer in consumers {
+        let target = resolve_agent_skill_target(*consumer, skill_name, environment)?;
+        let target = identity(&target)?;
+        targets.entry(target).or_default().insert(*consumer);
+    }
+    Ok(targets)
+}
+
+/// Follows aliases in the harness skill root without following the managed skill entry itself.
+fn physical_skill_target(target: &Path) -> Result<PathBuf, Error> {
+    let skill_name = target.file_name().ok_or_else(|| {
+        Error::io(
+            "resolve filesystem identity for",
+            target,
+            std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "skill target has no final component",
+            ),
+        )
+    })?;
+    let root = target.parent().ok_or_else(|| {
+        Error::io(
+            "resolve filesystem identity for",
+            target,
+            std::io::Error::new(ErrorKind::InvalidInput, "skill target has no parent"),
+        )
+    })?;
+    let mut ancestor = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| Error::io("resolve filesystem identity for", target, error))?
+            .join(root)
+    };
+    let mut missing = Vec::new();
+
+    loop {
+        match fs::symlink_metadata(&ancestor) {
+            Ok(_) => {
+                let mut physical_root = fs::canonicalize(&ancestor)
+                    .map_err(|error| Error::io("resolve filesystem identity for", target, error))?;
+                for component in missing.iter().rev() {
+                    physical_root.push(component);
+                }
+                physical_root.push(skill_name);
+                return Ok(physical_root);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let component = ancestor.file_name().map(ToOwned::to_owned).ok_or_else(|| {
+                    Error::io(
+                        "resolve filesystem identity for",
+                        target,
+                        std::io::Error::new(
+                            ErrorKind::NotFound,
+                            "no existing ancestor for skill root",
+                        ),
+                    )
+                })?;
+                missing.push(component);
+                if !ancestor.pop() {
+                    return Err(Error::io("resolve filesystem identity for", target, error));
+                }
+            }
+            Err(error) => {
+                return Err(Error::io("resolve filesystem identity for", target, error));
+            }
+        }
+    }
+}
+
+fn selected_paths(paths: &PerOsPaths, platform: TargetPlatform) -> &'static [&'static str] {
+    match platform {
+        TargetPlatform::Darwin => paths.darwin,
+        TargetPlatform::Linux => paths.linux,
+        TargetPlatform::Windows => paths.windows,
+    }
+}
+
+fn expand_root(candidate: &str, environment: &SkillEnvironment) -> Option<PathBuf> {
+    let variable = candidate.strip_prefix('$')?;
+    let name_end = variable.find(['/', '\\']).unwrap_or(variable.len());
+    let name = &variable[..name_end];
+    let mut root = environment.variable(name)?;
+    for component in variable[name_end..]
+        .trim_start_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+    {
+        root.push(component);
+    }
+    Some(root)
+}
+
+/// Named product instructions may predate our ledger. Update only their owned
+/// files, never swap/delete the directory containing another installer's assets.
+fn replace_owned_instructions(
+    target: &Path,
+    spec: &SkillSpec,
+    desired_hash: &str,
+    actual_hash: Option<&str>,
+) -> std::io::Result<()> {
+    ensure_owned_directory(target)?;
+    if actual_hash != Some(desired_hash) {
+        write_owned_file(&target.join("SKILL.md"), &spec.content)?;
+    }
+    let marker = marker_content(&OwnershipMarker::new(&spec.name, desired_hash))
+        .map_err(std::io::Error::other)?;
+    write_owned_file(&target.join(MARKER_FILE), &marker)
+}
+
+fn ensure_owned_directory(target: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if !metadata.is_dir() => Err(std::io::Error::other(
+            "skill directory is not a regular directory; refusing to follow or replace it",
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => fs::create_dir_all(target),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_owned_file(path: &Path, content: &str) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing skill parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(content.as_bytes())?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+fn remove_owned_instructions(target: &Path) -> std::io::Result<bool> {
+    ensure_owned_directory(target)?;
+    let mut removed = false;
+    for name in ["SKILL.md", MARKER_FILE] {
+        match fs::remove_file(target.join(name)) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    match fs::remove_dir(target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => {}
+        Err(error) => return Err(error),
+    }
+    Ok(removed)
+}
+
+fn replace_managed_directory(
+    target: &Path,
+    spec: &SkillSpec,
+    desired_hash: &str,
+) -> std::io::Result<()> {
+    replace_managed_directory_with(target, spec, desired_hash, |from, to| fs::rename(from, to))
+}
+
+fn replace_managed_directory_with(
+    target: &Path,
+    spec: &SkillSpec,
+    desired_hash: &str,
+    rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidInput, "target has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let temporary = Builder::new()
+        .prefix(".browserclaw-skill-")
+        .tempdir_in(parent)?;
+    fs::write(temporary.path().join("SKILL.md"), &spec.content)?;
+    let marker = OwnershipMarker::new(&spec.name, desired_hash);
+    let marker = marker_content(&marker).map_err(std::io::Error::other)?;
+    fs::write(temporary.path().join(MARKER_FILE), marker)?;
+    let prepared = temporary.keep();
+    let backup = sibling_backup_path(target);
+    let result = swap_directories_with(&prepared, target, &backup, rename, remove_path);
+    if result.is_err() && fs::symlink_metadata(&prepared).is_ok() {
+        let _ = remove_path(&prepared);
+    }
+    result
+}
+
+fn swap_directories_with(
+    prepared: &Path,
+    target: &Path,
+    backup: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let target_exists = fs::symlink_metadata(target).is_ok();
+    if target_exists {
+        rename(target, backup)?;
+    }
+    if let Err(replace_error) = rename(prepared, target) {
+        if !target_exists {
+            return Err(replace_error);
+        }
+        return match rename(backup, target) {
+            Ok(()) => Err(replace_error),
+            Err(restore_error) => Err(std::io::Error::other(format!(
+                "replace failed: {replace_error}; restore failed: {restore_error}"
+            ))),
+        };
+    }
+    if target_exists && let Err(cleanup_error) = remove(backup) {
+        // The prior target stays authoritative until its backup is gone so
+        // a reported failure cannot leave the filesystem ahead of the ledger.
+        if let Err(move_new_error) = rename(target, prepared) {
+            return Err(std::io::Error::other(format!(
+                "backup cleanup failed: {cleanup_error}; could not prepare rollback: {move_new_error}"
+            )));
+        }
+        if let Err(restore_error) = rename(backup, target) {
+            let reapply = rename(prepared, target);
+            return Err(std::io::Error::other(match reapply {
+                Ok(()) => format!(
+                    "backup cleanup failed: {cleanup_error}; restore failed: {restore_error}; replacement was reapplied"
+                ),
+                Err(reapply_error) => format!(
+                    "backup cleanup failed: {cleanup_error}; restore failed: {restore_error}; reapplying replacement failed: {reapply_error}"
+                ),
+            }));
+        }
+        return Err(cleanup_error);
+    }
+    Ok(())
+}
+
+fn sibling_backup_path(target: &Path) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("skill");
+    target.with_file_name(format!(
+        ".{file_name}.browserclaw-backup-{}-{}",
+        std::process::id(),
+        monotonic_nonce()
+    ))
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn read_content_hash(path: &Path) -> Result<Option<String>, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => return Ok(None),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::io("inspect", path, error)),
+    }
+    match fs::read(path) {
+        Ok(content) => Ok(Some(content_hash(&content))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::io("read", path, error)),
+    }
+}
+
+fn content_hash(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
+}
+
+fn monotonic_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeSet, fs, path::Path};
+
+    use tempfile::tempdir;
+
+    use crate::{AgentId, SkillEnvironment, SkillSpec, TargetPlatform};
+
+    use super::{
+        SkillReconciler, physical_skill_target, replace_managed_directory,
+        replace_managed_directory_with, resolve_agent_skill_target, swap_directories_with,
+    };
+
+    #[test]
+    fn identity_planning_groups_aliases_without_platform_symlinks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        let environment = SkillEnvironment::new(&home, TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(&state);
+        let claude = resolve_agent_skill_target(AgentId::ClaudeCode, "browserclaw", &environment)?;
+        let agents = resolve_agent_skill_target(AgentId::Codex, "browserclaw", &environment)?;
+        let physical = home.join(".skills/browserclaw");
+        let identity = |target: &Path| {
+            Ok(if target == claude || target == agents {
+                physical.clone()
+            } else {
+                target.to_path_buf()
+            })
+        };
+        let spec = SkillSpec::new("browserclaw", "managed\n")?;
+
+        let installed = reconciler.reconcile_with_identity(
+            &spec,
+            Some(&BTreeSet::from([AgentId::ClaudeCode])),
+            &environment,
+            identity,
+            replace_managed_directory,
+        )?;
+        assert_eq!(installed.installed, 1);
+        assert_eq!(installed.removed, 0);
+        let modified = fs::metadata(physical.join("SKILL.md"))?.modified()?;
+
+        let shared = reconciler.reconcile_with_identity(
+            &spec,
+            Some(&BTreeSet::from([AgentId::ClaudeCode, AgentId::Codex])),
+            &environment,
+            |target| {
+                Ok(if target == claude || target == agents {
+                    physical.clone()
+                } else {
+                    target.to_path_buf()
+                })
+            },
+            replace_managed_directory,
+        )?;
+        assert_eq!(shared.unchanged, 1);
+        assert_eq!(
+            fs::metadata(physical.join("SKILL.md"))?.modified()?,
+            modified
+        );
+
+        let removed = reconciler.reconcile_with_identity(
+            &spec,
+            Some(&BTreeSet::new()),
+            &environment,
+            |target| {
+                Ok(if target == claude || target == agents {
+                    physical.clone()
+                } else {
+                    target.to_path_buf()
+                })
+            },
+            replace_managed_directory,
+        )?;
+        assert_eq!(removed.removed, 1);
+        assert!(!physical.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn identity_failure_precedes_all_directory_mutation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempdir()?;
+        let environment = SkillEnvironment::new(root.path().join("home"), TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(root.path().join("state"));
+        let spec = SkillSpec::new("browserclaw", "managed\n")?;
+        let mut identity_calls = 0;
+        let mut replace_calls = 0;
+
+        let error = reconciler
+            .reconcile_with_identity(
+                &spec,
+                Some(&BTreeSet::from([AgentId::Cursor])),
+                &environment,
+                |target| {
+                    identity_calls += 1;
+                    if identity_calls == 3 {
+                        return Err(crate::Error::io(
+                            "resolve filesystem identity for",
+                            target,
+                            std::io::Error::other("injected identity failure"),
+                        ));
+                    }
+                    Ok(target.to_path_buf())
+                },
+                |_, _, _| {
+                    replace_calls += 1;
+                    Ok(())
+                },
+            )
+            .err()
+            .ok_or("identity failure unexpectedly reconciled")?;
+
+        assert!(error.to_string().contains("injected identity failure"));
+        assert_eq!(replace_calls, 0);
+        assert!(!root.path().join("state/skills.json").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_skill_roots_are_planned_without_creating_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let missing_root = root.path().join("missing/nested/skills");
+        let target = missing_root.join("browserclaw");
+
+        let physical = physical_skill_target(&target)?;
+
+        assert_eq!(
+            physical,
+            fs::canonicalize(root.path())?.join("missing/nested/skills/browserclaw")
+        );
+        assert!(!missing_root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn relative_skill_roots_resolve_from_the_process_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target = Path::new("relative-home/.agents/skills/browserclaw");
+
+        let physical = physical_skill_target(target)?;
+
+        assert_eq!(
+            physical,
+            fs::canonicalize(std::env::current_dir()?)?
+                .join("relative-home/.agents/skills/browserclaw")
+        );
+        assert!(!Path::new("relative-home").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_directory_swap_restores_the_previous_target() -> std::io::Result<()> {
+        let root = tempdir()?;
+        let target = root.path().join("browserclaw");
+        let prepared = root.path().join("prepared");
+        let backup = root.path().join("backup");
+        fs::create_dir_all(&target)?;
+        fs::create_dir_all(&prepared)?;
+        fs::write(target.join("SKILL.md"), "old")?;
+        fs::write(prepared.join("SKILL.md"), "new")?;
+        let mut calls = 0;
+        let error = swap_directories_with(
+            &prepared,
+            &target,
+            &backup,
+            |from, to| {
+                calls += 1;
+                if calls == 2 {
+                    Err(std::io::Error::other("injected replace failure"))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+            super::remove_path,
+        )
+        .err()
+        .ok_or_else(|| std::io::Error::other("swap unexpectedly succeeded"))?;
+        assert!(error.to_string().contains("injected replace failure"));
+        assert_eq!(fs::read_to_string(target.join("SKILL.md"))?, "old");
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_backup_cleanup_restores_the_previous_target() -> std::io::Result<()> {
+        let root = tempdir()?;
+        let target = root.path().join("browserclaw");
+        let prepared = root.path().join("prepared");
+        let backup = root.path().join("backup");
+        fs::create_dir_all(&target)?;
+        fs::create_dir_all(&prepared)?;
+        fs::write(target.join("SKILL.md"), "old")?;
+        fs::write(prepared.join("SKILL.md"), "new")?;
+
+        let error = swap_directories_with(
+            &prepared,
+            &target,
+            &backup,
+            |from, to| fs::rename(from, to),
+            |path| {
+                if path == backup {
+                    Err(std::io::Error::other("injected backup cleanup failure"))
+                } else {
+                    super::remove_path(path)
+                }
+            },
+        )
+        .err()
+        .ok_or_else(|| std::io::Error::other("swap unexpectedly succeeded"))?;
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected backup cleanup failure")
+        );
+        assert_eq!(fs::read_to_string(target.join("SKILL.md"))?, "old");
+        assert_eq!(fs::read_to_string(prepared.join("SKILL.md"))?, "new");
+        assert!(!backup.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_reconciliation_keeps_the_previous_manifest_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let environment = SkillEnvironment::new(root.path().join("home"), TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(root.path().join("state"));
+        let consumers = BTreeSet::from([AgentId::Cursor]);
+        let original = SkillSpec::new("browserclaw", "old")?;
+        reconciler.reconcile(&original, &consumers, &environment)?;
+        let target = resolve_agent_skill_target(AgentId::Cursor, "browserclaw", &environment)?;
+        let manifest_path = root.path().join("state/skills.json");
+        let manifest_before = fs::read(&manifest_path)?;
+
+        let replacement = SkillSpec::new("browserclaw", "new")?;
+        let outcome = reconciler.reconcile_with(
+            &replacement,
+            Some(&consumers),
+            &environment,
+            |target, spec, hash| {
+                let mut calls = 0;
+                replace_managed_directory_with(target, spec, hash, |from, to| {
+                    calls += 1;
+                    if calls == 2 {
+                        Err(std::io::Error::other("injected replace failure"))
+                    } else {
+                        fs::rename(from, to)
+                    }
+                })
+            },
+        )?;
+
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(fs::read_to_string(target.join("SKILL.md"))?, "old");
+        assert_eq!(fs::read(manifest_path)?, manifest_before);
+        Ok(())
+    }
+
+    #[test]
+    fn remove_legacy_directories_migrates_managed_directories_and_replants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        let environment = SkillEnvironment::new(&home, TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(&state);
+
+        // Install under the legacy name (writes the directory, ownership marker, and
+        // manifest record).
+        let legacy_spec = SkillSpec::new("browserclaw", "---\nname: browseros-neo\n---\nlegacy\n")?;
+        reconciler.reconcile(
+            &legacy_spec,
+            &BTreeSet::from([AgentId::ClaudeCode]),
+            &environment,
+        )?;
+        let legacy_dir =
+            resolve_agent_skill_target(AgentId::ClaudeCode, "browserclaw", &environment)?;
+        assert!(legacy_dir.join("SKILL.md").exists());
+        let manifest_path = state.join("skills.json");
+        assert!(fs::read_to_string(&manifest_path)?.contains("browserclaw"));
+
+        // Migrate: the managed legacy directory is removed, its agent is reported, and
+        // the manifest record is purged.
+        let removed = reconciler.remove_legacy_directories("browserclaw", &environment)?;
+        assert_eq!(removed, BTreeSet::from([AgentId::ClaudeCode]));
+        assert!(!legacy_dir.exists());
+        assert!(!fs::read_to_string(&manifest_path)?.contains("browserclaw"));
+
+        // Replanting under the current name yields a directory that matches the
+        // frontmatter, with the legacy directory gone.
+        let new_spec = SkillSpec::new("browseros-neo", "---\nname: browseros-neo\n---\nnew\n")?;
+        reconciler.reconcile(
+            &new_spec,
+            &BTreeSet::from([AgentId::ClaudeCode]),
+            &environment,
+        )?;
+        let new_dir =
+            resolve_agent_skill_target(AgentId::ClaudeCode, "browseros-neo", &environment)?;
+        assert!(new_dir.join("SKILL.md").exists());
+        assert!(!legacy_dir.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn remove_legacy_directories_leaves_unmanaged_directories_untouched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        let environment = SkillEnvironment::new(&home, TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(&state);
+
+        // A user-authored directory sharing the legacy name, with no ownership marker.
+        let legacy_dir =
+            resolve_agent_skill_target(AgentId::ClaudeCode, "browserclaw", &environment)?;
+        fs::create_dir_all(&legacy_dir)?;
+        fs::write(legacy_dir.join("SKILL.md"), "user skill")?;
+
+        let removed = reconciler.remove_legacy_directories("browserclaw", &environment)?;
+
+        assert!(removed.is_empty());
+        assert_eq!(
+            fs::read_to_string(legacy_dir.join("SKILL.md"))?,
+            "user skill"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remove_legacy_directories_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        let environment = SkillEnvironment::new(&home, TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(&state);
+
+        let legacy_spec = SkillSpec::new("browserclaw", "---\nname: browseros-neo\n---\nlegacy\n")?;
+        reconciler.reconcile(
+            &legacy_spec,
+            &BTreeSet::from([AgentId::ClaudeCode]),
+            &environment,
+        )?;
+        assert_eq!(
+            reconciler.remove_legacy_directories("browserclaw", &environment)?,
+            BTreeSet::from([AgentId::ClaudeCode])
+        );
+        assert!(
+            reconciler
+                .remove_legacy_directories("browserclaw", &environment)?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remove_legacy_directories_keeps_records_for_directories_that_remain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempdir()?;
+        let home = root.path().join("home");
+        let state = root.path().join("state");
+        let environment = SkillEnvironment::new(&home, TargetPlatform::Linux);
+        let reconciler = SkillReconciler::new(&state);
+
+        // Install under the legacy name, then replace its ownership marker with a
+        // foreign one so the sweep declines to remove the directory (standing in for
+        // any case where the directory is left on disk).
+        let legacy_spec = SkillSpec::new("browserclaw", "---\nname: browseros-neo\n---\nlegacy\n")?;
+        reconciler.reconcile(
+            &legacy_spec,
+            &BTreeSet::from([AgentId::ClaudeCode]),
+            &environment,
+        )?;
+        let legacy_dir =
+            resolve_agent_skill_target(AgentId::ClaudeCode, "browserclaw", &environment)?;
+        fs::write(
+            legacy_dir.join(".browserclaw-managed.json"),
+            r#"{"version":1,"managedBy":"other-tool","skillName":"browserclaw","contentHash":"x"}"#,
+        )?;
+        let manifest_path = state.join("skills.json");
+        assert!(fs::read_to_string(&manifest_path)?.contains("browserclaw"));
+
+        let removed = reconciler.remove_legacy_directories("browserclaw", &environment)?;
+
+        // The directory still exists, so its manifest record is preserved rather than
+        // orphaned; the next reconcile retries it.
+        assert!(removed.is_empty());
+        assert!(legacy_dir.join("SKILL.md").exists());
+        assert!(fs::read_to_string(&manifest_path)?.contains("browserclaw"));
+        Ok(())
+    }
+}
