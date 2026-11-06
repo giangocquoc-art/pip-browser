@@ -9,7 +9,9 @@ Hiện chưa có APK phát hành công khai, chữ ký release hay chứng nhậ
 - Ô địa chỉ tìm kiếm Google hoặc mở URL HTTPS; nút quay lại, tiến tới và tải lại.
 - Tối đa 8 tab. Menu Tab cho phép chọn, mở và đóng tab.
 - Chỉ khởi tạo WebView của tab đã chọn khi khôi phục Activity.
-- Giữ URL/tab đang chọn qua recreation; back/forward hoạt động trong WebView còn sống.
+- Khôi phục danh sách URL và tab đang chọn sau recreation hoặc khi mở lại app; không khôi phục back/forward stack, biểu mẫu hay trạng thái JavaScript.
+- Lịch sử và dấu trang lưu cục bộ trong SQLite của ứng dụng; lịch sử giữ tối đa 1.000 lượt và giao diện hiển thị 500 lượt gần nhất. Xóa lịch sử không xóa dấu trang.
+- Cookie và dữ liệu website không được đưa vào bảng lịch sử/dấu trang; các tab vẫn dùng chung cookie store của Android WebView.
 - Từ chối popup tự động; cửa sổ mới xuất phát từ thao tác người dùng có thể mở thành tab.
 - Safe Browsing, chặn mixed content, không vượt lỗi chứng chỉ, tắt file/content access.
 - Không tạo JavaScript interface cho website; camera/mic/quyền website bị từ chối.
@@ -61,7 +63,7 @@ Không cần cài NDK hoặc build trên ổ HDD của máy làm việc để d�
 
 Đây là nền Android ban đầu, chưa ngang chức năng Pip Windows:
 
-- Chưa tích hợp Google DNS, Pip Sync, tải tệp, bookmarks/history UI,
+- Chưa tích hợp Google DNS, Pip Sync, tải tệp,
   dịch trang, quản lý mật khẩu, file chooser, camera/mic hoặc quy trình default browser.
 - Không có chế độ ẩn danh hoặc nhiều hồ sơ: các tab dùng chung kho cookie WebView của app.
   Không thể gọi một tab không ghi lịch sử là hồ sơ riêng tư.
@@ -110,6 +112,11 @@ tạo view thay thế. Test không chờ Google hoặc website bên ngoài trả
 được nhập qua omnibox và WebView dừng tải ngay; có thể tắt Wi-Fi/data của emulator.
 Nhánh renderer exit được kiểm bằng callback mô phỏng, không phải chủ động crash tiến trình
 renderer. Vẫn cần kiểm tra renderer crash thật, Back gesture, video, bàn phím và thiết bị thật.
+
+`BrowserDataStoreTest` dùng SQLite thật trên emulator để kiểm tra lịch sử/dấu trang sau khi mở lại kho,
+xóa lịch sử độc lập với dấu trang và giới hạn 1.000 lượt. `MainActivityTest` còn đóng rồi mở lại Activity
+để kiểm tra URL các tab và tab đang chọn được lưu bền. Các bài này không chứng minh dữ liệu được cách ly
+theo hồ sơ; Android hiện vẫn dùng chung cookie store và chưa có ẩn danh.
 
 Việc có source test chưa chứng minh test đã chạy; dùng kết quả CI tương ứng với đúng commit.
 
