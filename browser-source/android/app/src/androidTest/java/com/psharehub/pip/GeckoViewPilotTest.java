@@ -120,6 +120,8 @@ public final class GeckoViewPilotTest {
             });
             session.setProgressDelegate(new GeckoSession.ProgressDelegate() {
                 @Override public void onPageStop(GeckoSession page, boolean success) {
+                    String uri = finalUri.get();
+                    if (uri == null || uri.equals("about:blank")) return;
                     loadSucceeded.set(success);
                     pageStopped.countDown();
                 }
