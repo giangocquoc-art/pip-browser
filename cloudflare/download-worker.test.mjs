@@ -10,6 +10,18 @@ const checksums = {
   name: "SHA256SUMS.txt",
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/SHA256SUMS.txt",
 };
+const androidApk = {
+  name: "Pip-Android-0.1.1-arm64.apk",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Android-0.1.1-arm64.apk",
+};
+const macArm = {
+  name: "Pip-macOS-arm64-0.1.1.zip",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-arm64-0.1.1.zip",
+};
+const macIntel = {
+  name: "Pip-macOS-x64-0.1.1.zip",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-x64-0.1.1.zip",
+};
 
 async function withMockedFetch(mock, action) {
   const originalFetch = globalThis.fetch;
@@ -53,6 +65,29 @@ test("serves the matching SHA-256 manifest as a direct download", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Content-Disposition"), 'attachment; filename="SHA256SUMS.txt"');
   assert.match(await response.text(), new RegExp(`${"a".repeat(64)}  PipSetup\\.exe`));
+});
+
+test("streams only version-matched Android and macOS assets from the latest release", async () => {
+  const seenAssets = [];
+  const response = await withMockedFetch(async (input) => {
+    const url = String(input);
+    if (url.includes("api.github.com")) return releaseResponse([installer, androidApk, macArm, macIntel, checksums]);
+    seenAssets.push(url);
+    return new Response("platform-binary");
+  }, async () => Promise.all([
+    worker.fetch(new Request("https://download.pip.psharehub.com/android")),
+    worker.fetch(new Request("https://download.pip.psharehub.com/macos-arm64")),
+    worker.fetch(new Request("https://download.pip.psharehub.com/macos-x64")),
+  ]));
+
+  assert.deepEqual(response.map((item) => item.status), [200, 200, 200]);
+  assert.deepEqual(response.map((item) => item.headers.get("Content-Disposition")), [
+    'attachment; filename="Pip-Android-0.1.1-arm64.apk"',
+    'attachment; filename="Pip-macOS-arm64-0.1.1.zip"',
+    'attachment; filename="Pip-macOS-x64-0.1.1.zip"',
+  ]);
+  assert.equal(seenAssets.length, 3);
+  assert.ok(seenAssets.every((url) => url.includes("releases/download/v0.1.1/")));
 });
 
 test("rejects unsupported paths and methods", async () => {

@@ -83,6 +83,12 @@ Mã tải tệp macOS tiếp theo dùng NSSavePanel và WKDownload, không tự 
 - Website: chỉ bật nút tải nền tảng khi artifact đúng phiên bản đã kiểm tra tồn tại, kèm nguồn/hash/kích thước; không để nút Android hoặc Mac tải nhầm EXE Windows.
 - Chưa đo dung lượng, RAM, CPU hay độ trễ trên thiết bị thì không công bố số hoặc cam kết “nhẹ nhất”.
 
+Trang chủ và Download Worker hiện nhận diện asset từ bản phát hành ổn định theo tên có phiên bản:
+`Pip-Android-<version>-arm64.apk`, `Pip-macOS-arm64-<version>.zip` và
+`Pip-macOS-x64-<version>.zip`. Android chỉ nên dùng APK release đã ký bằng khóa bền vững;
+macOS chỉ dùng gói đã kiểm thử, ký và notarize trước khi gắn các asset này vào stable release.
+Nếu asset thiếu, trang chủ không hiện nút tải nền tảng đó.
+
 ## Tài liệu nền
 
 Đánh giá các browser viết bằng Zig và phần có thể tái sử dụng trong Pip nằm ở

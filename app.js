@@ -59,6 +59,11 @@
 
   const pageVersion = $('#version').textContent.trim();
   const directDownloadUrl = 'https://download.pip.psharehub.com/';
+  const platformAssetRoutes = {
+    android: '/android',
+    macArm: '/macos-arm64',
+    macIntel: '/macos-x64'
+  };
   const compareVersions = (left, right) => {
     const a = left.split('.').map(Number);
     const b = right.split('.').map(Number);
@@ -70,8 +75,50 @@
   };
   const isCurrentVersion = (version) => typeof version === 'string'
     && /^\d+\.\d+\.\d+$/.test(version) && compareVersions(version, pageVersion) >= 0;
+  function renderPlatformDownloads(release) {
+    const assets = new Set(release?.assets || []);
+    const version = release?.version;
+    if (!isCurrentVersion(version)) return;
+    const windowsStatus = $('#windows-status');
+    if (windowsStatus) windowsStatus.textContent = `Bản ổn định · ${version}`;
+    const androidAsset = `Pip-Android-${version}-arm64.apk`;
+    const androidStatus = $('#android-status');
+    const androidLink = $('#android-platform-link');
+    const androidCard = document.querySelector?.('[data-platform="android"]');
+    if (assets.has(androidAsset) && androidStatus && androidLink) {
+      $('#android-status').textContent = `Sẵn sàng · ${version}`;
+      androidLink.href = `https://download.pip.psharehub.com${platformAssetRoutes.android}`;
+      androidLink.hidden = false;
+      if (androidCard) androidCard.dataset.available = 'true';
+    }
+    const macArmAsset = `Pip-macOS-arm64-${version}.zip`;
+    const macIntelAsset = `Pip-macOS-x64-${version}.zip`;
+    const macArmLink = $('#macos-arm-link');
+    const macIntelLink = $('#macos-intel-link');
+    const macStatus = $('#macos-status');
+    const macCard = document.querySelector?.('[data-platform="macos"]');
+    if (assets.has(macArmAsset) && macArmLink) {
+      $('#macos-arm-link').href = `https://download.pip.psharehub.com${platformAssetRoutes.macArm}`;
+      $('#macos-arm-link').hidden = false;
+    }
+    if (assets.has(macIntelAsset) && macIntelLink) {
+      $('#macos-intel-link').href = `https://download.pip.psharehub.com${platformAssetRoutes.macIntel}`;
+      $('#macos-intel-link').hidden = false;
+    }
+    if ((assets.has(macArmAsset) || assets.has(macIntelAsset)) && macStatus) {
+      macStatus.textContent = `Sẵn sàng · ${version}`;
+      if (macCard) macCard.dataset.available = 'true';
+    }
+    const releaseNote = $('#platform-release-note');
+    if (!releaseNote) return;
+    if (assets.has(androidAsset) && assets.has(macArmAsset) && assets.has(macIntelAsset)) {
+      releaseNote.textContent = `Windows, Android và macOS đều có bản Pip ${version}.`;
+    } else if (assets.has(androidAsset) || assets.has(macArmAsset) || assets.has(macIntelAsset)) {
+      releaseNote.textContent = `Một số gói của bản ${version} đã sẵn sàng; các nền tảng khác chỉ hiện nút tải khi có artifact phù hợp.`;
+    }
+  }
   async function fetchLatestRelease() {
-    const cacheKey = 'pip-latest-release-v2';
+    const cacheKey = 'pip-latest-release-v3';
     try {
       const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
       if (isCurrentVersion(cached?.release?.version) && cached.release.downloadAvailable
@@ -90,7 +137,12 @@
       if (!isCurrentVersion(version) || !installer || !(installer.size > 0)) {
         throw new Error('Latest release has no current Windows installer');
       }
-      const release = { version, downloadAvailable: true, url: directDownloadUrl };
+      const release = {
+        version,
+        downloadAvailable: true,
+        url: directDownloadUrl,
+        assets: metadata.assets.map((asset) => asset.name).filter((name) => typeof name === 'string')
+      };
       try { localStorage.setItem(cacheKey, JSON.stringify({ checkedAt: Date.now(), release })); }
       catch { /* The current page still uses the release response. */ }
       return release;
@@ -103,6 +155,7 @@
   }
   fetchLatestRelease().then((release) => {
     if (!isCurrentVersion(release?.version)) return;
+    renderPlatformDownloads(release);
     $('#version').textContent = release.version;
     if (!release.downloadAvailable || !release.url) return;
     let downloadUrl;

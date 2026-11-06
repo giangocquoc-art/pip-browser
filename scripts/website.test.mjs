@@ -143,6 +143,17 @@ test("download version refreshes stale caches and rejects releases without a cur
       "#version": { textContent: "0.1.16" },
       "#download-link": { textContent: "Tải Pip mới nhất", href: "https://download.pip.psharehub.com/" },
       "#update-note": { append() {} },
+      "#windows-status": { textContent: "Bản ổn định" },
+      "#android-status": { textContent: "Chưa có gói phát hành" },
+      "#android-platform-link": { href: "", hidden: true },
+      "#macos-status": { textContent: "Chưa có gói phát hành" },
+      "#macos-arm-link": { href: "", hidden: true },
+      "#macos-intel-link": { href: "", hidden: true },
+      "#platform-release-note": { textContent: "" },
+    };
+    const cards = {
+      '[data-platform="android"]': { dataset: {} },
+      '[data-platform="macos"]': { dataset: {} },
     };
     const requests = [];
     const cached = cachedVersion && { checkedAt: Date.now(), release: {
@@ -151,7 +162,7 @@ test("download version refreshes stale caches and rejects releases without a cur
     runInNewContext(`(() => {${script}})()`, {
       $: (selector) => nodes[selector], URL, Date,
       location: { origin: "https://pip.psharehub.com" },
-      document: { createElement: () => ({}) },
+      document: { createElement: () => ({}), querySelector: (selector) => cards[selector] },
       localStorage: { getItem: () => JSON.stringify(cached), setItem() {} },
       fetch: async (url) => {
         requests.push(url);
@@ -161,7 +172,7 @@ test("download version refreshes stale caches and rejects releases without a cur
       },
     });
     await new Promise((resolve) => setImmediate(resolve));
-    return { version: nodes["#version"].textContent, text: nodes["#download-link"].textContent, requests };
+    return { version: nodes["#version"].textContent, text: nodes["#download-link"].textContent, requests, nodes, cards };
   }
 
   const refreshed = await evaluate("0.1.15", metadata("0.1.18"));
@@ -177,6 +188,32 @@ test("download version refreshes stale caches and rejects releases without a cur
   }
   const olderFallback = await evaluate(null, metadata("0.1.15"), "0.1.14");
   assert.equal(olderFallback.version, "0.1.16", "stale fallback metadata must not downgrade the page");
+  const multiPlatform = await evaluate(null, metadata("0.1.18", [
+    { name: "PipSetup.exe", size: 123 },
+    { name: "Pip-Android-0.1.18-arm64.apk", size: 456 },
+    { name: "Pip-macOS-arm64-0.1.18.zip", size: 789 },
+    { name: "Pip-macOS-x64-0.1.18.zip", size: 789 },
+  ]));
+  assert.equal(multiPlatform.nodes["#android-platform-link"].hidden, false);
+  assert.equal(multiPlatform.nodes["#android-platform-link"].href, "https://download.pip.psharehub.com/android");
+  assert.equal(multiPlatform.nodes["#macos-arm-link"].hidden, false);
+  assert.equal(multiPlatform.nodes["#macos-intel-link"].hidden, false);
+  assert.equal(multiPlatform.nodes["#android-status"].textContent, "Sẵn sàng · 0.1.18");
+  assert.match(multiPlatform.nodes["#platform-release-note"].textContent, /Windows, Android và macOS/);
+});
+
+test("homepage lists Windows, Android and macOS without exposing unavailable artifacts", async () => {
+  const homepage = await readFile(path.join(root, "index.html"), "utf8");
+  const script = await readFile(path.join(root, "app.js"), "utf8");
+  for (const platform of ["windows", "android", "macos"]) {
+    assert.match(homepage, new RegExp(`data-platform="${platform}"`));
+  }
+  assert.match(homepage, /id="android-platform-link"[^>]+hidden/);
+  assert.match(homepage, /id="macos-arm-link"[^>]+hidden/);
+  assert.match(homepage, /id="macos-intel-link"[^>]+hidden/);
+  assert.match(script, /Pip-Android-\$\{version\}-arm64\.apk/);
+  assert.match(script, /Pip-macOS-arm64-\$\{version\}\.zip/);
+  assert.match(script, /Pip-macOS-x64-\$\{version\}\.zip/);
 });
 
 test("fallback release manifest has a valid version, installer, SHA-256 and size", async () => {
