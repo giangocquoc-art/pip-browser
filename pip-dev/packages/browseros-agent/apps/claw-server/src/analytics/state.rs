@@ -27,7 +27,7 @@ pub struct TelemetryState {
 pub(crate) struct AnalyticsState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) distinct_id: Option<String>,
-    #[serde(default = "default_enabled")]
+    #[serde(default = "default_disabled")]
     pub(crate) enabled: bool,
     // Keep observed aliases even if Chromium later removes/changes its file.
     // Delivery is idempotently retried on each consenting startup, so this is
@@ -36,8 +36,8 @@ pub(crate) struct AnalyticsState {
     pub(crate) installation_aliases: Vec<String>,
 }
 
-fn default_enabled() -> bool {
-    true
+fn default_disabled() -> bool {
+    false
 }
 
 pub(crate) fn state_path(browserclaw_dir: &Path) -> PathBuf {
@@ -64,7 +64,7 @@ fn load_or_create_blocking(path: &Path) -> io::Result<AnalyticsState> {
     let original = read_state(path)?;
     let mut state = original.clone().unwrap_or(AnalyticsState {
         distinct_id: None,
-        enabled: true,
+        enabled: false,
         installation_aliases: vec![],
     });
     let installation = match read_installation_id(parent(path)) {
@@ -185,7 +185,11 @@ mod tests {
 
     #[tokio::test]
     async fn installation_seeds_missing_or_consent_only_analytics() -> anyhow::Result<()> {
-        for existing in [None, Some(r#"{"enabled":false}"#)] {
+        for existing in [
+            None,
+            Some(r#"{"enabled":false}"#),
+            Some(r#"{"distinctId":"2e087632-1f4e-4ee7-b8bb-cf8ad53e91a8"}"#),
+        ] {
             let directory = tempdir()?;
             let path = state_path(directory.path());
             if let Some(raw) = existing {
@@ -197,7 +201,7 @@ mod tests {
             )?;
             let state = load_or_create_state(&path).await;
             assert_eq!(state.distinct_id.as_deref(), Some(B));
-            assert_eq!(state.enabled, existing.is_none());
+            assert!(!state.enabled);
             assert!(state.installation_aliases.is_empty());
             assert_eq!(read_state(&path)?, Some(state));
         }
@@ -268,7 +272,7 @@ mod tests {
         }
         let first = &states[0];
         assert!(first.distinct_id.as_deref().is_some_and(valid_identity));
-        assert!(first.enabled);
+        assert!(!first.enabled);
         assert!(states.iter().all(|state| state == first));
         assert_eq!(read_state(&path)?.as_ref(), Some(first));
         assert!(!directory.path().join("installation.json").exists());

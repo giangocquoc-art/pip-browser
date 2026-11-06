@@ -630,7 +630,7 @@ mod tests {
         let gated = AnalyticsService::new_with_config(directory.path(), no_key).await?;
         let state = gated.get_state().await;
         assert!(!state.enabled);
-        assert!(state.consent);
+        assert!(!state.consent);
 
         let env_off = AnalyticsService::new_with_config(
             directory.path(),
