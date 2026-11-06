@@ -24,6 +24,7 @@ import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -154,7 +155,16 @@ public final class MainActivity extends Activity {
         back = button(R.string.back, this::navigateBack);
         forward = button(R.string.forward, () -> {
             WebView view = activeView();
-            if (view != null && view.canGoForward()) view.goForward();
+            if (view != null && view.canGoForward()) {
+                Tab tab = tabs.get(selected);
+                WebBackForwardList history = view.copyBackForwardList();
+                int target = history.getCurrentIndex() + 1;
+                if (target < history.getSize()) {
+                    tab.explicitNavigationUrl = history.getItemAtIndex(target).getUrl();
+                    tab.documentUrl = tab.explicitNavigationUrl;
+                }
+                view.goForward();
+            }
         });
         Button reload = button(R.string.reload, () -> {
             Tab tab = tabs.get(selected);
@@ -215,6 +225,7 @@ public final class MainActivity extends Activity {
         if (url == null) { showStatus(R.string.blocked_address); return; }
         Tab tab = tabs.get(selected);
         tab.url = url;
+        tab.documentUrl = url;
         tab.explicitNavigationUrl = url;
         persistSession();
         if (tab.view == null) selectTab(selected);
@@ -299,6 +310,9 @@ public final class MainActivity extends Activity {
                     }
                     if (decision < 0 && isCurrentView(tab, webView)) updateFilteringStatus();
                 }
+                if (allowed && request.isForMainFrame()) {
+                    tab.documentUrl = request.getUrl().toString();
+                }
                 if (!allowed && request.isForMainFrame() && isCurrentView(tab, webView)) {
                     showStatus(R.string.blocked_address);
                 }
@@ -308,6 +322,11 @@ public final class MainActivity extends Activity {
             @Override public void onPageStarted(WebView webView, String url, android.graphics.Bitmap icon) {
                 if (!isLiveView(tab, webView)) return;
                 if (Address.isWebUrl(url)) {
+                    // A load requested just before this callback may supersede a queued
+                    // start from the previous page. Keep that stale callback from
+                    // replacing the tab URL that session restore will persist.
+                    if (!Address.sameNavigationUrl(url, tab.documentUrl)
+                            && !Address.sameNavigationUrl(url, tab.explicitNavigationUrl)) return;
                     tab.url = url;
                     tab.documentUrl = url;
                     persistSession();
@@ -485,6 +504,7 @@ public final class MainActivity extends Activity {
         if (!Address.isWebUrl(url)) return;
         Tab tab = tabs.get(selected);
         tab.url = url;
+        tab.documentUrl = url;
         tab.explicitNavigationUrl = url;
         address.setText(url);
         persistSession();
@@ -567,7 +587,16 @@ public final class MainActivity extends Activity {
 
     private void navigateBack() {
         WebView view = activeView();
-        if (view != null && view.canGoBack()) view.goBack();
+        if (view != null && view.canGoBack()) {
+            Tab tab = tabs.get(selected);
+            WebBackForwardList history = view.copyBackForwardList();
+            int target = history.getCurrentIndex() - 1;
+            if (target >= 0) {
+                tab.explicitNavigationUrl = history.getItemAtIndex(target).getUrl();
+                tab.documentUrl = tab.explicitNavigationUrl;
+            }
+            view.goBack();
+        }
         else finish();
     }
 

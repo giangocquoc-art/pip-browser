@@ -61,6 +61,15 @@ Không cần cài NDK hoặc build trên ổ HDD của máy làm việc để d�
 
 ## Giới hạn cần hoàn tất trước khi phát hành
 
+### GeckoView pilot (debug only)
+
+APK `debug` có thêm launcher “Pip GeckoView pilot” dùng GeckoView 153 để kiểm tra tách
+cookie theo `contextId`, private mode và cấu hình Google DoH strict (`TRR_MODE_ONLY`).
+Pilot chạy song song; app Pip chính và APK release vẫn dùng Android System WebView.
+Kiểm thử emulator kiểm tra cookie giữa hai context và private session. Đây chưa phải bằng
+chứng request Internet của engine đi qua Google DoH: cần capture/trace mạng riêng trước khi
+đánh dấu DNS hoạt động. Không phát hành APK pilot như bản Pip ổn định.
+
 Đây là nền Android ban đầu, chưa ngang chức năng Pip Windows:
 
 - Chưa tích hợp Google DNS, Pip Sync, tải tệp,
@@ -72,6 +81,8 @@ Không cần cài NDK hoặc build trên ổ HDD của máy làm việc để d�
   Tab background được pause nhưng WebView vẫn có thể giữ bộ nhớ; giới hạn tab không chứng minh
   mức RAM hoặc pin tốt hơn trình duyệt khác.
 - Chưa có engine Android của Pip Dev, MCP native lock, hay chức năng điều khiển agent.
+- GeckoView chỉ có trong debug pilot để đánh giá engine; chưa có parity chặn nội dung, tải tệp,
+  quyền website, updater hay kiểm chứng tuyến DNS, và chưa được chọn làm engine mặc định.
 - Chặn mạng hiện chỉ xử lý network rules. Chưa có cosmetic filtering, scriptlets hay redirect
   resource replacements; không bảo đảm chặn mọi quảng cáo YouTube. Danh sách cá cược chưa thể
   nhận diện mọi tên miền mới và không thay thế chính sách đầy đủ của bản Windows. URL main-frame do người
