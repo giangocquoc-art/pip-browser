@@ -47,13 +47,16 @@ public final class GeckoViewPilotActivity extends Activity {
                 .build();
     }
 
+    static GeckoRuntimeSettings createRuntimeSettings() {
+        return new GeckoRuntimeSettings.Builder()
+                .trustedRecursiveResolverUri(GOOGLE_DOH)
+                .trustedRecursiveResolverMode(GeckoRuntimeSettings.TRR_MODE_ONLY)
+                .build();
+    }
+
     static synchronized GeckoRuntime getOrCreateRuntime(Context context) {
         if (runtime == null) {
-            GeckoRuntimeSettings settings = new GeckoRuntimeSettings.Builder()
-                    .trustedRecursiveResolverUri(GOOGLE_DOH)
-                    .trustedRecursiveResolverMode(GeckoRuntimeSettings.TRR_MODE_ONLY)
-                    .build();
-            runtime = GeckoRuntime.create(context.getApplicationContext(), settings);
+            runtime = GeckoRuntime.create(context.getApplicationContext(), createRuntimeSettings());
         }
         return runtime;
     }

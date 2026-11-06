@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoRuntimeSettings;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 
@@ -79,6 +80,15 @@ public final class GeckoViewPilotTest {
         assertNotEquals(profileA.getContextId(), profileB.getContextId());
         assertTrue(privateSession.getUsePrivateMode());
         assertNull(privateSession.getContextId());
+    }
+
+    @Test public void googleDoHIsConfiguredInStrictOnlyMode() {
+        GeckoRuntimeSettings settings = GeckoViewPilotActivity.createRuntimeSettings();
+
+        assertEquals(GeckoViewPilotActivity.GOOGLE_DOH,
+                settings.getTrustedRecursiveResolverUri());
+        assertEquals(GeckoRuntimeSettings.TRR_MODE_ONLY,
+                settings.getTrustedRecusiveResolverMode());
     }
 
     private static GeckoSession openSession(GeckoRuntime runtime, GeckoSessionSettings settings) {
