@@ -1926,7 +1926,10 @@ pub fn run() {
             };
             let request = String::from_utf8_lossy(&bytes[..n]);
             let path = request.split_whitespace().nth(1).unwrap_or("");
-            if matches!(path, "/worker-test" | "/sw.js" | "/shared-worker.js" | "/privacy-isolation-sw.js") {
+            if matches!(
+                path,
+                "/worker-test" | "/sw.js" | "/shared-worker.js" | "/privacy-isolation-sw.js"
+            ) {
                 eprintln!("[native-ui] fixture served {path}");
             }
             let (extra, body) = if path == "/download" {
