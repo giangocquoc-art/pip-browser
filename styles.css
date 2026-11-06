@@ -75,6 +75,10 @@ footer{font-size:13px}
   footer{font-size:12px}
 }
 
+.platform-downloads{max-width:1340px;margin:70px auto 76px;padding:0 28px}.platform-downloads-heading{max-width:700px;margin-bottom:22px}.platform-downloads-heading h2{margin:0;font-size:clamp(28px,3vw,40px);letter-spacing:-1.2px}.platform-downloads-heading>p:last-child{margin:9px 0 0;color:var(--muted);font-size:16px}.platform-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.platform-card{min-width:0;padding:22px;border:1px solid #f1e1d4;border-radius:16px;background:linear-gradient(145deg,#fffdfa,#fff5ec);box-shadow:0 8px 24px #6e3b1610}.platform-card-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.platform-card h3{margin:0;font-size:22px}.platform-card p{margin:9px 0 18px;color:var(--muted);font-size:15px}.platform-status{padding:5px 9px;border-radius:99px;background:#f5eee8;color:#596477;font-size:12px;font-weight:700}.platform-card[data-available=true] .platform-status{background:#e7f6e8;color:#22733b}.platform-download-button{display:inline-flex;min-height:44px;align-items:center;justify-content:center;padding:0 16px;border:1px solid #e9cbb4;border-radius:10px;background:#fff;color:#b54608;font-size:15px;font-weight:750;text-decoration:none}.platform-download-button:hover{background:#fff0e5}.platform-download-button[hidden]{display:none}.platform-architecture-links{display:flex;flex-wrap:wrap;gap:8px}.platform-release-note{margin:14px 0 0;color:var(--muted);font-size:14px}
+@media(max-width:760px){.platform-grid{grid-template-columns:1fr 1fr}.platform-card:last-child{grid-column:1/-1}}
+@media(max-width:600px){.platform-downloads{margin:54px auto 58px;padding:0 18px}.platform-downloads-heading{margin-bottom:16px}.platform-downloads-heading>p:last-child{font-size:15px}.platform-grid{grid-template-columns:1fr;gap:10px}.platform-card:last-child{grid-column:auto}.platform-card{padding:17px}.platform-card h3{font-size:20px}.platform-card p{font-size:15px}.platform-release-note{font-size:14px}}
+
 /* Larger, comfortable reading sizes for the website itself. */
 body{font-size:17px;line-height:1.65}
 .topbar nav{font-size:16px}

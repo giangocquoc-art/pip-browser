@@ -2,7 +2,9 @@ const RELEASE_API = "https://api.github.com/repos/giangocquoc-art/pip-browser/re
 const RELEASE_CACHE_SECONDS = 120;
 const INSTALLER_NAME = "PipSetup.exe";
 const LEGACY_INSTALLER_NAME = /^Pip-Setup-[\w.+-]+-Windows-x64\.exe$/;
-const SUPPORTED_PATHS = new Set(["/", "/installer", "/checksums"]);
+const SUPPORTED_PATHS = new Set([
+  "/", "/installer", "/checksums", "/android", "/macos-arm64", "/macos-x64",
+]);
 
 function textResponse(body, status) {
   return new Response(body, {
@@ -29,14 +31,24 @@ async function getLatestRelease() {
 }
 
 function getAsset(release, pathname) {
+  const version = release.tag_name?.replace(/^v/, "");
+  const checksumAsset = release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
   if (pathname === "/checksums") {
-    return release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
+    return checksumAsset?.size > 0 ? checksumAsset : null;
   }
-  if (pathname === "/" || pathname === "/installer") {
-    return release.assets?.find((asset) => asset.name === INSTALLER_NAME)
-      ?? release.assets?.find((asset) => LEGACY_INSTALLER_NAME.test(asset.name));
+  if (!checksumAsset?.size || checksumAsset.size <= 0) return null;
+  let asset;
+  if (pathname === "/android") {
+    asset = release.assets?.find((item) => item.name === `Pip-Android-${version}-universal.apk`);
+  } else if (pathname === "/macos-arm64") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-arm64-${version}.zip`);
+  } else if (pathname === "/macos-x64") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-x64-${version}.zip`);
+  } else if (pathname === "/" || pathname === "/installer") {
+    asset = release.assets?.find((item) => item.name === INSTALLER_NAME)
+      ?? release.assets?.find((item) => LEGACY_INSTALLER_NAME.test(item.name));
   }
-  return null;
+  return asset?.size > 0 ? asset : null;
 }
 
 function copyDownloadHeaders(upstream, asset) {
@@ -67,7 +79,7 @@ export default {
     try {
       const release = await getLatestRelease();
       const asset = getAsset(release, pathname);
-      if (!asset) return textResponse("Không tìm thấy tệp yêu cầu trong bản Pip mới nhất.", 404);
+      if (!asset) return textResponse("Bản Pip mới nhất chưa có gói tải cho nền tảng này.", 404);
 
       const assetUrl = new URL(asset.browser_download_url);
       if (
@@ -101,7 +113,7 @@ export default {
         headers: copyDownloadHeaders(upstream, asset),
       });
     } catch {
-      return textResponse("Tạm thời chưa lấy được bộ cài Pip mới nhất. Vui lòng thử lại sau.", 503);
+      return textResponse("Tạm thời chưa lấy được gói Pip mới nhất. Vui lòng thử lại sau.", 503);
     }
   },
 };
