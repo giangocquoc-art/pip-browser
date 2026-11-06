@@ -30,7 +30,7 @@ import static org.junit.Assert.*;
 /** Debug-only engine evaluation; it does not change the shipping WebView browser. */
 @RunWith(AndroidJUnit4.class)
 public final class GeckoViewPilotTest {
-    @Test public void geckoSessionsIsolateCookiesAndPrivateSessionDoesNotTouchProfile() throws Exception {
+    @Test public void geckoProfilesIsolateAndPersistCookiesWhilePrivateSessionDoesNotTouchThem() throws Exception {
         try (HttpFixture fixture = new HttpFixture()) {
             Context context = ApplicationProvider.getApplicationContext();
             AtomicReference<GeckoRuntime> runtimeResult = new AtomicReference<>();
@@ -59,6 +59,14 @@ public final class GeckoViewPilotTest {
                 fixture.take("/set?value=secret");
                 navigate(profileA, fixture.url("/echo"));
                 assertEquals("Private mode must not change the persistent profile",
+                        "pip=alpha", fixture.take("/echo").cookie);
+
+                closeSession(profileA);
+                profileA = openSession(runtime,
+                        GeckoViewPilotActivity.createSessionSettings(
+                                GeckoViewPilotActivity.PROFILE_A, false));
+                navigate(profileA, fixture.url("/echo"));
+                assertEquals("Reopening a profile session must retain its cookie jar",
                         "pip=alpha", fixture.take("/echo").cookie);
             } finally {
                 closeSession(profileA);
@@ -170,7 +178,8 @@ public final class GeckoViewPilotTest {
                     String value = path.startsWith("/set?value=")
                             ? path.substring("/set?value=".length()) : null;
                     String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                            + (value == null ? "" : "Set-Cookie: pip=" + value + "; Path=/; SameSite=Lax\r\n")
+                            + (value == null ? "" : "Set-Cookie: pip=" + value
+                                    + "; Path=/; Max-Age=3600; SameSite=Lax\r\n")
                             + "Connection: close\r\nContent-Length: " + bodyBytes.length + "\r\n\r\n";
                     output.write(response.getBytes(StandardCharsets.US_ASCII));
                     output.write(bodyBytes);
