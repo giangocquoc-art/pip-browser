@@ -81,7 +81,7 @@
     if (!isCurrentVersion(version)) return;
     const windowsStatus = $('#windows-status');
     if (windowsStatus) windowsStatus.textContent = `Bản ổn định · ${version}`;
-    const androidAsset = `Pip-Android-${version}-arm64.apk`;
+    const androidAsset = `Pip-Android-${version}-universal.apk`;
     const androidStatus = $('#android-status');
     const androidLink = $('#android-platform-link');
     const androidCard = document.querySelector?.('[data-platform="android"]');

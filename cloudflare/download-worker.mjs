@@ -36,7 +36,7 @@ function getAsset(release, pathname) {
     return release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
   }
   if (pathname === "/android") {
-    return release.assets?.find((asset) => asset.name === `Pip-Android-${version}-arm64.apk`);
+    return release.assets?.find((asset) => asset.name === `Pip-Android-${version}-universal.apk`);
   }
   if (pathname === "/macos-arm64") {
     return release.assets?.find((asset) => asset.name === `Pip-macOS-arm64-${version}.zip`);

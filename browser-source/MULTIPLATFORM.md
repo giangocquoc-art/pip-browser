@@ -84,7 +84,7 @@ Mã tải tệp macOS tiếp theo dùng NSSavePanel và WKDownload, không tự 
 - Chưa đo dung lượng, RAM, CPU hay độ trễ trên thiết bị thì không công bố số hoặc cam kết “nhẹ nhất”.
 
 Trang chủ và Download Worker hiện nhận diện asset từ bản phát hành ổn định theo tên có phiên bản:
-`Pip-Android-<version>-arm64.apk`, `Pip-macOS-arm64-<version>.zip` và
+`Pip-Android-<version>-universal.apk`, `Pip-macOS-arm64-<version>.zip` và
 `Pip-macOS-x64-<version>.zip`. Android chỉ nên dùng APK release đã ký bằng khóa bền vững;
 macOS chỉ dùng gói đã kiểm thử, ký và notarize trước khi gắn các asset này vào stable release.
 Nếu asset thiếu, trang chủ không hiện nút tải nền tảng đó.

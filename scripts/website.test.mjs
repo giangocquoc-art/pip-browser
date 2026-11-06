@@ -190,7 +190,7 @@ test("download version refreshes stale caches and rejects releases without a cur
   assert.equal(olderFallback.version, "0.1.16", "stale fallback metadata must not downgrade the page");
   const multiPlatform = await evaluate(null, metadata("0.1.18", [
     { name: "PipSetup.exe", size: 123 },
-    { name: "Pip-Android-0.1.18-arm64.apk", size: 456 },
+    { name: "Pip-Android-0.1.18-universal.apk", size: 456 },
     { name: "Pip-macOS-arm64-0.1.18.zip", size: 789 },
     { name: "Pip-macOS-x64-0.1.18.zip", size: 789 },
   ]));
@@ -211,7 +211,7 @@ test("homepage lists Windows, Android and macOS without exposing unavailable art
   assert.match(homepage, /id="android-platform-link"[^>]+hidden/);
   assert.match(homepage, /id="macos-arm-link"[^>]+hidden/);
   assert.match(homepage, /id="macos-intel-link"[^>]+hidden/);
-  assert.match(script, /Pip-Android-\$\{version\}-arm64\.apk/);
+  assert.match(script, /Pip-Android-\$\{version\}-universal\.apk/);
   assert.match(script, /Pip-macOS-arm64-\$\{version\}\.zip/);
   assert.match(script, /Pip-macOS-x64-\$\{version\}\.zip/);
 });

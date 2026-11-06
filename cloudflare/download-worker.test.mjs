@@ -11,8 +11,8 @@ const checksums = {
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/SHA256SUMS.txt",
 };
 const androidApk = {
-  name: "Pip-Android-0.1.1-arm64.apk",
-  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Android-0.1.1-arm64.apk",
+  name: "Pip-Android-0.1.1-universal.apk",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Android-0.1.1-universal.apk",
 };
 const macArm = {
   name: "Pip-macOS-arm64-0.1.1.zip",
@@ -82,7 +82,7 @@ test("streams only version-matched Android and macOS assets from the latest rele
 
   assert.deepEqual(response.map((item) => item.status), [200, 200, 200]);
   assert.deepEqual(response.map((item) => item.headers.get("Content-Disposition")), [
-    'attachment; filename="Pip-Android-0.1.1-arm64.apk"',
+    'attachment; filename="Pip-Android-0.1.1-universal.apk"',
     'attachment; filename="Pip-macOS-arm64-0.1.1.zip"',
     'attachment; filename="Pip-macOS-x64-0.1.1.zip"',
   ]);
