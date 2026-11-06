@@ -1,0 +1,26 @@
+[package]
+name = "pip-adblock-android"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Keep Android's thread-safe engine feature graph independent of the desktop
+# binary, which enables adblock's single-thread optimization.
+[workspace]
+
+[lib]
+name = "pip_adblock"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+adblock = { version = "=0.13.3", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "=0.21.1", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

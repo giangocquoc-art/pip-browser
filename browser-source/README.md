@@ -2,6 +2,8 @@
 
 Pip là trình duyệt Windows 10/11 x64 dựa trên Microsoft Edge WebView2, với phần giao diện và quản lý tab viết bằng Rust. Pip dùng Google làm công cụ tìm kiếm mặc định, hỗ trợ hồ sơ riêng, cửa sổ ẩn danh và bộ lọc nội dung tích hợp.
 
+Android và macOS đang có shell riêng trong repo; xem [MULTIPLATFORM.md](MULTIPLATFORM.md) và [hướng dẫn Android](android/README.md). Các tính năng và lệnh Windows bên dưới không mặc nhiên áp dụng cho hai bản phát triển này. Pip Dev Chromium/MCP là dự án riêng trong `../pip-dev/`.
+
 ## Tính năng
 
 - Tab, thanh địa chỉ, trang tab mới và menu theo giao diện Pip.
