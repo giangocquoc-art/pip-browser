@@ -9,6 +9,7 @@ use crate::{
     error::{AppError, AppResult},
     runtime::ShutdownHandle,
     services::{
+        agent_control::AgentControlService,
         agent_settings::AgentSettingsStore,
         audit::AuditWorker,
         browser::{BrowserService, TabRegistry},
@@ -36,6 +37,7 @@ pub struct AppState {
     pub audit_worker: Arc<AuditWorker>,
     pub audit_settings: Arc<crate::services::audit_settings::AuditSettingsStore>,
     pub agent_settings: Arc<AgentSettingsStore>,
+    pub agent_control: Arc<AgentControlService>,
     pub session_tabs: Arc<SessionTabLedger>,
     pub recordings: Arc<RecordingStore>,
     pub recording_ingest: Arc<RecordingIngestService>,
@@ -145,6 +147,13 @@ impl AppState {
             database,
             analytics_sink.clone(),
         ));
+        let agent_control = Arc::new(AgentControlService::new_with_policy(
+            config
+                .agent_control_token
+                .as_ref()
+                .map(|token| token.expose_to_extension_bridge().to_string()),
+            config.agent_control_required,
+        ));
         let sessions = Sessions::new_with_analytics(
             audit_log.clone(),
             session_tabs.clone(),
@@ -157,9 +166,14 @@ impl AppState {
         sessions.set_completion_hook(Arc::new({
             let session_efficiency = session_efficiency.clone();
             let skill_runs = skill_runs.clone();
+            let agent_control = agent_control.clone();
             move |session_id| {
                 skill_runs.spawn_finalize(session_id.clone());
-                let _ = session_efficiency.queue_finalize(session_id);
+                let _ = session_efficiency.queue_finalize(session_id.clone());
+                let agent_control = agent_control.clone();
+                tokio::spawn(async move {
+                    agent_control.release_session(session_id.as_str()).await;
+                });
             }
         }));
         let tab_registry = TabRegistry::new(session_tabs.clone());
@@ -212,6 +226,7 @@ impl AppState {
             audit_worker,
             audit_settings,
             agent_settings,
+            agent_control,
             session_tabs,
             recordings,
             recording_ingest,
@@ -292,6 +307,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
 
@@ -337,5 +354,129 @@ mod tests {
                 "Cannot resolve the user home directory because neither HOME nor USERPROFILE is set"
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod agent_control_http_tests {
+    use crate::services::agent_control::LeaseAck;
+    use crate::{
+        api::mcp::test_support::{ProfileConnection, current_session, tool_call},
+        services::agent_control::AgentControlService,
+    };
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn stop(
+        state: crate::AppState,
+        tab_id: i64,
+        target_id: &str,
+        authorized: bool,
+    ) -> anyhow::Result<StatusCode> {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/agent-control/tabs/{tab_id}/stop"))
+            .header(axum::http::header::HOST, "localhost")
+            .header("Content-Type", "application/json");
+        if authorized {
+            request = request.header("Authorization", "Bearer test-secret");
+        }
+        let response = super::build_router(state)
+            .oneshot(request.body(axum::body::Body::from(
+                json!({"targetId": target_id}).to_string(),
+            ))?)
+            .await?;
+        Ok(response.status())
+    }
+
+    #[tokio::test]
+    async fn tab_stop_rejects_stale_target_before_recording_stop_intent() -> anyhow::Result<()> {
+        let browser = current_session(ProfileConnection::new());
+        let page = browser
+            .pages
+            .list()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("synthetic page missing"))?;
+        let mut call = tool_call("tabs", json!({})).await?;
+        call.state.browser.set_session_for_testing(browser).await;
+        call.state.agent_control =
+            Arc::new(AgentControlService::new(Some("test-secret".to_string())));
+        assert_eq!(
+            stop(
+                call.state.clone(),
+                page.tab_id.0,
+                page.target_id.as_str(),
+                false
+            )
+            .await?,
+            StatusCode::UNAUTHORIZED,
+        );
+        assert_eq!(
+            stop(call.state.clone(), page.tab_id.0, "old-target", true).await?,
+            StatusCode::CONFLICT,
+        );
+        let probe = call
+            .state
+            .agent_control
+            .begin(
+                "owner",
+                page.page_id.0,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                false,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .abort("owner", &probe.lease_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        call.state
+            .agent_control
+            .acknowledge(
+                &probe.lease_id,
+                probe.generation,
+                page.tab_id.0,
+                page.target_id.as_str(),
+                LeaseAck::Unlocked,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+        assert!(
+            call.state
+                .agent_control
+                .leases_for_extension()
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            stop(
+                call.state.clone(),
+                page.tab_id.0,
+                page.target_id.as_str(),
+                true
+            )
+            .await?,
+            StatusCode::NO_CONTENT,
+        );
+        assert!(
+            call.state
+                .agent_control
+                .begin(
+                    "late-owner",
+                    page.page_id.0,
+                    page.tab_id.0,
+                    page.target_id.as_str(),
+                    false
+                )
+                .await
+                .is_err()
+        );
+        Ok(())
     }
 }

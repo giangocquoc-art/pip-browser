@@ -176,6 +176,8 @@ impl HttpPeer {
             server_port: 9200,
             cdp_port: 49337,
             proxy_port: None,
+            agent_control_token: None,
+            agent_control_required: false,
             resources_dir: dir.path().join("resources"),
             browserclaw_dir: dir.path().join("claw"),
             session_idle: Duration::from_secs(300),

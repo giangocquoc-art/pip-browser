@@ -65,6 +65,36 @@ export async function resolveBrowserOSMcpBaseUrl(
   return port ? loopbackBaseUrl(port) : resolveApiBaseUrlFromSources(sources)
 }
 
+/** Reads a secret BrowserOS Local State pref for background-only bridge auth. */
+export async function readBrowserOSStringPref(prefName: string): Promise<string | null> {
+  if (
+    typeof chrome === 'undefined' ||
+    typeof chrome.browserOS?.getPref !== 'function'
+  ) {
+    return null
+  }
+
+  try {
+    const pref = await new Promise<chrome.browserOS.PrefObject>(
+      (resolve, reject) => {
+        chrome.browserOS.getPref(prefName, (value) => {
+          const message = chrome.runtime?.lastError?.message
+          if (message) {
+            reject(new Error(message))
+            return
+          }
+          resolve(value)
+        })
+      },
+    )
+    return typeof pref.value === 'string' && pref.value.trim()
+      ? pref.value
+      : null
+  } catch {
+    return null
+  }
+}
+
 async function readBrowserOSPort(prefName: string): Promise<number | null> {
   if (
     typeof chrome === 'undefined' ||

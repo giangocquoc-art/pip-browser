@@ -1,3 +1,4 @@
+pub mod agent_control;
 pub mod agent_settings;
 pub mod audit;
 pub mod audit_settings;

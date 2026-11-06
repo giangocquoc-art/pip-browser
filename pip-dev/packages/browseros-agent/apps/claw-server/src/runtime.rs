@@ -380,6 +380,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
         let state = AppState::new_with_home(config, root.path().join("home")).await?;
@@ -433,6 +435,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
         let state = AppState::new_with_home(config, root.path().join("home")).await?;
@@ -480,6 +484,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
         let state = AppState::new_with_home(config, root.path().join("home")).await?;
@@ -532,6 +538,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -555,6 +563,7 @@ mod tests {
             AnalyticsService::new_for_test(&config.browserclaw_dir, Some("test-key"), host, true)
                 .await?,
         );
+        analytics.set_consent(true).await?;
         let install_id = analytics.get_state().await.distinct_id;
         state.analytics = analytics.clone();
         let session_efficiency = Arc::new(SessionEfficiencyService::new_with_analytics(
@@ -686,6 +695,8 @@ mod tests {
             session_sweep_interval: Duration::from_secs(60),
             replay_retention_days: 7,
             dev_mode: false,
+            agent_control_token: None,
+            agent_control_required: false,
             native: Default::default(),
         });
         let mut state = AppState::new_with_home(config.clone(), root.path().join("home")).await?;

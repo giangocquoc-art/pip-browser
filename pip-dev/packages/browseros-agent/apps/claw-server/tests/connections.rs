@@ -899,6 +899,8 @@ async fn test_router(browserclaw_dir: &Path, home: &Path) -> anyhow::Result<Rout
         server_port: 9200,
         cdp_port: 49337,
         proxy_port: None,
+        agent_control_token: None,
+        agent_control_required: false,
         resources_dir: browserclaw_dir.join("resources"),
         browserclaw_dir: browserclaw_dir.to_path_buf(),
         session_idle: Duration::from_secs(300),

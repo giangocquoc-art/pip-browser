@@ -23,7 +23,9 @@ import {
 } from '@/modules/takeover/takeover-bar'
 
 const ACTIVE_POLL_INTERVAL_MS = 3000
-const IDLE_POLL_INTERVAL_MS = 15000
+// A foreground page also wakes pending native lock leases for hidden target tabs.
+// Keep this interval within the MCP lock ACK deadline; hidden content scripts pause.
+const IDLE_POLL_INTERVAL_MS = 3000
 
 export default defineContentScript({
   matches: ['<all_urls>'],
