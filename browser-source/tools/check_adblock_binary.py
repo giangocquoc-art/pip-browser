@@ -82,8 +82,14 @@ def main():
     environment = os.environ.copy()
     for key in ('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'WEBVIEW2_USER_DATA_FOLDER'):
         environment.pop(key, None)
-    process = subprocess.Popen([str(staged), f'http://127.0.0.2:{server.server_port}/', '--portable', '--background-check'],
-                               cwd=directory, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
+    # Keep the browser window visible so the hosted Windows runner exercises an
+    # actual WebView2 navigation, not a hidden background-check window whose
+    # renderer may defer page loading.
+    process = subprocess.Popen(
+        [str(staged), f'http://127.0.0.2:{server.server_port}/', '--portable'],
+        cwd=directory,
+        env=environment,
+    )
     try:
         if not Handler.reported.wait(35):
             with Handler.lock:
