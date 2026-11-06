@@ -2025,7 +2025,10 @@ pub fn run() {
         step: 0,
         pending: false,
         next: Instant::now(),
-        deadline: Instant::now() + Duration::from_secs(180),
+        // Windows CI runs a real WebView2 cold-start child after exercising
+        // many native UI cases. Leave enough time for that restore under a
+        // loaded hosted runner; the per-step watchdog still catches hangs.
+        deadline: Instant::now() + Duration::from_secs(300),
         url,
         worker_url,
         error: None,

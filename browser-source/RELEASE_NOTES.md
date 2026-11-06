@@ -1,4 +1,4 @@
-# Pip 0.1.20
+# Pip 0.1.21
 
 - Added a signed Android APK for ARM64, ARMv7 and x86_64. The APK uses Android System WebView; Google DNS and isolated browser profiles are not yet advertised as complete on Android.
 - Added macOS Apple Silicon and Intel Preview packages. They are ad-hoc signed, not notarized, and require the documented first-open confirmation in macOS.
