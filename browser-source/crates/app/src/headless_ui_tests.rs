@@ -1322,17 +1322,14 @@ impl ApplicationHandler<BrowserEvent> for Check {
                 }
                 if self.step == 74 {
                     let id = self.main.unwrap();
-                    let Some(tab_id) = self.app.windows[&id]
-                        .tab_manager
-                        .active_tab_id()
-                    else {
+                    let Some(tab_id) = self.app.windows[&id].tab_manager.active_tab_id() else {
                         self.error = Some("No active tab for gambling redirect check".into());
                         events.exit();
                         return;
                     };
-                    if let Err(error) = self.app.windows[&id].tabs[&tab_id]
-                        .evaluate_script("location.href='https://ad88vip6.com/home/register?id=940814853'")
-                    {
+                    if let Err(error) = self.app.windows[&id].tabs[&tab_id].evaluate_script(
+                        "location.href='https://ad88vip6.com/home/register?id=940814853'",
+                    ) {
                         self.error = Some(error.to_string());
                         events.exit();
                         return;
