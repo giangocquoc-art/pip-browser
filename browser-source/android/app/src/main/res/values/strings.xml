@@ -35,6 +35,13 @@
     <string name="download_started">Đang tải %1$s. Mở mục Tải xuống của Android để xem tiến trình.</string>
     <string name="download_failed">Không thể bắt đầu tải tệp. Hãy thử lại hoặc kiểm tra dung lượng trống.</string>
     <string name="file_picker_unavailable">Không tìm thấy ứng dụng chọn tệp trên thiết bị.</string>
+    <string name="website_permission_title">Quyền trên trang web</string>
+    <string name="website_media_permission_prompt">%1$s muốn dùng %2$s. Chỉ cho phép nếu bạn tin cậy trang này.</string>
+    <string name="website_media_camera">camera</string>
+    <string name="website_media_microphone">microphone</string>
+    <string name="website_media_camera_microphone">camera và microphone</string>
+    <string name="permission_allow">Cho phép</string>
+    <string name="permission_deny">Không cho phép</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
     <string name="adblock_loading">Đang nạp bộ lọc quảng cáo…</string>
     <string name="adblock_ready">Chặn quảng cáo đang bật · %1$d yêu cầu đã chặn</string>
