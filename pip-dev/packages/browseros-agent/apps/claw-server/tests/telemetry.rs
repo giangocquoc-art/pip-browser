@@ -64,12 +64,23 @@ async fn roundtrip_case(root: &Path) -> anyhow::Result<()> {
     let (status, initial) =
         request_json(&router, "GET", "/api/v1/settings/telemetry", None).await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(initial["enabled"], true);
-    assert_eq!(initial["consent"], true);
+    assert_eq!(initial["enabled"], false);
+    assert_eq!(initial["consent"], false);
     let distinct_id = initial["distinctId"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing distinctId"))?;
     Uuid::parse_str(distinct_id)?;
+
+    let (status, enabled) = request_json(
+        &router,
+        "PUT",
+        "/api/v1/settings/telemetry",
+        Some(json!({ "consent": true })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["consent"], true);
 
     let (status, _) = request_json(
         &router,
@@ -122,6 +133,16 @@ async fn roundtrip_case(root: &Path) -> anyhow::Result<()> {
 
 async fn gate_off_case(root: &Path) -> anyhow::Result<()> {
     let router = test_router(root).await?;
+    let (status, consented) = request_json(
+        &router,
+        "PUT",
+        "/api/v1/settings/telemetry",
+        Some(json!({ "consent": true })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(consented["enabled"], false);
+    assert_eq!(consented["consent"], true);
     let (status, state) = request_json(&router, "GET", "/api/v1/settings/telemetry", None).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["enabled"], false);
