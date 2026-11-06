@@ -563,6 +563,7 @@ mod tests {
             AnalyticsService::new_for_test(&config.browserclaw_dir, Some("test-key"), host, true)
                 .await?,
         );
+        analytics.set_consent(true).await?;
         let install_id = analytics.get_state().await.distinct_id;
         state.analytics = analytics.clone();
         let session_efficiency = Arc::new(SessionEfficiencyService::new_with_analytics(

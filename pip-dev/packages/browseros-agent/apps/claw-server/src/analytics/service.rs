@@ -596,7 +596,7 @@ mod tests {
         let service =
             AnalyticsService::new_with_config(directory.path(), test_config(host, true)).await?;
         let original = service.get_state().await;
-        assert!(original.enabled);
+        assert!(!original.enabled);
 
         let disabled = service.set_consent(false).await?;
         assert!(!disabled.enabled);

@@ -185,11 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn installation_seeds_missing_or_consent_only_analytics() -> anyhow::Result<()> {
-        for existing in [
-            None,
-            Some(r#"{"enabled":false}"#),
-            Some(r#"{"distinctId":"2e087632-1f4e-4ee7-b8bb-cf8ad53e91a8"}"#),
-        ] {
+        for existing in [None, Some(r#"{"enabled":false}"#)] {
             let directory = tempdir()?;
             let path = state_path(directory.path());
             if let Some(raw) = existing {
@@ -205,6 +201,24 @@ mod tests {
             assert!(state.installation_aliases.is_empty());
             assert_eq!(read_state(&path)?, Some(state));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_identity_without_consent_defaults_to_disabled() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let path = state_path(directory.path());
+        fs::write(&path, json!({"distinctId": A}).to_string())?;
+        fs::write(
+            directory.path().join("installation.json"),
+            json!({"install_id": B}).to_string(),
+        )?;
+
+        let state = load_or_create_state(&path).await;
+        assert_eq!(state.distinct_id.as_deref(), Some(A));
+        assert!(!state.enabled);
+        assert_eq!(state.installation_aliases, [B]);
+        assert_eq!(read_state(&path)?, Some(state));
         Ok(())
     }
 

@@ -378,6 +378,7 @@ mod agent_control_http_tests {
         let mut request = axum::http::Request::builder()
             .method("POST")
             .uri(format!("/api/v1/agent-control/tabs/{tab_id}/stop"))
+            .header(axum::http::header::HOST, "localhost")
             .header("Content-Type", "application/json");
         if authorized {
             request = request.header("Authorization", "Bearer test-secret");
