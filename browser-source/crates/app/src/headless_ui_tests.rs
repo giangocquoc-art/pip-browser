@@ -1092,13 +1092,13 @@ impl Check {
                 self.blocked_before_popup_test=self.app.adblock.borrow().blocked;
                 self.popup_tab_count_before=tab_count;
                 self.popup_window_count_before=self.app.windows.len();
-                self.query(id,false,"(()=>{window.open(new URL('/casino/register',location.href).href,'_blank');return true})()");
+                self.query(id,false,"(()=>{window.open('https://rotating-cdn.example/casino/register?id=940814853','_blank');return true})()");
             }
             111=>{
                 if self.app.adblock.borrow().blocked<=self.blocked_before_popup_test {
                     if self.step_started.elapsed() >= Duration::from_secs(5) {
                         return Err(format!(
-                            "Local gambling popup check timed out: blocked={} before={}, tabs={} before={}, windows={} before={}",
+                            "Rotating-host gambling popup check timed out: blocked={} before={}, tabs={} before={}, windows={} before={}",
                             self.app.adblock.borrow().blocked,
                             self.blocked_before_popup_test,
                             self.app.windows[&id].tab_manager.tabs().len(),
@@ -2147,7 +2147,7 @@ pub fn run() {
         .as_array_mut()
         .unwrap()
         .push(serde_json::json!(
-            "Known ad88vip6.com and local gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
+            "Known ad88vip6.com and rotating-host gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
         ));
     report["checks"]
         .as_array_mut()

@@ -63,7 +63,7 @@ jobs:
             throw "Native UI verification did not pass: $($report.status)"
           }
           $popupCheck = $report.checks | Where-Object {
-            $_ -eq "Known ad88vip6.com and local gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
+            $_ -eq "Known ad88vip6.com and rotating-host gambling pop-ups emitted by window.open are blocked by WebView2 without creating a Pip tab"
           }
           if (-not $popupCheck) {
             throw "The native UI report is missing the ad88vip6 popup check."
