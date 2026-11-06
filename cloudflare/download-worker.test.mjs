@@ -18,14 +18,14 @@ const androidApk = {
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Android-0.1.1-universal.apk",
 };
 const macArm = {
-  name: "Pip-macOS-arm64-0.1.1.zip",
+  name: "Pip-macOS-arm64-0.1.1-preview.zip",
   size: 789,
-  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-arm64-0.1.1.zip",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-arm64-0.1.1-preview.zip",
 };
 const macIntel = {
-  name: "Pip-macOS-x64-0.1.1.zip",
+  name: "Pip-macOS-x64-0.1.1-preview.zip",
   size: 789,
-  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-x64-0.1.1.zip",
+  browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-x64-0.1.1-preview.zip",
 };
 
 async function withMockedFetch(mock, action) {
@@ -81,15 +81,15 @@ test("streams only version-matched Android and macOS assets from the latest rele
     return new Response("platform-binary");
   }, async () => Promise.all([
     worker.fetch(new Request("https://download.pip.psharehub.com/android")),
-    worker.fetch(new Request("https://download.pip.psharehub.com/macos-arm64")),
-    worker.fetch(new Request("https://download.pip.psharehub.com/macos-x64")),
+    worker.fetch(new Request("https://download.pip.psharehub.com/macos-arm64-preview")),
+    worker.fetch(new Request("https://download.pip.psharehub.com/macos-x64-preview")),
   ]));
 
   assert.deepEqual(response.map((item) => item.status), [200, 200, 200]);
   assert.deepEqual(response.map((item) => item.headers.get("Content-Disposition")), [
     'attachment; filename="Pip-Android-0.1.1-universal.apk"',
-    'attachment; filename="Pip-macOS-arm64-0.1.1.zip"',
-    'attachment; filename="Pip-macOS-x64-0.1.1.zip"',
+    'attachment; filename="Pip-macOS-arm64-0.1.1-preview.zip"',
+    'attachment; filename="Pip-macOS-x64-0.1.1-preview.zip"',
   ]);
   assert.equal(seenAssets.length, 3);
   assert.ok(seenAssets.every((url) => url.includes("releases/download/v0.1.1/")));

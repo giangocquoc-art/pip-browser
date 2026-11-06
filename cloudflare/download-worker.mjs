@@ -3,7 +3,7 @@ const RELEASE_CACHE_SECONDS = 120;
 const INSTALLER_NAME = "PipSetup.exe";
 const LEGACY_INSTALLER_NAME = /^Pip-Setup-[\w.+-]+-Windows-x64\.exe$/;
 const SUPPORTED_PATHS = new Set([
-  "/", "/installer", "/checksums", "/android", "/macos-arm64", "/macos-x64",
+  "/", "/installer", "/checksums", "/android", "/macos-arm64-preview", "/macos-x64-preview",
 ]);
 
 function textResponse(body, status) {
@@ -40,10 +40,10 @@ function getAsset(release, pathname) {
   let asset;
   if (pathname === "/android") {
     asset = release.assets?.find((item) => item.name === `Pip-Android-${version}-universal.apk`);
-  } else if (pathname === "/macos-arm64") {
-    asset = release.assets?.find((item) => item.name === `Pip-macOS-arm64-${version}.zip`);
-  } else if (pathname === "/macos-x64") {
-    asset = release.assets?.find((item) => item.name === `Pip-macOS-x64-${version}.zip`);
+  } else if (pathname === "/macos-arm64-preview") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-arm64-${version}-preview.zip`);
+  } else if (pathname === "/macos-x64-preview") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-x64-${version}-preview.zip`);
   } else if (pathname === "/" || pathname === "/installer") {
     asset = release.assets?.find((item) => item.name === INSTALLER_NAME)
       ?? release.assets?.find((item) => LEGACY_INSTALLER_NAME.test(item.name));

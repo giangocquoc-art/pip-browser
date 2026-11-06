@@ -1,6 +1,8 @@
 plugins {
     id("com.android.application")
 }
+val pipVersionName = providers.gradleProperty("pipVersion").orElse("0.1.0-preview").get()
+val pipVersionCode = providers.gradleProperty("pipVersionCode").orElse("1").get().toInt()
 android {
     namespace = "com.psharehub.pip"
     compileSdk = 36
@@ -11,8 +13,8 @@ android {
         applicationId = "com.psharehub.pip"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-preview"
+        versionCode = pipVersionCode
+        versionName = pipVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["disableAnalytics"] = "true"
         ndk {

@@ -187,9 +187,162 @@ jobs:
       - name: Audit locked Rust dependencies
         run: cargo audit --file browser-source/Cargo.lock
 
+  android-release:
+    name: Build and sign Android APK
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    env:
+      PIP_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+        with:
+          gradle-version: '8.13'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - name: Install Android SDK and NDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Build native ad blocker for supported ABIs
+        working-directory: browser-source/android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          bash native/build-android.sh
+      - name: Test and build unsigned release APK
+        working-directory: browser-source/android
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          IFS=. read -r major minor patch <<< "$VERSION"
+          version_code=$((major * 1000000 + minor * 1000 + patch))
+          gradle --no-daemon --max-workers=2 testReleaseUnitTest lintRelease assembleRelease \
+            -PpipVersion="$VERSION" -PpipVersionCode="$version_code"
+      - name: Align and sign release APK
+        env:
+          PIP_ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.PIP_ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          PIP_ANDROID_SIGNING_PASSWORD: ${{ secrets.PIP_ANDROID_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$PIP_ANDROID_SIGNING_KEYSTORE_BASE64"
+          test -n "$PIP_ANDROID_SIGNING_PASSWORD"
+          mkdir -p browser-source/dist
+          printf '%s' "$PIP_ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pip-android-release.p12"
+          printf '%s' "$PIP_ANDROID_SIGNING_PASSWORD" > "$RUNNER_TEMP/pip-android-release-password.txt"
+          unset PIP_ANDROID_SIGNING_KEYSTORE_BASE64 PIP_ANDROID_SIGNING_PASSWORD
+          input='browser-source/android/app/build/outputs/apk/release/app-release-unsigned.apk'
+          aligned="$RUNNER_TEMP/app-release-aligned.apk"
+          output="browser-source/dist/Pip-Android-${PIP_VERSION}-universal.apk"
+          test -s "$input"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -P 16 4 "$input" "$aligned"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$RUNNER_TEMP/pip-android-release.p12" \
+            --ks-type PKCS12 --ks-key-alias pip-android-release \
+            --ks-pass "file:$RUNNER_TEMP/pip-android-release-password.txt" \
+            --key-pass "file:$RUNNER_TEMP/pip-android-release-password.txt" \
+            --out "$output" "$aligned"
+          python3 - "$output" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as apk:
+              for abi in ('arm64-v8a', 'armeabi-v7a', 'x86_64'):
+                  assert apk.getinfo(f'lib/{abi}/libpip_adblock.so').file_size > 0, f'missing native library for {abi}'
+          PY
+          signer_info=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$output")
+          printf '%s\n' "$signer_info"
+          grep -qi 'Signer #1 certificate SHA-256 digest: 2c262b675151a0ae8de7b9a6f5bd72e7c5b3629a144ab08faa9ef2195edb87fb' <<< "$signer_info"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 "$output"
+          rm -f "$RUNNER_TEMP/pip-android-release.p12" "$RUNNER_TEMP/pip-android-release-password.txt" "$aligned"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pip-android-release
+          path: browser-source/dist/Pip-Android-${{ needs.build.outputs.version }}-universal.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  macos-preview:
+    name: Build macOS ${{ matrix.arch }} Preview
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: browser-source
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Check formatting and test macOS shell
+        run: |
+          rustfmt --edition 2021 --check crates/app/src/macos_main.rs
+          cargo test -p evergreen-core --locked
+          cargo test -p evergreen-browser --bin pip-macos --features macos-shell --locked
+      - name: Build and package macOS Preview
+        run: |
+          cargo build -p evergreen-browser --bin pip-macos --features macos-shell --release --locked --target ${{ matrix.target }}
+          bash scripts/package-macos.sh ${{ matrix.target }}
+      - name: Run packaged macOS UI verification
+        env:
+          PIP_VERIFY_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, tempfile
+          arch = os.environ['PIP_VERIFY_ARCH']
+          archives = list(pathlib.Path('dist').glob(f'Pip-macOS-{arch}-*-preview.zip'))
+          assert len(archives) == 1, 'Expected one macOS Preview archive'
+          with tempfile.TemporaryDirectory(prefix='pip-preview-verify-') as directory:
+              subprocess.run(['ditto', '-x', '-k', str(archives[0]), directory], check=True)
+              executable = pathlib.Path(directory) / 'Pip.app/Contents/MacOS/Pip'
+              result = subprocess.run([str(executable), '--verify-ui'], capture_output=True, text=True, timeout=120)
+              print(result.stdout)
+              print(result.stderr)
+              reports = []
+              for line in result.stdout.splitlines():
+                  try:
+                      item = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(item, dict) and item.get('mode') == 'pip-macos-native-ui':
+                      reports.append(item)
+              assert len(reports) == 1 and result.returncode == 0 and reports[0].get('ok') is True, 'macOS Preview UI verification failed'
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pip-macos-${{ matrix.arch }}-preview
+          path: browser-source/dist/Pip-macOS-${{ matrix.arch }}-*-preview.zip
+          if-no-files-found: error
+          retention-days: 7
+
   publish-draft:
     name: Create draft release
-    needs: [build, attest]
+    needs: [build, attest, android-release, macos-preview]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -208,6 +361,22 @@ jobs:
           name: pip-release-assets
           path: browser-source/dist
 
+      - name: Download signed Android and macOS Preview assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pip-android-release
+          path: browser-source/dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pip-macos-arm64-preview
+          path: browser-source/dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pip-macos-x64-preview
+          path: browser-source/dist
+
       - name: Create or update draft release
         shell: pwsh
         env:
@@ -219,6 +388,17 @@ jobs:
           $setup = "dist/Pip-Setup-$env:PIP_VERSION-Windows-x64.exe"
           $source = "dist/Pip-source-$env:PIP_VERSION.zip"
           $checksums = 'dist/SHA256SUMS.txt'
+          $android = "dist/Pip-Android-$env:PIP_VERSION-universal.apk"
+          $macArm = "dist/Pip-macOS-arm64-$env:PIP_VERSION-preview.zip"
+          $macIntel = "dist/Pip-macOS-x64-$env:PIP_VERSION-preview.zip"
+          foreach ($path in @($setup, $source, $android, $macArm, $macIntel)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Release asset is missing: $path" }
+          }
+          $checksumLines = foreach ($path in @($setup, $source, $android, $macArm, $macIntel)) {
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($path))"
+          }
+          Set-Content -LiteralPath $checksums -Value $checksumLines -Encoding ascii
           $productNotes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Raw
           $verificationNotes = @"
           ## Verify this release
@@ -230,7 +410,9 @@ jobs:
           gh attestation verify .\Pip-source-$env:PIP_VERSION.zip --repo $repository
           ``````
 
-          Compare downloaded file hashes with ``SHA256SUMS.txt`` as an additional integrity check. Artifact attestations establish where and how the files were built; they are not Windows Authenticode signatures and do not remove SmartScreen warnings.
+          Android is a signed APK. The macOS packages are Preview builds with an ad-hoc signature only; on first launch, control-click Pip.app, choose Open, then confirm Open in macOS. They are not notarized.
+
+          Compare downloaded file hashes with ``SHA256SUMS.txt`` as an additional integrity check. Artifact attestations establish provenance only for the Windows installer and source archive; they are not Windows Authenticode signatures and do not remove SmartScreen warnings.
           "@
           $notes = "$productNotes`n`n$verificationNotes"
           $notesPath = 'dist/RELEASE_NOTES.md'
@@ -240,12 +422,12 @@ jobs:
           $viewExit = $LASTEXITCODE
           if ($viewExit -eq 0) {
             if ($existing.Trim() -ne 'true') { throw "Refusing to modify already-published release $tag." }
-            gh release upload $tag $setup $source $checksums --repo $repository --clobber
+            gh release upload $tag $setup $source $android $macArm $macIntel $checksums --repo $repository --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Could not upload assets to the draft release.' }
             gh release edit $tag --repo $repository --title "Pip $env:PIP_VERSION" --notes-file $notesPath
             if ($LASTEXITCODE -ne 0) { throw 'Could not update draft release notes.' }
           } else {
-            gh release create $tag $setup $source $checksums --repo $repository --draft --title "Pip $env:PIP_VERSION" --notes-file $notesPath
+            gh release create $tag $setup $source $android $macArm $macIntel $checksums --repo $repository --draft --title "Pip $env:PIP_VERSION" --notes-file $notesPath
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the draft release.' }
           }
 
@@ -253,7 +435,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $release.tagName -ne $tag -or -not $release.isDraft) {
             throw "Draft release validation failed for $tag."
           }
-          $expectedAssets = @("Pip-Setup-$env:PIP_VERSION-Windows-x64.exe", "Pip-source-$env:PIP_VERSION.zip", 'SHA256SUMS.txt')
+          $expectedAssets = @("Pip-Setup-$env:PIP_VERSION-Windows-x64.exe", "Pip-source-$env:PIP_VERSION.zip", "Pip-Android-$env:PIP_VERSION-universal.apk", "Pip-macOS-arm64-$env:PIP_VERSION-preview.zip", "Pip-macOS-x64-$env:PIP_VERSION-preview.zip", 'SHA256SUMS.txt')
           $actualAssets = @($release.assets | ForEach-Object { $_.name })
           foreach ($assetName in $expectedAssets) {
             if ($assetName -notin $actualAssets) { throw "Draft release is missing asset $assetName." }
