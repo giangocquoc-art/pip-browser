@@ -631,6 +631,9 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        // ActivityScenario.close() and system-driven finish paths can reach onDestroy
+        // without a useful save-state callback. Persist the latest tab URLs explicitly.
+        persistSession();
         destroying = true;
         content.removeAllViews();
         for (Tab tab : tabs) {
