@@ -50,7 +50,7 @@ jobs:
           cargo test --manifest-path native/Cargo.toml --locked
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           bash native/build-android.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Pip-Android-native-libraries
           path: browser-source/android/app/src/main/jniLibs/
@@ -72,7 +72,7 @@ jobs:
         if: failure()
         run: |
           find browser-source/android/app/build -name 'lint-results-*.txt' -type f -exec cat {} \;
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Pip-Android-development-APK
           path: browser-source/android/app/build/outputs/apk/debug/*.apk
@@ -118,7 +118,7 @@ jobs:
           script: gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
       - name: Upload emulator test reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Pip-Android-emulator-reports
           path: |
@@ -191,7 +191,7 @@ jobs:
               pathlib.Path(f'dist/Pip-macOS-{arch}-native-ui.json').write_text(json.dumps(report, indent=2))
               assert result.returncode == 0 and report.get('ok') is True, 'Native UI verification failed'
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Pip-macOS-${{ matrix.arch }}-development
           path: |
