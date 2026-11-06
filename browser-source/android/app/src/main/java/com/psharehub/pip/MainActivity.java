@@ -1,9 +1,11 @@
 package com.psharehub.pip;
 
 import android.annotation.SuppressLint;
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.pm.PackageManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -46,7 +48,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -54,6 +58,7 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final int MAX_TABS = 8;
     private static final int FILE_CHOOSER_REQUEST = 702;
+    private static final int WEBSITE_PERMISSION_REQUEST = 703;
     private final ArrayList<Tab> tabs = new ArrayList<>();
     private BrowserDataStore dataStore;
     private ExecutorService storageExecutor;
@@ -72,6 +77,11 @@ public final class MainActivity extends Activity {
     private boolean allowUnprotected;
     private ValueCallback<Uri[]> fileChooserCallback;
     private WebView fileChooserOwner;
+    private PermissionRequest websitePermissionRequest;
+    private WebView websitePermissionOwner;
+    private String websitePermissionOrigin;
+    private String[] websitePermissionResources;
+    private AlertDialog websitePermissionDialog;
 
     private static final class Tab {
         String url;
@@ -234,6 +244,7 @@ public final class MainActivity extends Activity {
         String url = Address.resolve(address.getText().toString());
         if (url == null) { showStatus(R.string.blocked_address); return; }
         Tab tab = tabs.get(selected);
+        cancelWebsitePermissionFor(tab.view);
         tab.url = url;
         tab.documentUrl = url;
         tab.explicitNavigationUrl = url;
@@ -260,6 +271,7 @@ public final class MainActivity extends Activity {
 
     private void selectTab(int index, boolean load) {
         WebView previous = activeView();
+        if (previous != null) cancelWebsitePermissionFor(previous);
         if (previous != null) previous.onPause();
         content.removeAllViews();
         selected = index;
@@ -329,6 +341,7 @@ public final class MainActivity extends Activity {
 
             @Override public void onPageStarted(WebView webView, String url, android.graphics.Bitmap icon) {
                 if (!isLiveView(tab, webView)) return;
+                cancelWebsitePermissionFor(webView);
                 if (Address.isWebUrl(url)) {
                     // A load requested just before this callback may supersede a queued
                     // start from the previous page. Keep that stale callback from
@@ -370,6 +383,7 @@ public final class MainActivity extends Activity {
             @Override public boolean onRenderProcessGone(WebView webView, RenderProcessGoneDetail detail) {
                 if (!isLiveView(tab, webView)) return true;
                 cancelFileChooserFor(webView);
+                cancelWebsitePermissionFor(webView);
                 boolean wasCurrent = isCurrentView(tab, webView);
                 tab.view = null;
                 if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
@@ -394,7 +408,7 @@ public final class MainActivity extends Activity {
             }
 
             @Override public void onPermissionRequest(PermissionRequest request) {
-                request.deny();
+                requestWebsiteMediaPermission(view, request);
             }
 
             @Override public boolean onShowFileChooser(WebView webView,
@@ -641,6 +655,7 @@ public final class MainActivity extends Activity {
         // can deliver queued navigation/progress/renderer callbacks.
         if (removedView != null) {
             cancelFileChooserFor(removedView);
+            cancelWebsitePermissionFor(removedView);
             content.removeView(removedView);
             removedView.stopLoading();
             removedView.destroy();
@@ -676,6 +691,160 @@ public final class MainActivity extends Activity {
 
     private void cancelFileChooserFor(WebView view) {
         if (fileChooserOwner == view) cancelPendingFileChooser();
+    }
+
+    private void requestWebsiteMediaPermission(WebView owner, PermissionRequest request) {
+        if (!isCurrentView(owner) || request == null
+                || !isSecureMediaOrigin(request.getOrigin().toString())) {
+            if (request != null) request.deny();
+            return;
+        }
+        String[] resources = request.getResources();
+        String[] androidPermissions = androidPermissionsFor(resources);
+        if (androidPermissions.length == 0 || resources == null
+                || androidPermissions.length != resources.length) {
+            request.deny();
+            return;
+        }
+        cancelPendingWebsitePermission();
+        websitePermissionRequest = request;
+        websitePermissionOwner = owner;
+        websitePermissionOrigin = request.getOrigin().toString();
+        websitePermissionResources = resources.clone();
+
+        String media = mediaLabel(resources);
+        websitePermissionDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.website_permission_title)
+                .setMessage(getString(R.string.website_media_permission_prompt,
+                        request.getOrigin().getHost(), media))
+                .setNegativeButton(R.string.permission_deny,
+                        (dialog, which) -> cancelPendingWebsitePermission())
+                .setPositiveButton(R.string.permission_allow,
+                        (dialog, which) -> continueWebsiteMediaPermission(androidPermissions))
+                .setOnCancelListener(dialog -> cancelPendingWebsitePermission())
+                .create();
+        websitePermissionDialog.show();
+    }
+
+    private void continueWebsiteMediaPermission(String[] androidPermissions) {
+        if (!hasLivePendingWebsitePermission()) {
+            cancelPendingWebsitePermission();
+            return;
+        }
+        ArrayList<String> missing = new ArrayList<>();
+        for (String permission : androidPermissions) {
+            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) missing.add(permission);
+        }
+        if (missing.isEmpty()) {
+            grantPendingWebsiteMediaPermission();
+        } else {
+            requestPermissions(missing.toArray(new String[0]), WEBSITE_PERMISSION_REQUEST);
+        }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != WEBSITE_PERMISSION_REQUEST) return;
+        if (hasLivePendingWebsitePermission()) grantPendingWebsiteMediaPermission();
+        else cancelPendingWebsitePermission();
+    }
+
+    private void grantPendingWebsiteMediaPermission() {
+        PermissionRequest request = websitePermissionRequest;
+        String[] resources = websitePermissionResources;
+        WebView owner = websitePermissionOwner;
+        String origin = websitePermissionOrigin;
+        clearPendingWebsitePermission();
+        if (request == null || resources == null || !isCurrentView(owner)
+                || !isSecureMediaOrigin(origin) || !sameOrigin(origin, owner.getUrl())) {
+            if (request != null) request.deny();
+            return;
+        }
+        ArrayList<String> granted = new ArrayList<>();
+        for (String resource : resources) {
+            String permission = androidPermissionForResource(resource);
+            if (permission != null && checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+                granted.add(resource);
+            }
+        }
+        if (granted.isEmpty()) request.deny();
+        else request.grant(granted.toArray(new String[0]));
+    }
+
+    private boolean hasLivePendingWebsitePermission() {
+        return websitePermissionRequest != null && isCurrentView(websitePermissionOwner)
+                && isSecureMediaOrigin(websitePermissionOrigin)
+                && sameOrigin(websitePermissionOrigin, websitePermissionOwner.getUrl());
+    }
+
+    private void cancelPendingWebsitePermission() {
+        PermissionRequest request = websitePermissionRequest;
+        clearPendingWebsitePermission();
+        if (request != null) request.deny();
+    }
+
+    private void cancelWebsitePermissionFor(WebView view) {
+        if (websitePermissionOwner == view) cancelPendingWebsitePermission();
+    }
+
+    private void clearPendingWebsitePermission() {
+        websitePermissionRequest = null;
+        websitePermissionOwner = null;
+        websitePermissionOrigin = null;
+        websitePermissionResources = null;
+        AlertDialog dialog = websitePermissionDialog;
+        websitePermissionDialog = null;
+        if (dialog != null && dialog.isShowing()) dialog.dismiss();
+    }
+
+    static String[] androidPermissionsFor(String[] resources) {
+        if (resources == null || resources.length == 0) return new String[0];
+        LinkedHashSet<String> permissions = new LinkedHashSet<>();
+        for (String resource : resources) {
+            String permission = androidPermissionForResource(resource);
+            if (permission == null) return new String[0];
+            permissions.add(permission);
+        }
+        return permissions.toArray(new String[0]);
+    }
+
+    private static String androidPermissionForResource(String resource) {
+        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) return Manifest.permission.CAMERA;
+        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) return Manifest.permission.RECORD_AUDIO;
+        return null;
+    }
+
+    static boolean isSecureMediaOrigin(String rawOrigin) {
+        if (rawOrigin == null) return false;
+        Uri uri = Uri.parse(rawOrigin);
+        String scheme = uri.getScheme();
+        String host = uri.getHost();
+        if (host == null) return false;
+        if ("https".equalsIgnoreCase(scheme)) return true;
+        if (!"http".equalsIgnoreCase(scheme)) return false;
+        String normalizedHost = host.toLowerCase(Locale.ROOT);
+        return "localhost".equals(normalizedHost) || "127.0.0.1".equals(normalizedHost)
+                || "::1".equals(normalizedHost);
+    }
+
+    private static boolean sameOrigin(String first, String second) {
+        if (first == null || second == null) return false;
+        Uri a = Uri.parse(first);
+        Uri b = Uri.parse(second);
+        return a.getScheme() != null && a.getHost() != null
+                && a.getScheme().equalsIgnoreCase(b.getScheme())
+                && a.getHost().equalsIgnoreCase(b.getHost()) && a.getPort() == b.getPort();
+    }
+
+    private String mediaLabel(String[] resources) {
+        boolean camera = false;
+        boolean microphone = false;
+        for (String resource : resources) {
+            camera |= PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource);
+            microphone |= PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource);
+        }
+        if (camera && microphone) return getString(R.string.website_media_camera_microphone);
+        return getString(camera ? R.string.website_media_camera : R.string.website_media_microphone);
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -822,6 +991,7 @@ public final class MainActivity extends Activity {
         persistSession();
         destroying = true;
         cancelPendingFileChooser();
+        cancelPendingWebsitePermission();
         content.removeAllViews();
         for (Tab tab : tabs) {
             WebView view = tab.view;

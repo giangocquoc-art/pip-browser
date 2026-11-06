@@ -73,6 +73,24 @@ public final class MainActivityTest {
         assertNull(MainActivity.parseDocumentPickerResult(android.app.Activity.RESULT_CANCELED, null));
     }
 
+    @Test public void mediaPermissionRequiresSecureOriginAndSupportedResources() {
+        assertTrue(MainActivity.isSecureMediaOrigin("https://video.example"));
+        assertTrue(MainActivity.isSecureMediaOrigin("http://localhost:3000"));
+        assertTrue(MainActivity.isSecureMediaOrigin("http://127.0.0.1:8080"));
+        assertFalse(MainActivity.isSecureMediaOrigin("http://video.example"));
+        assertFalse(MainActivity.isSecureMediaOrigin("file:///tmp/video.html"));
+
+        assertArrayEquals(new String[]{android.Manifest.permission.CAMERA},
+                MainActivity.androidPermissionsFor(new String[]{
+                        android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE}));
+        assertArrayEquals(new String[]{android.Manifest.permission.CAMERA,
+                        android.Manifest.permission.RECORD_AUDIO},
+                MainActivity.androidPermissionsFor(new String[]{
+                        android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE,
+                        android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE}));
+        assertEquals(0, MainActivity.androidPermissionsFor(new String[]{"unknown"}).length);
+    }
+
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             navigateWithoutWaitingForNetwork(scenario, FIRST);
