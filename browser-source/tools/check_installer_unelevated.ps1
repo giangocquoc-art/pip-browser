@@ -13,6 +13,7 @@ $releaseDirectory = Join-Path $targetDirectory 'release'
 $payload = Join-Path $releaseDirectory 'evergreen-browser.exe'
 $toolsDirectory = $PSScriptRoot
 $distributionDirectory = Join-Path $sourceRoot 'dist'
+$adblockCheckScript = Join-Path $toolsDirectory 'check_adblock_binary.py'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -20,6 +21,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     & $python $checkScript $setup
     if ($LASTEXITCODE -ne 0) {
         throw "Installer verification failed with exit code $LASTEXITCODE."
+    }
+    $env:PIP_ADBLOCK_BINARY_VERIFICATION_PATH = Join-Path $targetDirectory 'adblock-binary-verification.json'
+    & $python $adblockCheckScript $payload
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaged ad-block verification failed with exit code $LASTEXITCODE."
     }
     exit 0
 }
@@ -32,9 +38,13 @@ $password = ConvertTo-SecureString $plainPassword -AsPlainText -Force
 $account = "$env:COMPUTERNAME\$userName"
 $stdout = Join-Path $evidenceDirectory 'installer-check.stdout.log'
 $stderr = Join-Path $evidenceDirectory 'installer-check.stderr.log'
+$adblockStdout = Join-Path $evidenceDirectory 'adblock-check.stdout.log'
+$adblockStderr = Join-Path $evidenceDirectory 'adblock-check.stderr.log'
+$adblockEvidencePath = Join-Path $evidenceDirectory 'adblock-binary-verification.json'
 $userCreated = $false
 $grantedPaths = [System.Collections.Generic.List[string]]::new()
 $previousEvidencePath = $env:PIP_INSTALLER_VERIFICATION_PATH
+$previousAdblockEvidencePath = $env:PIP_ADBLOCK_BINARY_VERIFICATION_PATH
 $previousTemp = $env:TEMP
 $previousTmp = $env:TMP
 
@@ -60,13 +70,14 @@ try {
     foreach ($path in @($sourceRoot, $toolsDirectory, $distributionDirectory, $targetDirectory, $releaseDirectory)) {
         Grant-TemporaryAccess -Path $path -Right RX
     }
-    foreach ($path in @($checkScript, $setup, $payload)) {
+    foreach ($path in @($checkScript, $adblockCheckScript, $setup, $payload)) {
         Grant-TemporaryAccess -Path $path -Right RX
     }
     Grant-TemporaryAccess -Path $evidenceDirectory -Right M
 
     $credential = [PSCredential]::new($account, $password)
     $env:PIP_INSTALLER_VERIFICATION_PATH = $evidencePath
+    $env:PIP_ADBLOCK_BINARY_VERIFICATION_PATH = $adblockEvidencePath
     # A credentialed child inherits the runner's environment. Point its temp
     # paths at this user-writable evidence directory instead of runneradmin's.
     $env:TEMP = $evidenceDirectory
@@ -86,6 +97,29 @@ try {
         }
         throw "Installer verification under a standard user failed with exit code $($process.ExitCode)."
     }
+
+    $adblockArguments = '"' + $adblockCheckScript + '" "' + $payload + '"'
+    $adblockProcess = Start-Process -FilePath $python -ArgumentList $adblockArguments `
+        -Credential $credential -LoadUserProfile -WindowStyle Hidden `
+        -WorkingDirectory $sourceRoot -RedirectStandardOutput $adblockStdout `
+        -RedirectStandardError $adblockStderr -Wait -PassThru
+
+    if (Test-Path -LiteralPath $adblockStdout) {
+        Get-Content -LiteralPath $adblockStdout
+    }
+    if ($adblockProcess.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $adblockStderr) {
+            Get-Content -LiteralPath $adblockStderr | Write-Error
+        }
+        throw "Packaged ad-block verification under a standard user failed with exit code $($adblockProcess.ExitCode)."
+    }
+    if (-not (Test-Path -LiteralPath $adblockEvidencePath -PathType Leaf)) {
+        throw 'Packaged ad-block verification did not produce its evidence file.'
+    }
+    $adblockEvidence = Get-Content -LiteralPath $adblockEvidencePath -Raw | ConvertFrom-Json
+    if ($adblockEvidence.sha256 -ne (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()) {
+        throw 'Packaged ad-block evidence does not match the verified browser binary.'
+    }
 }
 finally {
     $cleanupFailures = [System.Collections.Generic.List[string]]::new()
@@ -95,6 +129,12 @@ finally {
     }
     else {
         $env:PIP_INSTALLER_VERIFICATION_PATH = $previousEvidencePath
+    }
+    if ($null -eq $previousAdblockEvidencePath) {
+        Remove-Item Env:\PIP_ADBLOCK_BINARY_VERIFICATION_PATH -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:PIP_ADBLOCK_BINARY_VERIFICATION_PATH = $previousAdblockEvidencePath
     }
     if ($null -eq $previousTemp) {
         Remove-Item Env:\TEMP -ErrorAction SilentlyContinue
@@ -127,7 +167,7 @@ finally {
             $cleanupFailures.Add("Could not remove the temporary user '$userName': $_")
         }
     }
-    foreach ($path in @($stdout, $stderr)) {
+    foreach ($path in @($stdout, $stderr, $adblockStdout, $adblockStderr)) {
         try {
             Remove-Item -LiteralPath $path -Force -ErrorAction Stop
         }

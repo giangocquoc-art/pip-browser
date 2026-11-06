@@ -110,7 +110,10 @@ def main():
         assert counts.get('/normal.mp4', 0) > 0, counts
         result.update(binary=str(binary), sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                       requests=counts)
-        output = Path('target/adblock-binary-verification.json')
+        output = Path(os.environ.get(
+            'PIP_ADBLOCK_BINARY_VERIFICATION_PATH',
+            'target/adblock-binary-verification.json',
+        )).resolve()
         output.parent.mkdir(exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         print('PASS: packaged Pip blocked script/media before network; cosmetic CSS worked under CSP;')
