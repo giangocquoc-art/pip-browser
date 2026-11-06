@@ -1,7 +1,0 @@
-# Release CI build from a prepared checkout: cloud workflows synchronize it
-# and macOS clones a synchronized base, so clean and git_setup are off. Signing and
-# upload are controlled by explicit CLI flags from the release workflows.
-# Arch and product come from workflow inputs.
-preset: release
-clean: false
-provision: none

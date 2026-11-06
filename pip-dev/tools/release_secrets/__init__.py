@@ -1,1 +1,0 @@
-"""Release secret sync tooling."""

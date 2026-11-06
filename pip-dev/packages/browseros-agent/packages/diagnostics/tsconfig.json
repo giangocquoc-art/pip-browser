@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "rootDir": "src",
-    "jsx": "react-jsx",
-    "types": ["chrome", "node", "bun"]
-  },
-  "include": ["src/**/*"]
-}
