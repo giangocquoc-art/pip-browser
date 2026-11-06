@@ -54,6 +54,12 @@ public final class MainActivityTest {
         assertEquals("*/*", single.getType());
         assertFalse(single.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false));
 
+        Intent typed = MainActivity.createDocumentPickerIntent(
+                WebChromeClient.FileChooserParams.MODE_OPEN,
+                new String[]{"image/png", " IMAGE/* ", "image/png", "text/html; charset=utf-8", "not-a-mime", "*/pdf"});
+        assertArrayEquals(new String[]{"image/png", "image/*", "text/html"},
+                typed.getStringArrayExtra(Intent.EXTRA_MIME_TYPES));
+
         Intent multiple = MainActivity.createDocumentPickerIntent(
                 WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
         assertTrue(multiple.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false));
