@@ -264,7 +264,7 @@ jobs:
           grep -qi 'Signer #1 certificate SHA-256 digest: 2c262b675151a0ae8de7b9a6f5bd72e7c5b3629a144ab08faa9ef2195edb87fb' <<< "$signer_info"
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 "$output"
           rm -f "$RUNNER_TEMP/pip-android-release.p12" "$RUNNER_TEMP/pip-android-release-password.txt" "$aligned"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: pip-android-release
           path: browser-source/dist/Pip-Android-${{ needs.build.outputs.version }}-universal.apk
@@ -333,7 +333,7 @@ jobs:
                       reports.append(item)
               assert len(reports) == 1 and result.returncode == 0 and reports[0].get('ok') is True, 'macOS Preview UI verification failed'
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: pip-macos-${{ matrix.arch }}-preview
           path: browser-source/dist/Pip-macOS-${{ matrix.arch }}-*-preview.zip
