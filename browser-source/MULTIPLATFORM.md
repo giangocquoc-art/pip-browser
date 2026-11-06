@@ -85,6 +85,11 @@ Mã tải tệp macOS tiếp theo dùng NSSavePanel và WKDownload, không tự 
 
 ## Tài liệu nền
 
+Đánh giá các browser viết bằng Zig và phần có thể tái sử dụng trong Pip nằm ở
+[ZIG_BROWSER_RESEARCH.md](ZIG_BROWSER_RESEARCH.md). Hiện không thay engine hệ điều hành bằng
+engine thử nghiệm: Lightpanda nhắm headless automation, còn Suzume chưa thay thế được mức tương
+thích/bảo mật của WebView2, WKWebView hay Android WebView.
+
 - [Wry](https://docs.rs/wry/0.57.0/wry/) và [winit](https://docs.rs/winit/0.30.12/winit/) là các thành phần đã dùng trong Pip.
 - [Android WebView](https://developer.android.com/develop/ui/views/layout/webapps/webview), [bảo mật WebView](https://developer.android.com/privacy-and-security/risks/unsafe-uri-loading).
 - [AGP 8.11: Gradle/JDK/SDK tương thích](https://developer.android.com/build/releases/past-releases/agp-8-11-0-release-notes).
