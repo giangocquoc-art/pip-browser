@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
+import { isWebsitePath, shouldBuildWebsite } from "./vercel-build-policy.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const websiteRoots = [
@@ -29,6 +30,31 @@ async function collectHtml(entry) {
 }
 
 const pages = (await Promise.all(websiteRoots.map(collectHtml))).flat();
+
+test("Vercel builds for deployed site files and skips unrelated project changes", () => {
+  for (const file of [
+    "index.html",
+    "version.json",
+    "assets/mascot.webp",
+    "pip-dev/updates/browser/appcast.xml",
+    "pip-dev/plugins/pip-dev-browser/plugin.json",
+    "vercel.json",
+  ]) {
+    assert.ok(isWebsitePath(file), `${file} should trigger a website deploy`);
+  }
+
+  for (const file of [
+    "browser-source/crates/app/src/main.rs",
+    "pip-dev/packages/browseros/chromium_patches/README.md",
+    "PIP_PRODUCT_REQUIREMENTS.md",
+    ".github/workflows/verify-website.yml",
+  ]) {
+    assert.equal(isWebsitePath(file), false, `${file} should not trigger a website deploy`);
+  }
+
+  assert.equal(shouldBuildWebsite(["browser-source/crates/app/src/main.rs"]), false);
+  assert.equal(shouldBuildWebsite(["browser-source/crates/app/src/main.rs", "version.json"]), true);
+});
 
 function resolveLocalReference(sourceFile, reference) {
   if (!reference || reference.startsWith("#") || reference.startsWith("//")) return null;
