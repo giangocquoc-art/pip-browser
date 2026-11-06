@@ -406,7 +406,7 @@ public final class MainActivity extends Activity {
                 cancelPendingFileChooser();
                 try {
                     // Use the system document picker, never a page-requested camera capture intent.
-                    Intent chooser = createDocumentPickerIntent(params.getMode());
+                    Intent chooser = createDocumentPickerIntent(params.getMode(), params.getAcceptTypes());
                     fileChooserCallback = callback;
                     fileChooserOwner = webView;
                     startActivityForResult(chooser, FILE_CHOOSER_REQUEST);
@@ -448,13 +448,53 @@ public final class MainActivity extends Activity {
     }
 
     static Intent createDocumentPickerIntent(int mode) {
+        return createDocumentPickerIntent(mode, null);
+    }
+
+    static Intent createDocumentPickerIntent(int mode, String[] requestedTypes) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
+        String[] acceptedTypes = normalizedAcceptTypes(requestedTypes);
+        if (acceptedTypes.length > 0) {
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, acceptedTypes);
+        }
         if (mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
             intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         }
         return intent;
+    }
+
+    static String[] normalizedAcceptTypes(String[] requestedTypes) {
+        if (requestedTypes == null || requestedTypes.length == 0) return new String[0];
+        java.util.LinkedHashSet<String> accepted = new java.util.LinkedHashSet<>();
+        for (String value : requestedTypes) {
+            if (value == null) continue;
+            String type = value.trim().toLowerCase(java.util.Locale.ROOT);
+            int parameter = type.indexOf(';');
+            if (parameter >= 0) type = type.substring(0, parameter).trim();
+            int slash = type.indexOf('/');
+            if (slash <= 0 || slash != type.lastIndexOf('/') || slash == type.length() - 1) continue;
+            String major = type.substring(0, slash);
+            String minor = type.substring(slash + 1);
+            if (!isMimeToken(major) || !isMimeToken(minor)
+                    || "*".equals(major) && !"*".equals(minor)) continue;
+            accepted.add(type);
+        }
+        return accepted.toArray(new String[0]);
+    }
+
+    private static boolean isMimeToken(String value) {
+        if ("*".equals(value)) return true;
+        if (value.isEmpty()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean valid = c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+                    || c == '!' || c == '#' || c == '$' || c == '&' || c == '^'
+                    || c == '_' || c == '.' || c == '+' || c == '-';
+            if (!valid) return false;
+        }
+        return true;
     }
 
     private void startDownload(String rawUrl, String mime, String filename) {
