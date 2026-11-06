@@ -388,7 +388,7 @@ impl Check {
             }
             4=>{
                 self.privacy_test_tab=self.app.windows[&id].tab_manager.active_tab_id();
-                self.query(id,false,"(()=>{if(document.title!=='Pip native test')return null;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';if(!window.__privacySeedStarted){window.__privacySeedStarted=true;window.__privacySeedReady=false;window.__privacySeedError=null;(async()=>{await new Promise((resolve,reject)=>{const request=indexedDB.open('pip-privacy-isolation',1);request.onupgradeneeded=()=>request.result.createObjectStore('marker');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,tx=db.transaction('marker','readwrite');tx.objectStore('marker').put('normal','context');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error)}});const cache=await caches.open('pip-privacy-isolation');await cache.put('/pip-privacy-marker',new Response('normal'));await navigator.serviceWorker.register('/privacy-isolation-sw.js');await navigator.serviceWorker.ready;window.__privacySeedReady=true})().catch(error=>window.__privacySeedError=String(error))}if(window.__privacySeedError)return JSON.stringify({seedError:window.__privacySeedError});if(!window.__privacySeedReady)return null;return typeof window.__pipSend==='undefined'?true:JSON.stringify({pipSend:typeof window.__pipSend})})()")
+                self.query(id,false,"(()=>{if(document.title!=='Pip native test')return null;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';if(!window.__privacySeedStarted){window.__privacySeedStarted=true;window.__privacySeedReady=false;window.__privacySeedError=null;(async()=>{await new Promise((resolve,reject)=>{const request=indexedDB.open('pip-privacy-isolation',1);request.onupgradeneeded=()=>request.result.createObjectStore('marker');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,tx=db.transaction('marker','readwrite');tx.objectStore('marker').put('normal','context');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error)}});const cache=await caches.open('pip-privacy-isolation');await cache.put('/pip-privacy-marker',new Response('normal'));let registration;for(let attempt=0;attempt<3;attempt++){try{registration=await navigator.serviceWorker.register('/privacy-isolation-sw.js');break}catch(error){if(attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)))}}await navigator.serviceWorker.ready;window.__privacySeedReady=true})().catch(error=>window.__privacySeedError=String(error))}if(window.__privacySeedError)return JSON.stringify({seedError:window.__privacySeedError});if(!window.__privacySeedReady)return null;return typeof window.__pipSend==='undefined'?true:JSON.stringify({pipSend:typeof window.__pipSend})})()")
             }
             5=>{
                 let path=self.app.library_path(id).ok_or("Library path missing")?;
@@ -941,14 +941,8 @@ impl Check {
             }
             74=>{
                 if self.app.windows[&id].tab_manager.active_tab().map(|tab|tab.url.as_str())!=Some(self.url.as_str()){return Ok(())}
-                let tab_id = self.app.windows[&id]
-                    .tab_manager
-                    .active_tab_id()
-                    .ok_or("No active tab for gambling redirect check")?;
-                self.app.windows[&id].tabs[&tab_id]
-                    .evaluate_script("location.href='https://ad88vip6.com/home/register?id=940814853'")
-                    .map_err(|error| error.to_string())?;
-                self.step=82;
+                // The tab model changes before WebView2 finishes navigation; wait for the fixture document before testing its redirect.
+                self.query(id,false,"location.hostname==='127.0.0.1'&&location.pathname==='/' ? true : null");
             }
             82=>self.query(id,false,"location.hostname==='127.0.0.1'&&location.pathname==='/' ? true : null"),
             83=>{
@@ -1324,6 +1318,24 @@ impl ApplicationHandler<BrowserEvent> for Check {
                 if reply != "true" {
                     self.error = Some(format!("UI step {} returned {reply}", self.step));
                     events.exit();
+                    return;
+                }
+                if self.step == 74 {
+                    let id = self.main.unwrap();
+                    let Some(tab_id) = self.app.windows[&id].tab_manager.active_tab_id() else {
+                        self.error = Some("No active tab for gambling redirect check".into());
+                        events.exit();
+                        return;
+                    };
+                    if let Err(error) = self.app.windows[&id].tabs[&tab_id].evaluate_script(
+                        "location.href='https://ad88vip6.com/home/register?id=940814853'",
+                    ) {
+                        self.error = Some(error.to_string());
+                        events.exit();
+                        return;
+                    }
+                    self.step = 82;
+                    self.next = Instant::now() + Duration::from_millis(400);
                     return;
                 }
                 if self.step == 15 {
@@ -1914,7 +1926,10 @@ pub fn run() {
             };
             let request = String::from_utf8_lossy(&bytes[..n]);
             let path = request.split_whitespace().nth(1).unwrap_or("");
-            if matches!(path, "/worker-test" | "/sw.js" | "/shared-worker.js") {
+            if matches!(
+                path,
+                "/worker-test" | "/sw.js" | "/shared-worker.js" | "/privacy-isolation-sw.js"
+            ) {
                 eprintln!("[native-ui] fixture served {path}");
             }
             let (extra, body) = if path == "/download" {
