@@ -3,6 +3,7 @@ package com.psharehub.pip;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.http.SslError;
 import android.os.Build;
@@ -33,12 +34,21 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+
 import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Initial Android shell; platform WebView owns rendering and its security updates. */
 public final class MainActivity extends Activity {
     private static final int MAX_TABS = 8;
     private final ArrayList<Tab> tabs = new ArrayList<>();
+    private BrowserDataStore dataStore;
+    private ExecutorService storageExecutor;
+    private SharedPreferences sessionPreferences;
     private int selected;
     private EditText address;
     private Button back;
@@ -68,6 +78,9 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        dataStore = new BrowserDataStore(this);
+        storageExecutor = Executors.newSingleThreadExecutor();
+        sessionPreferences = getSharedPreferences("browser-session", MODE_PRIVATE);
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         CookieManager.getInstance().setAcceptCookie(true);
         buildUi();
@@ -78,14 +91,17 @@ public final class MainActivity extends Activity {
                 if (NativeAdblock.isReady()) drainPendingLoads();
             }
         }));
-        ArrayList<String> saved = state == null ? null : state.getStringArrayList("tabUrls");
+        ArrayList<String> saved = state == null ? loadPersistedSession()
+                : state.getStringArrayList("tabUrls");
         if (saved != null) {
             for (String url : saved) {
                 if (tabs.size() < MAX_TABS && Address.isWebUrl(url)) tabs.add(new Tab(url));
             }
         }
         if (tabs.isEmpty()) tabs.add(new Tab(Address.HOME));
-        selected = state == null ? 0 : Math.min(Math.max(0, state.getInt("selected")), tabs.size() - 1);
+        int savedSelection = state == null ? sessionPreferences.getInt("selected", 0)
+                : state.getInt("selected", 0);
+        selected = Math.min(Math.max(0, savedSelection), tabs.size() - 1);
         selectTab(selected);
         if (Build.VERSION.SDK_INT >= 33) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -147,8 +163,8 @@ public final class MainActivity extends Activity {
             else tab.view.reload();
         });
         tabButton = button(R.string.tabs, this::showTabs);
-        Button add = button(R.string.new_tab, () -> addTab(Address.HOME, true));
-        for (Button item : new Button[]{back, forward, reload, tabButton, add}) {
+        Button menu = button(R.string.menu, this::showBrowserMenu);
+        for (Button item : new Button[]{back, forward, reload, tabButton, menu}) {
             controls.addView(item, new LinearLayout.LayoutParams(0, dp(56), 1));
         }
         root.addView(controls);
@@ -200,6 +216,7 @@ public final class MainActivity extends Activity {
         Tab tab = tabs.get(selected);
         tab.url = url;
         tab.explicitNavigationUrl = url;
+        persistSession();
         if (tab.view == null) selectTab(selected);
         else loadWhenProtected(tab);
         address.clearFocus();
@@ -213,6 +230,7 @@ public final class MainActivity extends Activity {
             return false;
         }
         tabs.add(new Tab(url));
+        persistSession();
         selectTab(tabs.size() - 1, load);
         return true;
     }
@@ -224,6 +242,7 @@ public final class MainActivity extends Activity {
         if (previous != null) previous.onPause();
         content.removeAllViews();
         selected = index;
+        persistSession();
         Tab tab = tabs.get(selected);
         boolean created = tab.view == null;
         if (created) tab.view = createWebView(tab);
@@ -291,6 +310,7 @@ public final class MainActivity extends Activity {
                 if (Address.isWebUrl(url)) {
                     tab.url = url;
                     tab.documentUrl = url;
+                    persistSession();
                 }
                 if (isCurrentView(tab, webView)) {
                     status.setVisibility(View.GONE);
@@ -301,6 +321,10 @@ public final class MainActivity extends Activity {
             }
 
             @Override public void onPageFinished(WebView webView, String url) {
+                if (!isLiveView(tab, webView)) return;
+                String visitedUrl = Address.isWebUrl(url) ? url : tab.url;
+                String visitedTitle = tab.title;
+                storageExecutor.execute(() -> dataStore.recordVisit(visitedUrl, visitedTitle));
                 if (isCurrentView(tab, webView)) {
                     updateControls();
                     updateFilteringStatus();
@@ -371,12 +395,110 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
+    private void showBrowserMenu() {
+        Tab tab = tabs.get(selected);
+        String url = tab.url;
+        storageExecutor.execute(() -> {
+            boolean bookmarked = dataStore.isBookmarked(url);
+            runOnUiThread(() -> {
+                if (destroying) return;
+                String bookmarkAction = getString(bookmarked
+                        ? R.string.remove_bookmark : R.string.add_bookmark);
+                String[] items = {bookmarkAction, getString(R.string.bookmarks), getString(R.string.history)};
+                new AlertDialog.Builder(this).setTitle(R.string.menu).setItems(items, (dialog, which) -> {
+                    if (which == 0) toggleBookmark();
+                    else if (which == 1) showBookmarks();
+                    else showHistory();
+                }).setNegativeButton(R.string.cancel, null).show();
+            });
+        });
+    }
+
+    private void toggleBookmark() {
+        Tab tab = tabs.get(selected);
+        String url = tab.url;
+        String title = tab.title;
+        if (!Address.isWebUrl(url)) return;
+        storageExecutor.execute(() -> {
+            boolean wasBookmarked = dataStore.isBookmarked(url);
+            if (wasBookmarked) dataStore.removeBookmark(url);
+            else dataStore.addBookmark(url, title);
+            runOnUiThread(() -> {
+                if (!destroying) Toast.makeText(this,
+                        wasBookmarked ? R.string.bookmark_removed : R.string.bookmark_added,
+                        Toast.LENGTH_SHORT).show();
+            });
+        });
+    }
+
+    private void showBookmarks() {
+        storageExecutor.execute(() -> {
+            List<BrowserDataStore.Entry> entries = dataStore.getBookmarks();
+            runOnUiThread(() -> {
+                if (destroying) return;
+                if (entries.isEmpty()) {
+                    new AlertDialog.Builder(this).setTitle(R.string.bookmarks)
+                            .setMessage(R.string.empty_bookmarks).setPositiveButton(R.string.cancel, null).show();
+                    return;
+                }
+                String[] labels = new String[entries.size()];
+                for (int i = 0; i < entries.size(); i++) labels[i] = entries.get(i).label();
+                new AlertDialog.Builder(this).setTitle(R.string.bookmarks).setItems(labels,
+                        (dialog, index) -> openSavedUrl(entries.get(index).url))
+                        .setPositiveButton(R.string.new_tab, (dialog, which) -> addTab(Address.HOME, true))
+                        .setNegativeButton(R.string.cancel, null).show();
+            });
+        });
+    }
+
+    private void showHistory() {
+        storageExecutor.execute(() -> {
+            List<BrowserDataStore.Entry> entries = dataStore.getRecentHistory();
+            runOnUiThread(() -> {
+                if (destroying) return;
+                if (entries.isEmpty()) {
+                    new AlertDialog.Builder(this).setTitle(R.string.history)
+                            .setMessage(R.string.empty_history).setPositiveButton(R.string.cancel, null).show();
+                    return;
+                }
+                String[] labels = new String[entries.size()];
+                for (int i = 0; i < entries.size(); i++) labels[i] = entries.get(i).label();
+                new AlertDialog.Builder(this).setTitle(R.string.history).setItems(labels,
+                        (dialog, index) -> openSavedUrl(entries.get(index).url))
+                        .setPositiveButton(R.string.clear_history, (dialog, which) -> confirmClearHistory())
+                        .setNegativeButton(R.string.cancel, null).show();
+            });
+        });
+    }
+
+    private void confirmClearHistory() {
+        new AlertDialog.Builder(this).setMessage(R.string.confirm_clear_history)
+                .setPositiveButton(R.string.clear_history, (dialog, which) -> storageExecutor.execute(() -> {
+                    dataStore.clearHistory();
+                    runOnUiThread(() -> {
+                        if (!destroying) Toast.makeText(this, R.string.history_cleared, Toast.LENGTH_SHORT).show();
+                    });
+                })).setNegativeButton(R.string.cancel, null).show();
+    }
+
+    private void openSavedUrl(String url) {
+        if (!Address.isWebUrl(url)) return;
+        Tab tab = tabs.get(selected);
+        tab.url = url;
+        tab.explicitNavigationUrl = url;
+        address.setText(url);
+        persistSession();
+        if (tab.view == null) selectTab(selected);
+        else loadWhenProtected(tab);
+    }
+
     private void closeTab() {
         Tab removed = tabs.remove(selected);
         WebView removedView = removed.view;
         removed.view = null;
         if (tabs.isEmpty()) tabs.add(new Tab(Address.HOME));
         selected = Math.min(selected, tabs.size() - 1);
+        persistSession();
         // Repair selection and revoke the old view identity before WebView teardown
         // can deliver queued navigation/progress/renderer callbacks.
         if (removedView != null) {
@@ -449,6 +571,31 @@ public final class MainActivity extends Activity {
         else finish();
     }
 
+    private ArrayList<String> loadPersistedSession() {
+        ArrayList<String> urls = new ArrayList<>();
+        String encoded = sessionPreferences.getString("tabUrls", null);
+        if (encoded == null) return urls;
+        try {
+            JSONArray array = new JSONArray(encoded);
+            for (int i = 0; i < array.length() && urls.size() < MAX_TABS; i++) {
+                String url = array.optString(i, "");
+                if (Address.isWebUrl(url)) urls.add(url);
+            }
+        } catch (JSONException ignored) {
+            // Ignore corrupt session metadata and start with the Pip home page.
+        }
+        return urls;
+    }
+
+    private void persistSession() {
+        if (sessionPreferences == null || tabs.isEmpty()) return;
+        JSONArray urls = new JSONArray();
+        for (Tab tab : tabs) urls.put(Address.isWebUrl(tab.url) && tab.url.length() <= 8192
+                ? tab.url : Address.HOME);
+        sessionPreferences.edit().putString("tabUrls", urls.toString())
+                .putInt("selected", Math.max(0, selected)).apply();
+    }
+
     // API 33+ gestures use the platform OnBackInvokedCallback registered in onCreate.
     // This override remains solely for Android 8-12 compatibility.
     @SuppressLint("GestureBackNavigation")
@@ -457,6 +604,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         paused = true;
+        persistSession();
         for (Tab tab : tabs) if (tab.view != null) tab.view.onPause();
         CookieManager.getInstance().flush();
         super.onPause();
@@ -478,10 +626,14 @@ public final class MainActivity extends Activity {
         }
         state.putStringArrayList("tabUrls", urls);
         state.putInt("selected", selected);
+        persistSession();
         super.onSaveInstanceState(state);
     }
 
     @Override protected void onDestroy() {
+        // ActivityScenario.close() and system-driven finish paths can reach onDestroy
+        // without a useful save-state callback. Persist the latest tab URLs explicitly.
+        persistSession();
         destroying = true;
         content.removeAllViews();
         for (Tab tab : tabs) {
@@ -492,6 +644,8 @@ public final class MainActivity extends Activity {
                 view.destroy();
             }
         }
+        storageExecutor.execute(dataStore::close);
+        storageExecutor.shutdown();
         super.onDestroy();
     }
 }

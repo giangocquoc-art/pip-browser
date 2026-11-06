@@ -10,11 +10,14 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ListView;
+import android.content.Context;
 
+import androidx.test.core.app.ApplicationProvider;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.Test;
+import org.junit.Before;
 import org.junit.runner.RunWith;
 
 import java.util.concurrent.atomic.AtomicReference;
@@ -35,10 +38,16 @@ public final class MainActivityTest {
     private static final String FIRST = "https://first.pip.invalid/one";
     private static final String SECOND = "https://second.pip.invalid/two";
 
+    @Before public void clearPersistedSession() {
+        Context context = ApplicationProvider.getApplicationContext();
+        context.getSharedPreferences("browser-session", Context.MODE_PRIVATE)
+                .edit().clear().commit();
+    }
+
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             navigateWithoutWaitingForNetwork(scenario, FIRST);
-            onView(withContentDescription(R.string.new_tab)).perform(click());
+            openNewTab();
             navigateWithoutWaitingForNetwork(scenario, SECOND);
             assertUi(scenario, 2, SECOND);
 
@@ -51,6 +60,21 @@ public final class MainActivityTest {
             assertUi(scenario, 2, SECOND);
             closeCurrentTab();
             assertUi(scenario, 1, FIRST);
+        }
+    }
+
+    @Test public void selectedTabAndUrlsSurviveClosingAndReopeningTheApp() {
+        ActivityScenario<MainActivity> first = ActivityScenario.launch(MainActivity.class);
+        navigateWithoutWaitingForNetwork(first, FIRST);
+        openNewTab();
+        navigateWithoutWaitingForNetwork(first, SECOND);
+        assertUi(first, 2, SECOND);
+        first.close();
+
+        try (ActivityScenario<MainActivity> reopened = ActivityScenario.launch(MainActivity.class)) {
+            assertUi(reopened, 2, SECOND);
+            selectTab(0);
+            assertUi(reopened, 2, FIRST);
         }
     }
 
@@ -128,6 +152,11 @@ public final class MainActivityTest {
         onView(withContentDescription(R.string.tabs)).perform(click());
         onData(anything()).inAdapterView(isAssignableFrom(ListView.class))
                 .inRoot(isDialog()).atPosition(position).perform(click());
+    }
+
+    private static void openNewTab() {
+        onView(withContentDescription(R.string.tabs)).perform(click());
+        onView(withText(R.string.new_tab)).inRoot(isDialog()).perform(click());
     }
 
     private static void closeCurrentTab() {
