@@ -85,7 +85,13 @@ def main():
     process = subprocess.Popen([str(staged), f'http://127.0.0.2:{server.server_port}/', '--portable', '--background-check'],
                                cwd=directory, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
-        assert Handler.reported.wait(35), f'Packaged browser did not report; exit={process.poll()}'
+        if not Handler.reported.wait(35):
+            with Handler.lock:
+                counts = dict(Handler.counts)
+            raise AssertionError(
+                'Packaged browser did not report; '
+                f'exit={process.poll()}, loopback requests={counts}'
+            )
         result = Handler.result
         assert result['ad_executed'] is False, result
         assert result['cosmetic_hidden'] is True, result
