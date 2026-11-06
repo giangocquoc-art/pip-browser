@@ -1,3 +1,3 @@
 ! Pip-maintained popup exceptions and high-confidence domain blocks.
-! Rules in this file are checked only for WebView2 popup destinations.
+! Rules here are evaluated for popups, cross-site redirects, and popup frames.
 ||ad88vip6.com^$popup

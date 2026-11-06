@@ -61,7 +61,11 @@ $report = [ordered]@{
     devtoolsListenerAddresses = @()
     videoUrl = $VideoUrl
     googleDnsProxyConfigured = $null
+    googleDnsProxyPorts = @()
+    proxyConfigEventCount = 0
     directDnsTransactions = $null
+    googleDnsEvidenceError = $null
+    googleDnsEvidenceStage = $null
     videoTitle = $null
     offlineUiDetected = $null
     playerBefore = $null
@@ -344,7 +348,21 @@ try {
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Runtime.enable')
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Network.enable')
     [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Page.enable')
-    [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Page.navigate' -Parameters @{ url = $VideoUrl })
+    # Pip already receives VideoUrl on its command line. Sending Page.navigate again
+    # while that first navigation is in flight aborts the initial document on WebView2.
+    $targetUri = $null
+    $targetMatchesVideo = $false
+    try {
+        $targetUri = [Uri]::new([string] $target.url)
+        $targetMatchesVideo = $targetUri.Scheme -eq $videoUri.Scheme -and
+            $targetUri.DnsSafeHost -eq $videoUri.DnsSafeHost -and
+            $targetUri.AbsolutePath -eq $videoUri.AbsolutePath -and
+            $targetUri.Query -eq $videoUri.Query
+    }
+    catch { }
+    if (-not $targetMatchesVideo) {
+        [void] (Invoke-CdpCommand -WebSocket $socket -Method 'Page.navigate' -Parameters @{ url = $VideoUrl })
+    }
 
     $loadDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $before = $null
@@ -439,7 +457,7 @@ finally {
     }
     if ($process -and -not $process.HasExited) {
         [void] $process.CloseMainWindow()
-        if (-not $process.WaitForExit(8000)) {
+        if (-not $process.WaitForExit(15000)) {
             # Fallback is limited to the exact Pip.exe process started above.
             $process.Kill()
             [void] $process.WaitForExit(5000)
@@ -447,12 +465,55 @@ finally {
     }
     if (Test-Path -LiteralPath $runRoot -PathType Container) {
         if (Test-Path -LiteralPath $netLogPath -PathType Leaf) {
+            $dnsEvidenceStage = 'wait_for_log_flush'
             try {
+                $settleDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                $lastNetLogLength = -1L
+                $netLogStableSince = $null
+                $netLogReady = $false
+                while ([DateTime]::UtcNow -lt $settleDeadline) {
+                    $currentLength = (Get-Item -LiteralPath $netLogPath).Length
+                    if ($currentLength -gt 0 -and $currentLength -eq $lastNetLogLength) {
+                        if (-not $netLogStableSince) {
+                            $netLogStableSince = [DateTime]::UtcNow
+                        }
+                        elseif (([DateTime]::UtcNow - $netLogStableSince).TotalMilliseconds -ge 750) {
+                            $probe = $null
+                            try {
+                                $probe = [System.IO.File]::Open(
+                                    $netLogPath,
+                                    [System.IO.FileMode]::Open,
+                                    [System.IO.FileAccess]::Read,
+                                    [System.IO.FileShare]::None
+                                )
+                                $netLogReady = $true
+                                break
+                            }
+                            catch [System.IO.IOException] {
+                                $netLogStableSince = [DateTime]::UtcNow
+                            }
+                            finally {
+                                if ($probe) { $probe.Dispose() }
+                            }
+                        }
+                    }
+                    else {
+                        $lastNetLogLength = $currentLength
+                        $netLogStableSince = $null
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+                if (-not $netLogReady) {
+                    throw 'NetLog did not finish writing before the timeout.'
+                }
+                $dnsEvidenceStage = 'check_log_size'
                 $netLogItem = Get-Item -LiteralPath $netLogPath
                 if ($netLogItem.Length -gt 134217728) {
                     throw 'NetLog exceeded the 128 MiB parsing limit.'
                 }
+                $dnsEvidenceStage = 'parse_log_json'
                 $netLog = Get-Content -LiteralPath $netLogPath -Raw | ConvertFrom-Json
+                $dnsEvidenceStage = 'map_event_types'
                 $eventNames = @{}
                 foreach ($eventType in $netLog.constants.logEventTypes.PSObject.Properties) {
                     $eventNames[[string] $eventType.Value] = [string] $eventType.Name
@@ -460,6 +521,7 @@ finally {
                 $proxyConfigured = $false
                 $proxyPorts = New-Object 'System.Collections.Generic.HashSet[int]'
                 $dnsCount = 0
+                $dnsEvidenceStage = 'inspect_log_events'
                 foreach ($event in $netLog.events) {
                     $eventName = $eventNames[[string] $event.type]
                     if ($eventName -eq 'DNS_TRANSACTION') {
@@ -478,6 +540,7 @@ finally {
                         }
                     }
                 }
+                $dnsEvidenceStage = 'summarize_dns_route'
                 $proxyConfigured = $proxyPorts.Count -gt 0
                 $report.googleDnsProxyConfigured = $proxyConfigured
                 $report.googleDnsProxyPorts = @($proxyPorts | Sort-Object)
@@ -504,9 +567,11 @@ finally {
                 }
             }
             catch {
-                # ConvertFrom-Json can include the entire NetLog text in its exception.
-                # Retain only the exception class; this artifact must never duplicate raw logs.
-                $report.googleDnsEvidenceError = "WebView2 NetLog parse failed ({0}); raw log discarded." -f $_.Exception.GetType().Name
+                # PowerShell errors can include the entire NetLog text. Retain only
+                # a fixed stage and exception class; never duplicate raw logs here.
+                $report.googleDnsEvidenceStage = $dnsEvidenceStage
+                $report.googleDnsEvidenceError = "WebView2 NetLog analysis failed at {0} ({1}); raw log discarded." -f `
+                    $dnsEvidenceStage, $_.Exception.GetType().Name
                 Add-Assertion -Name 'google_dns_netlog_evidence' -Passed $false `
                     -Details $report.googleDnsEvidenceError
             }

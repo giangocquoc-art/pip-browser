@@ -2,10 +2,12 @@
 
 No real profile, desktop shortcut or HKCU app registration is changed.
 """
+import atexit
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,8 +15,12 @@ import time
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
+evidence_path = Path(os.environ.get(
+    "PIP_INSTALLER_VERIFICATION_PATH", root / "target/installer-verification.json"
+)).resolve()
 setup = Path(sys.argv[1] if len(sys.argv) > 1 else root / "dist/PipSetup.exe").resolve()
 stage = Path(tempfile.mkdtemp(prefix="Pip setup check "))
+atexit.register(shutil.rmtree, stage, ignore_errors=True)
 env = os.environ.copy()
 for variable, folder in [("LOCALAPPDATA", "Local AppData"), ("APPDATA", "Roaming AppData"), ("USERPROFILE", "User Profile")]:
     env[variable] = str(stage / folder)
@@ -89,5 +95,6 @@ evidence = {
                "deferred uninstall cleanup"],
     "stage": str(stage), "registry": "not modified (--no-register)",
 }
-(root / "target/installer-verification.json").write_text(json.dumps(evidence, indent=2))
+evidence_path.parent.mkdir(parents=True, exist_ok=True)
+evidence_path.write_text(json.dumps(evidence, indent=2))
 print(json.dumps(evidence, indent=2))

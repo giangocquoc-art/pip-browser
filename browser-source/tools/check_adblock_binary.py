@@ -82,10 +82,22 @@ def main():
     environment = os.environ.copy()
     for key in ('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'WEBVIEW2_USER_DATA_FOLDER'):
         environment.pop(key, None)
-    process = subprocess.Popen([str(staged), f'http://127.0.0.2:{server.server_port}/', '--portable', '--background-check'],
-                               cwd=directory, env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
+    # Keep the browser window visible so the hosted Windows runner exercises an
+    # actual WebView2 navigation, not a hidden background-check window whose
+    # renderer may defer page loading.
+    process = subprocess.Popen(
+        [str(staged), f'http://127.0.0.2:{server.server_port}/', '--portable'],
+        cwd=directory,
+        env=environment,
+    )
     try:
-        assert Handler.reported.wait(35), f'Packaged browser did not report; exit={process.poll()}'
+        if not Handler.reported.wait(35):
+            with Handler.lock:
+                counts = dict(Handler.counts)
+            raise AssertionError(
+                'Packaged browser did not report; '
+                f'exit={process.poll()}, loopback requests={counts}'
+            )
         result = Handler.result
         assert result['ad_executed'] is False, result
         assert result['cosmetic_hidden'] is True, result
@@ -98,7 +110,10 @@ def main():
         assert counts.get('/normal.mp4', 0) > 0, counts
         result.update(binary=str(binary), sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                       requests=counts)
-        output = Path('target/adblock-binary-verification.json')
+        output = Path(os.environ.get(
+            'PIP_ADBLOCK_BINARY_VERIFICATION_PATH',
+            'target/adblock-binary-verification.json',
+        )).resolve()
         output.parent.mkdir(exist_ok=True)
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         print('PASS: packaged Pip blocked script/media before network; cosmetic CSS worked under CSP;')
