@@ -411,6 +411,7 @@ async fn test_app(root: &Path) -> anyhow::Result<TestApp> {
         native: Default::default(),
     });
     let state = AppState::new_with_home(config, root.join("home")).await?;
+    state.analytics.set_consent(true).await?;
     Ok(TestApp {
         router: build_router(state.clone()),
         state,
