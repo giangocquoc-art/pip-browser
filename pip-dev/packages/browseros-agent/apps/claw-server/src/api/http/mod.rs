@@ -8,7 +8,7 @@ use crate::{
 use axum::{
     Router,
     extract::{DefaultBodyLimit, Request},
-    http::{HeaderValue, Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header, uri::Authority},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -202,9 +202,12 @@ pub async fn request_context(mut req: Request, next: Next) -> Response {
     req.extensions_mut().insert(request_id.clone());
     let method = req.method().clone();
     let path = req.uri().path().to_string();
-    let reject_origin = (path == "/api/v1/recordings/events"
-        && !trusted_recording_origin(req.headers()))
-        || (path == "/api/v1/extension/update-ready" && !trusted_update_origin(req.headers()));
+    let trusted_host = is_loopback_host(req.headers());
+    let trusted_source = trusted_api_source(&path, req.headers());
+    let reject_origin = !trusted_host || !trusted_source;
+    let allowed_cors_origin = (!reject_origin)
+        .then(|| cors_origin(&path, req.headers()))
+        .flatten();
     let span = info_span!("http_request", request_id = %request_id.0, %method, %path);
     async move {
         let start = Instant::now();
@@ -212,7 +215,7 @@ pub async fn request_context(mut req: Request, next: Next) -> Response {
             CanonicalError::new(
                 StatusCode::FORBIDDEN,
                 "forbidden",
-                "this endpoint is restricted to BrowserOS neo",
+                "this endpoint is restricted to local Pip Dev clients",
                 Some(&request_id),
             )
             .into_response()
@@ -232,20 +235,19 @@ pub async fn request_context(mut req: Request, next: Next) -> Response {
         }
         let headers = response.headers_mut();
         if !reject_origin {
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                HeaderValue::from_static("*"),
-            );
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_METHODS,
-                HeaderValue::from_static("GET,POST,PUT,PATCH,DELETE,OPTIONS"),
-            );
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_HEADERS,
-                HeaderValue::from_static(
-                    "accept,content-type,authorization,mcp-session-id,mcp-protocol-version,last-event-id,x-recording-batch-id,x-recording-tab-id,x-recording-document-id,x-recording-has-gap",
-                ),
-            );
+            if let Some(origin) = allowed_cors_origin {
+                headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+                headers.insert(
+                    header::ACCESS_CONTROL_ALLOW_METHODS,
+                    HeaderValue::from_static("GET,POST,PUT,PATCH,DELETE,OPTIONS"),
+                );
+                headers.insert(
+                    header::ACCESS_CONTROL_ALLOW_HEADERS,
+                    HeaderValue::from_static(
+                        "accept,content-type,authorization,mcp-session-id,mcp-protocol-version,last-event-id,x-recording-batch-id,x-recording-tab-id,x-recording-document-id,x-recording-has-gap",
+                    ),
+                );
+            }
         }
         if let Ok(value) = HeaderValue::from_str(&request_id.0) {
             headers.insert("x-request-id", value);
@@ -259,14 +261,68 @@ pub async fn request_context(mut req: Request, next: Next) -> Response {
 /// Stable origin derived from claw-app's manifest signing key.
 const BROWSERCLAW_EXTENSION_ORIGIN: &str = "chrome-extension://pjimfkbpehlcllblajnpfamdfjhhlgkc";
 
+fn is_loopback_host(headers: &axum::http::HeaderMap) -> bool {
+    single_header_str(headers, &header::HOST)
+        .ok()
+        .flatten()
+        .filter(|value| !value.contains('@'))
+        .and_then(|value| value.parse::<Authority>().ok())
+        .is_some_and(|authority| {
+            matches!(
+                authority.host().to_ascii_lowercase().as_str(),
+                "127.0.0.1" | "localhost"
+            )
+        })
+}
+
+fn single_header_str<'a>(
+    headers: &'a axum::http::HeaderMap,
+    name: &'static axum::http::header::HeaderName,
+) -> Result<Option<&'a str>, ()> {
+    let mut values = headers.get_all(name).iter();
+    match (values.next(), values.next()) {
+        (None, _) => Ok(None),
+        (Some(value), None) => value.to_str().map(Some).map_err(|_| ()),
+        (Some(_), Some(_)) => Err(()),
+    }
+}
+
+fn trusted_api_source(path: &str, headers: &axum::http::HeaderMap) -> bool {
+    if path == "/api/v1/recordings/events" && trusted_recording_origin(headers) {
+        return true;
+    }
+
+    if path == "/api/v1/extension/update-ready" && !trusted_update_origin(headers) {
+        return false;
+    }
+
+    match single_header_str(headers, &header::ORIGIN) {
+        Err(()) => false,
+        Ok(Some(BROWSERCLAW_EXTENSION_ORIGIN)) => true,
+        Ok(None) => !headers.contains_key("sec-fetch-site"),
+        Ok(Some(_)) => false,
+    }
+}
+
+fn cors_origin(path: &str, headers: &axum::http::HeaderMap) -> Option<HeaderValue> {
+    match single_header_str(headers, &header::ORIGIN) {
+        Ok(Some(BROWSERCLAW_EXTENSION_ORIGIN)) => {
+            Some(HeaderValue::from_static(BROWSERCLAW_EXTENSION_ORIGIN))
+        }
+        Ok(Some("null"))
+            if path == "/api/v1/recordings/events" && trusted_recording_origin(headers) =>
+        {
+            Some(HeaderValue::from_static("null"))
+        }
+        _ => None,
+    }
+}
+
 fn trusted_recording_origin(headers: &axum::http::HeaderMap) -> bool {
-    match headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    {
-        None => true,
-        Some(BROWSERCLAW_EXTENSION_ORIGIN) => true,
-        Some("null") => {
+    match single_header_str(headers, &header::ORIGIN) {
+        Ok(None) => !headers.contains_key("sec-fetch-site"),
+        Ok(Some(BROWSERCLAW_EXTENSION_ORIGIN)) => true,
+        Ok(Some("null")) => {
             // The native opaque recorder may send `Origin: null`; accept it only with
             // `Sec-Fetch-Site: none`, not as general trust of null origins.
             headers
@@ -274,7 +330,7 @@ fn trusted_recording_origin(headers: &axum::http::HeaderMap) -> bool {
                 .and_then(|value| value.to_str().ok())
                 == Some("none")
         }
-        Some(_) => false,
+        Ok(Some(_)) | Err(()) => false,
     }
 }
 
@@ -296,12 +352,9 @@ async fn extension_update_ready(
 }
 
 fn trusted_update_origin(headers: &axum::http::HeaderMap) -> bool {
-    match headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    {
-        Some(BROWSERCLAW_EXTENSION_ORIGIN) => true,
-        None => !headers.contains_key("sec-fetch-site"),
-        Some(_) => false,
+    match single_header_str(headers, &header::ORIGIN) {
+        Ok(Some(BROWSERCLAW_EXTENSION_ORIGIN)) => true,
+        Ok(None) => !headers.contains_key("sec-fetch-site"),
+        Ok(Some(_)) | Err(()) => false,
     }
 }

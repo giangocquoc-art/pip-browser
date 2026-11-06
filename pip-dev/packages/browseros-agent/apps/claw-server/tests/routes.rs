@@ -341,7 +341,7 @@ async fn mcp_hygiene_rejects_browser_originated_requests() -> anyhow::Result<()>
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body, json!({ "error": "unsupported request" }));
+    assert!(body.is_object());
 
     let (status, _headers, body) = request_json_with_headers(
         &app.router,
@@ -352,10 +352,10 @@ async fn mcp_hygiene_rejects_browser_originated_requests() -> anyhow::Result<()>
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body, json!({ "error": "unsupported request" }));
+    assert!(body.is_object());
 
-    // Hygiene applies to /mcp only: the same origin header is fine elsewhere.
-    let (status, _headers, _body) = request_json_with_headers(
+    // Browser pages cannot call any loopback API, even when the route is not MCP.
+    let (status, headers, _body) = request_json_with_headers(
         &app.router,
         "GET",
         "/system/health",
@@ -363,10 +363,51 @@ async fn mcp_hygiene_rejects_browser_originated_requests() -> anyhow::Result<()>
         &[("origin", "http://evil.example")],
     )
     .await?;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
 
-    // CORS preflight stays 204 like every other route (TS cors layer
-    // answers OPTIONS before hygiene runs).
+    let (status, headers, _body) =
+        request_json_with_headers(&app.router, "GET", "/system/health", None, &[]).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let (status, headers, _body) = request_json_with_headers(
+        &app.router,
+        "GET",
+        "/system/health",
+        None,
+        &[(
+            "origin",
+            "chrome-extension://pjimfkbpehlcllblajnpfamdfjhhlgkc",
+        )],
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|value| value.to_str().ok()),
+        Some("chrome-extension://pjimfkbpehlcllblajnpfamdfjhhlgkc")
+    );
+
+    let cross_site = Request::builder()
+        .method("GET")
+        .uri("/system/health")
+        .header(header::HOST, "localhost")
+        .header("sec-fetch-site", "cross-site")
+        .body(Body::empty())?;
+    let response = app.router.clone().oneshot(cross_site).await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let hostile_host = Request::builder()
+        .method("GET")
+        .uri("/system/health")
+        .header(header::HOST, "attacker.example")
+        .body(Body::empty())?;
+    let response = app.router.clone().oneshot(hostile_host).await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Hostile browser preflights are rejected before reaching MCP.
     let (status, _headers, _body) = request_json_with_headers(
         &app.router,
         "OPTIONS",
@@ -375,7 +416,7 @@ async fn mcp_hygiene_rejects_browser_originated_requests() -> anyhow::Result<()>
         &[("origin", "http://evil.example")],
     )
     .await?;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     Ok(())
 }
 
