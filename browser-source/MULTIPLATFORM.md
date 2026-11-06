@@ -8,7 +8,7 @@ Phạm vi được bổ sung ngày 2026-11-06: phát triển Pip cho Android, ma
 | --- | --- | --- |
 | Windows 10/11 x64 | Microsoft Edge WebView2, Rust/Wry hiện có | Bản Pip hiện hữu; giữ luồng build và installer Windows |
 | macOS, Apple Silicon và Intel | WKWebView của macOS qua Wry/winit đang dùng | Shell phát triển, build qua binary `pip-macos` |
-| Android 8 trở lên | Android System WebView, giao diện native | Ứng dụng phát triển trong `android/` |
+| Android 8 trở lên | Android System WebView, giao diện native | Ứng dụng phát triển trong `android/`; GeckoView mới là pilot debug, chưa đổi engine |
 | iOS | Chưa chọn | Để sau theo yêu cầu |
 
 Pip dùng engine do hệ điều hành cung cấp để tránh đóng gói thêm một Chromium riêng. Pip Dev vẫn dùng nền Chromium/BrowserOS riêng: shell Android/macOS trong tài liệu này không phải bản port của MCP hay native input lock Pip Dev.
@@ -45,6 +45,12 @@ bash scripts/package-macos.sh aarch64-apple-darwin
 Máy Intel thay target bằng `x86_64-apple-darwin`. Chỉ `.app` đã build/chạy thử đúng kiến trúc mới chứng minh tương thích; chạy qua Rosetta không thay kiểm thử native ARM64.
 
 Android xem [android/README.md](android/README.md). Toolchain được pin: JDK 17, Gradle 8.13, Android Gradle Plugin 8.11.1, SDK 36. Không cần cài toolchain hay chạy build nặng trên ổ D của máy người dùng; workflow hosted thực hiện build.
+
+Pilot GeckoView chỉ nằm trong `debugImplementation` và `src/debug`, có launcher riêng trên
+APK debug. APK release hiện tại vẫn dùng WebView. Pilot kiểm tra cách tạo context ID riêng,
+private mode và một fixture cookie chạy trên emulator; UI ghi rõ Google DoH mới được cấu hình
+`TRR_MODE_ONLY`, tuyến DNS thực vẫn cần trace mạng. Không dùng kết quả pilot để bật engine,
+DNS hoặc tính năng hồ sơ trên bản tải công khai.
 
 [Verify Pip platforms](../.github/workflows/verify-pip-platforms.yml) chạy test/lint/build APK debug và build/test/package macOS trên runner Apple Silicon + Intel. Windows vẫn được kiểm tra bởi workflow hiện hữu. Workflow mới chỉ upload artifact phát triển với thời hạn 7 ngày, không tự tạo release hoặc thay link tải.
 

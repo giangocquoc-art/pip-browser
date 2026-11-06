@@ -63,6 +63,20 @@ public final class MainActivityTest {
         }
     }
 
+    @Test public void lateStartFromPreviousPageCannotOverwriteRestoredUrl() {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            navigateWithoutWaitingForNetwork(scenario, FIRST);
+            scenario.onActivity(activity -> {
+                WebView view = webView(activity);
+                view.stopLoading();
+                view.getWebViewClient().onPageStarted(view, Address.HOME, null);
+            });
+            assertUi(scenario, 1, FIRST);
+            scenario.recreate();
+            assertUi(scenario, 1, FIRST);
+        }
+    }
+
     @Test public void selectedTabAndUrlsSurviveClosingAndReopeningTheApp() {
         ActivityScenario<MainActivity> first = ActivityScenario.launch(MainActivity.class);
         navigateWithoutWaitingForNetwork(first, FIRST);
