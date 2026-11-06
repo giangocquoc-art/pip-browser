@@ -4,6 +4,8 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
@@ -28,6 +30,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebBackForwardList;
+import android.webkit.ValueCallback;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.URLUtil;
@@ -50,6 +53,7 @@ import java.util.concurrent.Executors;
 /** Initial Android shell; platform WebView owns rendering and its security updates. */
 public final class MainActivity extends Activity {
     private static final int MAX_TABS = 8;
+    private static final int FILE_CHOOSER_REQUEST = 702;
     private final ArrayList<Tab> tabs = new ArrayList<>();
     private BrowserDataStore dataStore;
     private ExecutorService storageExecutor;
@@ -66,6 +70,8 @@ public final class MainActivity extends Activity {
     private boolean paused;
     private boolean destroying;
     private boolean allowUnprotected;
+    private ValueCallback<Uri[]> fileChooserCallback;
+    private WebView fileChooserOwner;
 
     private static final class Tab {
         String url;
@@ -363,6 +369,7 @@ public final class MainActivity extends Activity {
 
             @Override public boolean onRenderProcessGone(WebView webView, RenderProcessGoneDetail detail) {
                 if (!isLiveView(tab, webView)) return true;
+                cancelFileChooserFor(webView);
                 boolean wasCurrent = isCurrentView(tab, webView);
                 tab.view = null;
                 if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
@@ -388,6 +395,28 @@ public final class MainActivity extends Activity {
 
             @Override public void onPermissionRequest(PermissionRequest request) {
                 request.deny();
+            }
+
+            @Override public boolean onShowFileChooser(WebView webView,
+                    ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (!isCurrentView(tab, webView)) {
+                    callback.onReceiveValue(null);
+                    return false;
+                }
+                cancelPendingFileChooser();
+                try {
+                    // Use the system document picker, never a page-requested camera capture intent.
+                    Intent chooser = createDocumentPickerIntent(params.getMode());
+                    fileChooserCallback = callback;
+                    fileChooserOwner = webView;
+                    startActivityForResult(chooser, FILE_CHOOSER_REQUEST);
+                    return true;
+                } catch (ActivityNotFoundException | SecurityException | IllegalArgumentException failure) {
+                    cancelPendingFileChooser();
+                    Toast.makeText(MainActivity.this, R.string.file_picker_unavailable,
+                            Toast.LENGTH_LONG).show();
+                    return false;
+                }
             }
 
             @Override public boolean onCreateWindow(WebView webView, boolean dialog, boolean userGesture, Message result) {
@@ -416,6 +445,16 @@ public final class MainActivity extends Activity {
                 .setPositiveButton(R.string.download_save, (dialog, which) ->
                         startDownload(rawUrl, mime, confirmedFilename))
                 .show();
+    }
+
+    static Intent createDocumentPickerIntent(int mode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        if (mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        return intent;
     }
 
     private void startDownload(String rawUrl, String mime, String filename) {
@@ -561,6 +600,7 @@ public final class MainActivity extends Activity {
         // Repair selection and revoke the old view identity before WebView teardown
         // can deliver queued navigation/progress/renderer callbacks.
         if (removedView != null) {
+            cancelFileChooserFor(removedView);
             content.removeView(removedView);
             removedView.stopLoading();
             removedView.destroy();
@@ -575,6 +615,44 @@ public final class MainActivity extends Activity {
     private boolean isCurrentView(Tab tab, WebView view) {
         return isLiveView(tab, view) && selected >= 0 && selected < tabs.size()
                 && tabs.get(selected) == tab;
+    }
+
+    private boolean isCurrentView(WebView view) {
+        return !destroying && view != null && activeView() == view;
+    }
+
+    private boolean isLiveView(WebView view) {
+        if (destroying || view == null) return false;
+        for (Tab tab : tabs) if (tab.view == view) return true;
+        return false;
+    }
+
+    private void cancelPendingFileChooser() {
+        ValueCallback<Uri[]> callback = fileChooserCallback;
+        fileChooserCallback = null;
+        fileChooserOwner = null;
+        if (callback != null) callback.onReceiveValue(null);
+    }
+
+    private void cancelFileChooserFor(WebView view) {
+        if (fileChooserOwner == view) cancelPendingFileChooser();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != FILE_CHOOSER_REQUEST) return;
+        ValueCallback<Uri[]> callback = fileChooserCallback;
+        WebView owner = fileChooserOwner;
+        fileChooserCallback = null;
+        fileChooserOwner = null;
+        if (callback == null) return;
+        Uri[] selectedFiles = isLiveView(owner) ? parseDocumentPickerResult(resultCode, data) : null;
+        callback.onReceiveValue(selectedFiles);
+    }
+
+    static Uri[] parseDocumentPickerResult(int resultCode, Intent data) {
+        return resultCode == RESULT_OK && data != null
+                ? WebChromeClient.FileChooserParams.parseResult(resultCode, data) : null;
     }
 
     private WebView activeView() {
@@ -703,6 +781,7 @@ public final class MainActivity extends Activity {
         // without a useful save-state callback. Persist the latest tab URLs explicitly.
         persistSession();
         destroying = true;
+        cancelPendingFileChooser();
         content.removeAllViews();
         for (Tab tab : tabs) {
             WebView view = tab.view;

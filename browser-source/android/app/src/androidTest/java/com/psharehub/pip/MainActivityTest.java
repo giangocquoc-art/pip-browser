@@ -2,6 +2,8 @@ package com.psharehub.pip;
 
 import android.view.View;
 import android.view.ViewGroup;
+import android.content.Intent;
+import android.net.Uri;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
@@ -42,6 +44,27 @@ public final class MainActivityTest {
         Context context = ApplicationProvider.getApplicationContext();
         context.getSharedPreferences("browser-session", Context.MODE_PRIVATE)
                 .edit().clear().commit();
+    }
+
+    @Test public void uploadPickerUsesSystemDocumentsWithoutCameraCapture() {
+        Intent single = MainActivity.createDocumentPickerIntent(
+                WebChromeClient.FileChooserParams.MODE_OPEN);
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, single.getAction());
+        assertTrue(single.hasCategory(Intent.CATEGORY_OPENABLE));
+        assertEquals("*/*", single.getType());
+        assertFalse(single.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false));
+
+        Intent multiple = MainActivity.createDocumentPickerIntent(
+                WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
+        assertTrue(multiple.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false));
+        assertFalse("A website file input must not launch camera capture implicitly",
+                multiple.hasExtra(android.provider.MediaStore.EXTRA_OUTPUT));
+
+        Uri selected = Uri.parse("content://test.documents/item/one");
+        Intent result = new Intent().setData(selected);
+        assertArrayEquals(new Uri[]{selected}, MainActivity.parseDocumentPickerResult(
+                android.app.Activity.RESULT_OK, result));
+        assertNull(MainActivity.parseDocumentPickerResult(android.app.Activity.RESULT_CANCELED, null));
     }
 
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {

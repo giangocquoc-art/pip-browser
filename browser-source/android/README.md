@@ -72,8 +72,12 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
 
 Đây là nền Android ban đầu, chưa ngang chức năng Pip Windows:
 
-- Chưa tích hợp Google DNS, Pip Sync, tải lên tệp,
-  dịch trang, quản lý mật khẩu, file chooser, camera/mic hoặc quy trình default browser.
+- Chưa tích hợp Google DNS, Pip Sync, camera/mic permissions, dịch trang, quản lý mật khẩu
+  hoặc quy trình default browser.
+- File input mở Android document picker sau khi website yêu cầu; người dùng chọn tệp tường minh.
+  Chế độ chọn nhiều tệp được hỗ trợ. Picker không bật camera capture theo yêu cầu của trang;
+  trang chỉ nhận URI người dùng chọn, không được Pip tải/chia sẻ tệp tự động. Bộ lọc loại tệp
+  hiện để `*/*`, nên một số trang có thể hiện nhiều loại tệp hơn trường HTML gợi ý.
 - Tải tệp cơ bản được gửi qua Android DownloadManager vào thư mục Downloads sau khi người dùng
   xác nhận. URL phải là HTTPS; cookie/credential từ Pip không được chuyển cho trình tải hệ thống,
   nên nội dung yêu cầu đăng nhập có thể không tải được. DownloadManager dùng mạng hệ thống,
