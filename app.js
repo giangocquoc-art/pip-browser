@@ -61,8 +61,8 @@
   const directDownloadUrl = 'https://download.pip.psharehub.com/';
   const platformAssetRoutes = {
     android: '/android',
-    macArm: '/macos-arm64',
-    macIntel: '/macos-x64'
+    macArm: '/macos-arm64-preview',
+    macIntel: '/macos-x64-preview'
   };
   const compareVersions = (left, right) => {
     const a = left.split('.').map(Number);
@@ -94,8 +94,8 @@
       androidLink.hidden = false;
       if (androidCard) androidCard.dataset.available = 'true';
     }
-    const macArmAsset = `Pip-macOS-arm64-${version}.zip`;
-    const macIntelAsset = `Pip-macOS-x64-${version}.zip`;
+    const macArmAsset = `Pip-macOS-arm64-${version}-preview.zip`;
+    const macIntelAsset = `Pip-macOS-x64-${version}-preview.zip`;
     const macArmLink = $('#macos-arm-link');
     const macIntelLink = $('#macos-intel-link');
     const macStatus = $('#macos-status');
@@ -109,13 +109,15 @@
       $('#macos-intel-link').hidden = false;
     }
     if (hasChecksums && (assets.has(macArmAsset) || assets.has(macIntelAsset)) && macStatus) {
-      macStatus.textContent = `Sẵn sàng · ${version}`;
+      macStatus.textContent = `Preview · ${version}`;
       if (macCard) macCard.dataset.available = 'true';
     }
+    const macGuide = $('#macos-preview-guide');
+    if (macGuide && hasChecksums && (assets.has(macArmAsset) || assets.has(macIntelAsset))) macGuide.hidden = false;
     const releaseNote = $('#platform-release-note');
     if (!releaseNote) return;
     if (hasChecksums && assets.has(androidAsset) && assets.has(macArmAsset) && assets.has(macIntelAsset)) {
-      releaseNote.textContent = `Windows, Android và macOS đều có bản Pip ${version}.`;
+      releaseNote.textContent = `Windows và Android có bản ổn định ${version}; macOS có bản Preview ${version}.`;
     } else if (hasChecksums && (assets.has(androidAsset) || assets.has(macArmAsset) || assets.has(macIntelAsset))) {
       releaseNote.textContent = `Một số gói của bản ${version} đã sẵn sàng; các nền tảng khác chỉ hiện nút tải khi có artifact phù hợp.`;
     }

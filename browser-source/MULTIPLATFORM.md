@@ -1,6 +1,6 @@
 # Pip trên Android, macOS và Windows
 
-Phạm vi được bổ sung ngày 2026-11-06: phát triển Pip cho Android, macOS và Windows. iOS chưa thuộc đợt này. Đây là mã phát triển. APK debug và ứng dụng macOS hai kiến trúc đã qua kiểm thử CI cơ bản; chưa đạt các điều kiện để đưa lên trang tải công khai.
+Phạm vi được bổ sung ngày 2026-11-06: phát triển Pip cho Android, macOS và Windows. iOS chưa thuộc đợt này. Android dự kiến phát hành APK ký; macOS dự kiến phát hành Preview ad-hoc, chưa notarize. Các gói chỉ được đưa lên website sau khi workflow release kiểm thử chúng và đính kèm SHA-256; đến khi đó chúng vẫn là artifact chưa phát hành.
 
 ## Nền tảng và phần tái sử dụng
 
@@ -84,9 +84,9 @@ Mã tải tệp macOS tiếp theo dùng NSSavePanel và WKDownload, không tự 
 - Chưa đo dung lượng, RAM, CPU hay độ trễ trên thiết bị thì không công bố số hoặc cam kết “nhẹ nhất”.
 
 Trang chủ và Download Worker hiện nhận diện asset từ bản phát hành ổn định theo tên có phiên bản:
-`Pip-Android-<version>-universal.apk`, `Pip-macOS-arm64-<version>.zip` và
-`Pip-macOS-x64-<version>.zip`. Android chỉ nên dùng APK release đã ký bằng khóa bền vững;
-macOS chỉ dùng gói đã kiểm thử, ký và notarize trước khi gắn các asset này vào stable release.
+`Pip-Android-<version>-universal.apk`, `Pip-macOS-arm64-<version>-preview.zip` và
+`Pip-macOS-x64-<version>-preview.zip`. Android chỉ phát hành APK release đã ký bằng khóa bền vững;
+macOS Preview dùng ad-hoc signing, chưa notarize và cần hướng dẫn mở lần đầu công khai.
 Nếu asset thiếu, trang chủ không hiện nút tải nền tảng đó.
 
 ## Tài liệu nền

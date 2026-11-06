@@ -149,6 +149,7 @@ test("download version refreshes stale caches and rejects releases without a cur
       "#macos-status": { textContent: "Chưa có gói phát hành" },
       "#macos-arm-link": { href: "", hidden: true },
       "#macos-intel-link": { href: "", hidden: true },
+      "#macos-preview-guide": { hidden: true },
       "#platform-release-note": { textContent: "" },
     };
     const cards = {
@@ -191,16 +192,18 @@ test("download version refreshes stale caches and rejects releases without a cur
   const multiPlatform = await evaluate(null, metadata("0.1.18", [
     { name: "PipSetup.exe", size: 123 },
     { name: "Pip-Android-0.1.18-universal.apk", size: 456 },
-    { name: "Pip-macOS-arm64-0.1.18.zip", size: 789 },
-    { name: "Pip-macOS-x64-0.1.18.zip", size: 789 },
+    { name: "Pip-macOS-arm64-0.1.18-preview.zip", size: 789 },
+    { name: "Pip-macOS-x64-0.1.18-preview.zip", size: 789 },
     { name: "SHA256SUMS.txt", size: 123 },
   ]));
   assert.equal(multiPlatform.nodes["#android-platform-link"].hidden, false);
   assert.equal(multiPlatform.nodes["#android-platform-link"].href, "https://download.pip.psharehub.com/android");
   assert.equal(multiPlatform.nodes["#macos-arm-link"].hidden, false);
   assert.equal(multiPlatform.nodes["#macos-intel-link"].hidden, false);
+  assert.equal(multiPlatform.nodes["#macos-status"].textContent, "Preview · 0.1.18");
+  assert.equal(multiPlatform.nodes["#macos-preview-guide"].hidden, false);
   assert.equal(multiPlatform.nodes["#android-status"].textContent, "Sẵn sàng · 0.1.18");
-  assert.match(multiPlatform.nodes["#platform-release-note"].textContent, /Windows, Android và macOS/);
+  assert.match(multiPlatform.nodes["#platform-release-note"].textContent, /Windows và Android có bản ổn định.*macOS có bản Preview/);
   const incompleteManifest = await evaluate(null, metadata("0.1.18", [
     { name: "PipSetup.exe", size: 123 },
     { name: "Pip-Android-0.1.18-universal.apk", size: 456 },
@@ -218,9 +221,13 @@ test("homepage lists Windows, Android and macOS without exposing unavailable art
   assert.match(homepage, /id="android-platform-link"[^>]+hidden/);
   assert.match(homepage, /id="macos-arm-link"[^>]+hidden/);
   assert.match(homepage, /id="macos-intel-link"[^>]+hidden/);
+  assert.match(homepage, /id="macos-preview-guide" hidden/);
+  assert.match(homepage, /Chưa notarize/);
   assert.match(script, /Pip-Android-\$\{version\}-universal\.apk/);
-  assert.match(script, /Pip-macOS-arm64-\$\{version\}\.zip/);
-  assert.match(script, /Pip-macOS-x64-\$\{version\}\.zip/);
+  assert.match(script, /Pip-macOS-arm64-\$\{version\}-preview\.zip/);
+  assert.match(script, /Pip-macOS-x64-\$\{version\}-preview\.zip/);
+  assert.match(homepage, /id="macos-preview-guide" hidden/);
+  assert.match(homepage, /Chưa notarize/);
 });
 
 test("fallback release manifest has a valid version, installer, SHA-256 and size", async () => {

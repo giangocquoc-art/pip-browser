@@ -1,0 +1,15 @@
+<!doctype html><html lang="vi"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#fff8f1">
+<meta name="description" content="Cài Pip Preview trên macOS Apple Silicon hoặc Intel và mở ứng dụng ad-hoc đã kiểm tra SHA-256.">
+<link rel="canonical" href="https://pip.psharehub.com/huong-dan/cai-pip-macos-preview/"><title>Cài Pip Preview trên macOS | Pip</title>
+<link rel="icon" href="/assets/favicon.png"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/guide.css"></head><body>
+<header class="guide-header"><a class="brand" href="/">Pip<span>●</span></a><nav><a href="/huong-dan/">Hướng dẫn</a><a href="/#download">Tải Pip</a></nav></header>
+<main class="guide-main"><article class="guide-article"><p class="eyebrow">HƯỚNG DẪN · macOS PREVIEW</p><h1>Tải và mở Pip Preview trên macOS</h1>
+<aside class="guide-note"><p><strong>Đây là bản Preview.</strong> Gói hiện được ký ad-hoc, chưa có chữ ký Developer ID hoặc Apple notarization. macOS có thể cảnh báo khi mở. Chỉ tải từ website Pip và kiểm tra SHA-256 trước khi chạy.</p></aside>
+<h2>1. Chọn đúng gói</h2><p>Trên <a href="/#platforms">trang tải Pip</a>, chọn Apple Silicon cho máy Mac dòng M hoặc Intel cho máy Mac Intel. Giải nén ZIP bằng Finder để có ứng dụng Pip.app.</p>
+<h2>2. Kiểm tra mã SHA-256</h2><p>Tải <a href="https://download.pip.psharehub.com/checksums">tệp SHA256SUMS.txt</a> cùng phiên bản, rồi đối chiếu dòng có tên gói macOS bạn vừa tải bằng Terminal:</p>
+<pre><code>shasum -a 256 ~/Downloads/Pip-macOS-arm64-VERSION-preview.zip</code></pre><p>Thay <code>VERSION</code> bằng số phiên bản trong tên tệp và đảm bảo mã hiện ra trùng với dòng tương ứng trong SHA256SUMS.txt. Với máy Intel, đổi <code>arm64</code> thành <code>x64</code>.</p>
+<h2>3. Mở lần đầu</h2><ol><li>Trong Finder, giữ Control và bấm Pip.app.</li><li>Chọn <strong>Open</strong> (Mở) trong menu.</li><li>Đọc xác nhận của macOS rồi chọn <strong>Open</strong> thêm lần nữa.</li></ol><p>Nếu macOS không hiện tùy chọn Open, vào <strong>System Settings → Privacy &amp; Security</strong>, kéo đến thông báo ứng dụng Pip bị chặn và chọn <strong>Open Anyway</strong>. Chỉ tiếp tục nếu tệp đến từ trang Pip và mã SHA-256 khớp.</p>
+<h2>Giới hạn của bản Preview</h2><p>Ad-hoc signing không xác nhận danh tính nhà phát triển, không phải notarization và không bảo đảm ứng dụng tương thích với mọi cấu hình macOS. Nếu không muốn tự xác nhận ứng dụng chưa notarize, hãy chờ bản macOS ổn định.</p>
+<p><a href="/#platforms">Quay lại trang tải Pip</a> · <a href="https://download.pip.psharehub.com/checksums">Tải mã SHA-256</a></p></article></main>
+<footer><a class="brand" href="/">Pip<span>●</span></a><a href="/huong-dan/">Tất cả hướng dẫn</a><a href="/tin-cay/">Tin cậy &amp; xác minh</a><span>© 2026 Pip</span></footer></body></html>
