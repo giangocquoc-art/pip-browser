@@ -2303,6 +2303,7 @@ async fn extension_update_notification_is_an_origin_restricted_wakeup() -> anyho
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/extension/update-ready")
+                    .header(header::HOST, "localhost")
                     .header(header::ORIGIN, origin)
                     .body(Body::empty())?,
             )
