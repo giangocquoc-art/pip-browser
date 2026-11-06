@@ -411,6 +411,10 @@ public final class MainActivity extends Activity {
                 requestWebsiteMediaPermission(view, request);
             }
 
+            @Override public void onPermissionRequestCanceled(PermissionRequest request) {
+                if (websitePermissionRequest == request) clearPendingWebsitePermission();
+            }
+
             @Override public boolean onShowFileChooser(WebView webView,
                     ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (!isCurrentView(tab, webView)) {
