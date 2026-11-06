@@ -2,7 +2,8 @@ $ErrorActionPreference = 'Stop'
 $helperPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/pip-dev-existing-artifacts.ps1'
 . $helperPath
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("pip-dev-preflight-" + [guid]::NewGuid().ToString('N'))
+$tempParent = Join-Path (Split-Path -Parent $PSScriptRoot) '.data/windows-dev/tests'
+$tempRoot = Join-Path $tempParent ("preflight-" + [guid]::NewGuid().ToString('N'))
 $nodeModules = Join-Path $tempRoot 'node_modules'
 $serverExe = Join-Path $tempRoot 'browseros-claw-server-rs.exe'
 $browserExe = Join-Path $tempRoot 'PipDev.exe'
