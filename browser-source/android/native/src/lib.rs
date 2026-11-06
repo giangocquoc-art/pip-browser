@@ -13,6 +13,8 @@ use std::sync::{
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 static BLOCKED: AtomicU64 = AtomicU64::new(0);
+const NAVIGATION_DOMAINS: &str = include_str!(concat!(env!("OUT_DIR"), "/navigation-domains.txt"));
+include!(concat!(env!("OUT_DIR"), "/navigation-offsets.rs"));
 
 const EASYLIST: &str = include_str!("../../../crates/app/filters/easylist.txt");
 
@@ -56,6 +58,47 @@ fn initialize() {
         }
         Engine::new_with_filter_set(filters)
     });
+}
+
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.contains('.')
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+        && host.split('.').all(|label| !label.is_empty())
+}
+
+/// Main-frame destination policy; callers separately preserve explicit user navigation.
+fn check_navigation(host: &str) -> i32 {
+    if host.len() > 254 {
+        return 0;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if !valid_host(&host) {
+        return 0;
+    }
+    let mut suffix = host.as_str();
+    loop {
+        if NAVIGATION_DOMAIN_OFFSETS
+            .binary_search_by(|offset| {
+                NAVIGATION_DOMAINS[*offset as usize..]
+                    .split_once('\n')
+                    .expect("build-time canonical domain")
+                    .0
+                    .cmp(suffix)
+            })
+            .is_ok()
+        {
+            BLOCKED.fetch_add(1, Ordering::Relaxed);
+            return 1;
+        }
+        let Some((_, rest)) = suffix.split_once('.') else {
+            return 0;
+        };
+        suffix = rest;
+    }
 }
 
 /// -1 unavailable, 0 allowed/skipped invalid input, 1 blocked. The Java host preserves
@@ -134,6 +177,22 @@ mod bridge {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_com_psharehub_pip_NativeAdblock_nativeCheckNavigationHost(
+        mut env: JNIEnv,
+        _class: JClass,
+        host: JString,
+    ) -> jint {
+        catch_unwind(AssertUnwindSafe(|| {
+            let Ok(host) = env.get_string(&host) else {
+                return -1;
+            };
+            let host: String = host.into();
+            check_navigation(&host)
+        }))
+        .unwrap_or(-1)
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_com_psharehub_pip_NativeAdblock_nativeBlockedCount(
         _env: JNIEnv,
         _class: JClass,
@@ -145,6 +204,28 @@ mod bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_policy_matches_domain_boundaries_and_bundled_gambling_list() {
+        initialize();
+        for host in [
+            "ad88vip6.com",
+            "promo.ad88vip6.com",
+            "AD88VIP6.COM.",
+            "v8v1.021td.com",
+        ] {
+            assert_eq!(check_navigation(host), 1, "{host}");
+        }
+        for host in [
+            "notad88vip6.com",
+            "ad88vip6.com.example.org",
+            "google.com",
+            "invalid host",
+            "",
+        ] {
+            assert_eq!(check_navigation(host), 0, "{host}");
+        }
+    }
 
     #[test]
     fn bundled_network_engine_blocks_known_ad_host_but_allows_control() {

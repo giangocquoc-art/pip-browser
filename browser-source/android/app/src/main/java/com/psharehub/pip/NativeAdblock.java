@@ -48,7 +48,22 @@ final class NativeAdblock {
         catch (LinkageError error) { failed = true; ready = false; return 0; }
     }
 
+    static int checkNavigationHost(String host) {
+        if (!ready) return -1;
+        if (host == null || host.length() > 254) return 0;
+        try {
+            int result = nativeCheckNavigationHost(host);
+            if (result < 0) { failed = true; ready = false; }
+            return result;
+        } catch (LinkageError | RuntimeException error) {
+            failed = true;
+            ready = false;
+            return -1;
+        }
+    }
+
     private static native boolean nativeInitialize();
     private static native int nativeCheck(String url, String source, String kind, String method);
     private static native long nativeBlockedCount();
+    private static native int nativeCheckNavigationHost(String host);
 }

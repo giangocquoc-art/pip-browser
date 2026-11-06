@@ -14,6 +14,13 @@ Hiện chưa có APK phát hành công khai, chữ ký release hay chứng nhậ
 - Safe Browsing, chặn mixed content, không vượt lỗi chứng chỉ, tắt file/content access.
 - Không tạo JavaScript interface cho website; camera/mic/quyền website bị từ chối.
 - Chỉ xin quyền INTERNET. Debug WebView chỉ bật ở debug build.
+- Main-frame tự chuyển sang tên miền cá cược trong HaGeZi hoặc popup domain overrides bị
+  chặn, gồm cả subdomain theo ranh giới nhãn tên miền. URL chính xác được tự nhập/khôi phục
+  vẫn được phép; những đích chuyển tiếp khác tiếp tục qua policy. Danh sách được chuẩn hóa
+  thành text và bảng offset u32 lúc build, không parse/sort 133k domain khi app mở.
+  Policy cũng chạy trong request interception cho main-frame POST vì Android không gọi
+  `shouldOverrideUrlLoading` cho POST. Ngoại lệ URL chỉ chuẩn hóa case scheme/host, cổng HTTPS
+  mặc định và đường dẫn rỗng thành `/`; query/fragment/path khác không được mở rộng ngoại lệ.
 - Engine Rust thật đọc snapshot EasyList, uBlock filters/quick-fixes/unbreak, popup-overrides
   và youtube từ cùng nguồn đã đóng gói trong repo; không tải/copy các danh sách sang Android.
 - WebViewClient và ServiceWorkerClient gọi engine trên thread callback nền. Nạp native library
@@ -64,8 +71,8 @@ Không cần cài NDK hoặc build trên ổ HDD của máy làm việc để d�
   mức RAM hoặc pin tốt hơn trình duyệt khác.
 - Chưa có engine Android của Pip Dev, MCP native lock, hay chức năng điều khiển agent.
 - Chặn mạng hiện chỉ xử lý network rules. Chưa có cosmetic filtering, scriptlets hay redirect
-  resource replacements; không bảo đảm chặn mọi quảng cáo YouTube. Rule `$popup` không thay thế
-  policy chặn casino/same-tab redirect; phần này chưa ngang bản Windows. URL main-frame do người
+  resource replacements; không bảo đảm chặn mọi quảng cáo YouTube. Danh sách cá cược chưa thể
+  nhận diện mọi tên miền mới và không thay thế chính sách đầy đủ của bản Windows. URL main-frame do người
   dùng nhập/khôi phục được mở trực tiếp, subresource vẫn lọc. WebView không đưa đủ resource type;
   host suy ra từ request headers và path, nếu không biết dùng `other`.
 - ServiceWorker không đưa tab/client ID. Có Referer thì dùng làm source; thiếu thì dùng chính
@@ -112,6 +119,13 @@ chặn host quảng cáo bằng 204 nhưng cho control request qua; test thứ h
 thật, yêu cầu worker fetch cả hai URL và kiểm chứng hook ServiceWorker production riêng.
 Không gọi live Google/DoubleClick, không bỏ qua lỗi TLS, không thêm JavaScript interface.
 Unit Rust kiểm tra engine với toàn bộ bundled network inputs, exception và resource types.
+Regression navigation bổ sung kiểm tra domain/subdomain, lookalike, Google và URL nhập rõ
+qua omnibox bằng callback production với request giả lập. Test riêng tải HTML fixture thật
+chạy `location.assign` sang domain cá cược, delegate callback production và kiểm tra đích bị
+chặn trước request/commit. Chưa kiểm chuỗi HTTP redirect nhiều chặng hoặc mọi kiểu popup;
+cần kiểm thêm trên thiết bị thật. Source test cần CI tương ứng chạy thành công trước khi tuyên bố pass.
+Test form tự POST thật kiểm thêm policy interception; mọi response fixture chỉ trả cục bộ,
+kể cả trường hợp regression, không gửi form đến tên miền ngoài. JVM test giữ phạm vi ngoại lệ URL.
 
 ## Nguồn nền tảng
 

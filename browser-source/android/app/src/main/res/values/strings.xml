@@ -22,4 +22,5 @@
     <string name="adblock_unavailable">Bộ lọc quảng cáo không hoạt động. Chạm để chọn tiếp tục không bảo vệ.</string>
     <string name="adblock_failure_prompt">Không nạp được bộ lọc quảng cáo. Trang đang chờ; bạn có muốn duyệt không bảo vệ trong cửa sổ này?</string>
     <string name="continue_unprotected">Tiếp tục không bảo vệ</string>
+    <string name="blocked_gambling_navigation">Pip đã chặn trang chuyển hướng cá cược. Bạn có thể nhập trực tiếp địa chỉ nếu muốn tự mở.</string>
 </resources>

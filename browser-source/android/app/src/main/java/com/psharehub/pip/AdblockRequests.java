@@ -39,9 +39,18 @@ final class AdblockRequests {
         if (!Address.isWebUrl(url)) return null;
         // Do not block a URL the user explicitly typed or restored. Subresources
         // of that document still pass through the real network filter.
-        if (request.isForMainFrame() && url.equals(explicitUrl)) return null;
+        if (request.isForMainFrame() && Address.sameNavigationUrl(url, explicitUrl)) return null;
+        // shouldOverrideUrlLoading excludes POST. Enforce destination policy here too,
+        // before generic network rules, so form submissions cannot bypass it.
+        if (request.isForMainFrame() && NativeAdblock.checkNavigationHost(request.getUrl().getHost()) == 1) {
+            return blockedResponse();
+        }
         String source = Address.isWebUrl(topUrl) ? topUrl : url;
         if (NativeAdblock.check(url, source, resourceType(request), request.getMethod()) != 1) return null;
+        return blockedResponse();
+    }
+
+    private static WebResourceResponse blockedResponse() {
         return new WebResourceResponse("text/plain", "UTF-8", 204, "No Content",
                 Collections.singletonMap("Cache-Control", "no-store"),
                 new ByteArrayInputStream(new byte[0]));

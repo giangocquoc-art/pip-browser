@@ -268,6 +268,18 @@ public final class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(WebView webView, WebResourceRequest request) {
                 if (!isLiveView(tab, webView)) return true;
                 boolean allowed = Address.isWebUrl(request.getUrl().toString());
+                if (allowed && request.isForMainFrame()
+                        && !Address.sameNavigationUrl(request.getUrl().toString(), tab.explicitNavigationUrl)) {
+                    int decision = NativeAdblock.checkNavigationHost(request.getUrl().getHost());
+                    if (decision == 1) {
+                        if (isCurrentView(tab, webView)) {
+                            showStatus(R.string.blocked_gambling_navigation);
+                            updateFilteringStatus();
+                        }
+                        return true;
+                    }
+                    if (decision < 0 && isCurrentView(tab, webView)) updateFilteringStatus();
+                }
                 if (!allowed && request.isForMainFrame() && isCurrentView(tab, webView)) {
                     showStatus(R.string.blocked_address);
                 }

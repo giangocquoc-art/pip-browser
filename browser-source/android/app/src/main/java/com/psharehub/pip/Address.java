@@ -4,6 +4,7 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.io.UnsupportedEncodingException;
 import java.util.Locale;
+import java.util.Objects;
 
 /** HTTPS-first omnibox routing; never forwards file, content, intent or script URLs. */
 final class Address {
@@ -42,6 +43,27 @@ final class Address {
                     && uri.getHost() != null && !uri.getHost().isEmpty()
                     && uri.getRawUserInfo() == null
                     && uri.getPort() >= -1 && uri.getPort() <= 65535;
+        } catch (Exception invalid) {
+            return false;
+        }
+    }
+
+    /** Browser spelling equivalence only; never widen a typed exemption to a whole site. */
+    static boolean sameNavigationUrl(String first, String second) {
+        if (!isWebUrl(first) || !isWebUrl(second)) return false;
+        try {
+            URI a = new URI(first);
+            URI b = new URI(second);
+            String aPath = a.getRawPath();
+            String bPath = b.getRawPath();
+            if (aPath == null || aPath.isEmpty()) aPath = "/";
+            if (bPath == null || bPath.isEmpty()) bPath = "/";
+            return a.getScheme().equalsIgnoreCase(b.getScheme())
+                    && a.getHost().equalsIgnoreCase(b.getHost())
+                    && (a.getPort() == -1 ? 443 : a.getPort()) == (b.getPort() == -1 ? 443 : b.getPort())
+                    && aPath.equals(bPath)
+                    && Objects.equals(a.getRawQuery(), b.getRawQuery())
+                    && Objects.equals(a.getRawFragment(), b.getRawFragment());
         } catch (Exception invalid) {
             return false;
         }
