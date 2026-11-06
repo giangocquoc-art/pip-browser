@@ -19,6 +19,7 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -97,6 +98,46 @@ public final class GeckoViewPilotTest {
                 settings.getTrustedRecursiveResolverUri());
         assertEquals(GeckoRuntimeSettings.TRR_MODE_ONLY,
                 settings.getTrustedRecusiveResolverMode());
+    }
+
+    @Test public void strictGoogleDoHLoadsAnExternalHostnameInGeckoSession() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        AtomicReference<GeckoRuntime> runtimeResult = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                runtimeResult.set(GeckoViewPilotActivity.getOrCreateRuntime(context)));
+        GeckoSession session = openSession(runtimeResult.get(),
+                GeckoViewPilotActivity.createSessionSettings(GeckoViewPilotActivity.PROFILE_A, false));
+        CountDownLatch pageStopped = new CountDownLatch(1);
+        AtomicReference<Boolean> loadSucceeded = new AtomicReference<>(false);
+        AtomicReference<String> finalUri = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            session.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
+                @Override public void onLocationChange(GeckoSession page, String url,
+                        List<GeckoSession.PermissionDelegate.ContentPermission> permissions,
+                        Boolean hasUserGesture) {
+                    finalUri.set(url);
+                }
+            });
+            session.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+                @Override public void onPageStop(GeckoSession page, boolean success) {
+                    String uri = finalUri.get();
+                    if (uri == null || uri.equals("about:blank")) return;
+                    loadSucceeded.set(success);
+                    pageStopped.countDown();
+                }
+            });
+            session.loadUri("https://example.com/");
+        });
+        try {
+            assertTrue("GeckoView strict DoH request to example.com must finish",
+                    pageStopped.await(30, TimeUnit.SECONDS));
+            assertTrue("GeckoView must load the external host in TRR_MODE_ONLY", loadSucceeded.get());
+            assertNotNull(finalUri.get());
+            assertTrue("Navigation must finish on the requested HTTPS host: " + finalUri.get(),
+                    finalUri.get().startsWith("https://example.com/"));
+        } finally {
+            closeSession(session);
+        }
     }
 
     private static GeckoSession openSession(GeckoRuntime runtime, GeckoSessionSettings settings) {
