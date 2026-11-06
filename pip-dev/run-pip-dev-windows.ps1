@@ -14,10 +14,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'scripts/pip-dev-existing-artifacts.ps1')
-if ($UseExistingArtifacts -and $InstallDependencies) {
-  throw 'Use -UseExistingArtifacts or -InstallDependencies, not both.'
-}
 $repoRoot = $PSScriptRoot
 $projectRoot = Split-Path -Parent $repoRoot
 $agentRoot = Join-Path $repoRoot 'packages/browseros-agent'
@@ -26,6 +22,9 @@ $serverExe = Join-Path $agentRoot 'target/debug/browseros-claw-server-rs.exe'
 $cargoHome = Join-Path $projectRoot '.cargo-home'
 $cargoBuildDir = Join-Path $agentRoot '.cargo-target'
 $stateRoot = Join-Path $agentRoot '.data/windows-dev'
+$npmCacheDir = Join-Path $stateRoot 'npm-cache'
+$bunCacheDir = Join-Path $stateRoot 'bun-cache'
+$bunRuntimeCacheDir = Join-Path $stateRoot 'bun-runtime-cache'
 $buildTempDir = Join-Path $stateRoot 'temp'
 $profileDir = Join-Path $stateRoot 'profile'
 $browserClawDir = Join-Path $stateRoot 'browserclaw'
@@ -35,6 +34,9 @@ $serverProcess = $null
 $buildEnvironmentConfigured = $false
 $originalBuildEnvironment = @{
   CARGO_HOME = $env:CARGO_HOME
+  NPM_CONFIG_CACHE = $env:NPM_CONFIG_CACHE
+  BUN_INSTALL_CACHE_DIR = $env:BUN_INSTALL_CACHE_DIR
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH = $env:BUN_RUNTIME_TRANSPILER_CACHE_PATH
   TEMP = $env:TEMP
   TMP = $env:TMP
 }
@@ -63,6 +65,10 @@ function Get-ServerLogTail([string] $Path) {
 }
 
 try {
+  if ($UseExistingArtifacts -and $InstallDependencies) {
+    throw 'UseExistingArtifacts and InstallDependencies cannot be used together.'
+  }
+
   $resolvedBinary = (Resolve-Path -LiteralPath $BrowserBinary).Path
   if (-not (Test-Path -LiteralPath $resolvedBinary -PathType Leaf)) {
     throw "BrowserBinary must point to an existing Windows BrowserOS/Pip Dev executable: $BrowserBinary"
@@ -77,53 +83,59 @@ try {
     throw "BrowserOS neo Bun lockfile was not found under $agentRoot"
   }
 
+  $runtimeDirectories = @($stateRoot, $bunRuntimeCacheDir, $buildTempDir)
+  if (-not $UseExistingArtifacts) {
+    $runtimeDirectories += @($npmCacheDir, $bunCacheDir)
+  }
+  New-Item -ItemType Directory -Path $runtimeDirectories -Force | Out-Null
+  $buildEnvironmentConfigured = $true
+  if (-not $UseExistingArtifacts) {
+    $env:NPM_CONFIG_CACHE = $npmCacheDir
+    $env:BUN_INSTALL_CACHE_DIR = $bunCacheDir
+  }
+  $env:BUN_RUNTIME_TRANSPILER_CACHE_PATH = $bunRuntimeCacheDir
+  $env:TEMP = $buildTempDir
+  $env:TMP = $buildTempDir
+
+  $bun = Get-Command bun -ErrorAction SilentlyContinue
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
   $bunCommand = $null
   $bunInvocationPrefix = @()
-  if ($UseExistingArtifacts) {
-    $bun = Get-Command bun -ErrorAction SilentlyContinue
-    if (-not $bun) {
-      throw 'UseExistingArtifacts requires Bun 1.4.2 already installed on PATH; it will not invoke npm or download Bun.'
-    }
+  if ($bun) {
     $bunCommand = $bun.Source
     $bunVersion = (& $bunCommand --version).Trim()
     $bunExitCode = $LASTEXITCODE
-    if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
-      throw "UseExistingArtifacts requires Bun 1.4.2 on PATH; found '$bunVersion'."
+  }
+  if (-not $bun -or $bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
+    if ($UseExistingArtifacts) {
+      throw 'UseExistingArtifacts requires Bun 1.4.2 already on PATH; refusing to download a runtime or dependencies.'
     }
+    if (-not $npm) {
+      throw 'Bun 1.4.2 is required. Install Bun 1.4.2, or install Node.js/npm so this launcher can invoke the pinned Bun version.'
+    }
+    $bunCommand = $npm.Source
+    $bunInvocationPrefix = @(
+      'exec', '--yes', '--cache', $npmCacheDir,
+      '--package', 'bun@1.4.2', '--', 'bun'
+    )
+    Write-Host 'Bun 1.4.2 is not on PATH; invoking the pinned version through npm.'
+    $bunVersion = (& $bunCommand @bunInvocationPrefix --version).Trim()
+    $bunExitCode = $LASTEXITCODE
+  }
+  if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
+    throw "This BrowserOS checkout pins Bun 1.4.2; found '$bunVersion'."
+  }
+
+  if ($UseExistingArtifacts) {
+    . (Join-Path $PSScriptRoot 'scripts/pip-dev-existing-artifacts.ps1')
     Assert-PipDevExistingArtifacts `
       -BunVersion $bunVersion `
       -NodeModulesPath (Join-Path $agentRoot 'node_modules') `
       -ServerExePath $serverExe `
       -BrowserBinary $resolvedBinary
-    Write-Warning 'Existing-artifacts mode checks file presence only; it cannot verify the server matches current Rust source. Rebuild without -UseExistingArtifacts after changing Rust code or dependencies.'
+    Write-Warning 'Existing-artifacts mode checks file presence only; it cannot verify that the MCP server matches the current Rust source. Rebuild after changing Rust code or dependencies.'
   }
   else {
-    $bun = Get-Command bun -ErrorAction SilentlyContinue
-    $npm = Get-Command npm -ErrorAction SilentlyContinue
-    if ($bun) {
-      $bunCommand = $bun.Source
-      $bunVersion = (& $bunCommand --version).Trim()
-      $bunExitCode = $LASTEXITCODE
-    }
-    if (-not $bun -or $bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
-      if (-not $npm) {
-        throw 'Bun 1.4.2 is required. Install Bun 1.4.2, or install Node.js/npm so this launcher can invoke the pinned Bun version.'
-      }
-      $bunCommand = $npm.Source
-      $bunInvocationPrefix = @(
-        'exec', '--yes', '--cache', (Join-Path $stateRoot 'npm-cache'),
-        '--package', 'bun@1.4.2', '--', 'bun'
-      )
-      Write-Host 'Bun 1.4.2 is not on PATH; invoking the pinned version through npm.'
-      $bunVersion = (& $bunCommand @bunInvocationPrefix --version).Trim()
-      $bunExitCode = $LASTEXITCODE
-    }
-    if ($bunExitCode -ne 0 -or $bunVersion -ne '1.4.2') {
-      throw "This BrowserOS checkout pins Bun 1.4.2; found '$bunVersion'."
-    }
-  }
-
-  if (-not $UseExistingArtifacts) {
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if (-not $cargo) {
       throw 'Rust/Cargo is required to build the BrowserOS neo MCP server.'
@@ -148,24 +160,18 @@ try {
     }
   }
 
-  $runtimeDirectories = @($stateRoot, $profileDir, $browserClawDir, $buildTempDir)
+  $stateDirectories = @($profileDir, $browserClawDir)
   if (-not $UseExistingArtifacts) {
-    $runtimeDirectories += @($cargoHome, $cargoBuildDir)
+    $stateDirectories += @($cargoHome, $cargoBuildDir)
   }
-  New-Item -ItemType Directory -Path $runtimeDirectories -Force | Out-Null
-  $buildEnvironmentConfigured = $true
+  New-Item -ItemType Directory -Path $stateDirectories -Force | Out-Null
   if (-not $UseExistingArtifacts) {
     $env:CARGO_HOME = $cargoHome
   }
-  $env:TEMP = $buildTempDir
-  $env:TMP = $buildTempDir
 
   Push-Location $agentRoot
   try {
-    if ($UseExistingArtifacts) {
-      Write-Host 'Using validated existing artifacts; skipping bun install and Cargo build.'
-    }
-    else {
+    if (-not $UseExistingArtifacts) {
       if ($InstallDependencies -or -not (Test-Path -LiteralPath (Join-Path $agentRoot 'node_modules'))) {
         Write-Host 'Installing the locked BrowserOS neo JavaScript dependencies...'
         & $bunCommand @bunInvocationPrefix install --filter '@browseros/claw-app' --frozen-lockfile
@@ -174,21 +180,26 @@ try {
 
       New-Item -ItemType Directory -Path $cargoBuildDir -Force | Out-Null
       $cargoBuildDirConfig = ([IO.Path]::GetFullPath($cargoBuildDir)).Replace('\', '/')
-      $originalCargoBuildJobs = $env:CARGO_BUILD_JOBS
+      Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows (Cargo cache: $cargoBuildDir)..."
+      $hadCargoBuildJobs = Test-Path Env:CARGO_BUILD_JOBS
+      $previousCargoBuildJobs = $env:CARGO_BUILD_JOBS
       try {
-        $env:CARGO_BUILD_JOBS = [string] $BuildJobs
-        Write-Host "Building the BrowserOS neo Rust MCP/API server for Windows with up to $BuildJobs Cargo jobs (cache: $cargoBuildDir)..."
+        $env:CARGO_BUILD_JOBS = [string]$BuildJobs
+        Write-Host "Limiting this Cargo build to $BuildJobs parallel job(s)."
         & $cargo.Source --config "build.build-dir=`"$cargoBuildDirConfig`"" build --locked -p claw-server
         if ($LASTEXITCODE -ne 0) { throw "cargo build -p claw-server failed with exit code $LASTEXITCODE" }
       }
       finally {
-        if ($null -eq $originalCargoBuildJobs) {
-          Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
+        if ($hadCargoBuildJobs) {
+          $env:CARGO_BUILD_JOBS = $previousCargoBuildJobs
         }
         else {
-          $env:CARGO_BUILD_JOBS = $originalCargoBuildJobs
+          Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
         }
       }
+    }
+    else {
+      Write-Host 'Using existing BrowserOS neo dependencies and MCP server; skipping dependency installation and Cargo build.'
     }
   }
   finally {
@@ -196,7 +207,7 @@ try {
   }
 
   if (-not (Test-Path -LiteralPath $serverExe -PathType Leaf)) {
-    throw "The expected existing or newly built Windows server executable is missing: $serverExe"
+    throw "Cargo completed without producing the expected Windows server executable: $serverExe"
   }
 
   $sidecar = @{
@@ -288,7 +299,10 @@ finally {
     }
   }
   if ($buildEnvironmentConfigured) {
-    foreach ($name in @('CARGO_HOME', 'TEMP', 'TMP')) {
+    foreach ($name in @(
+      'CARGO_HOME', 'NPM_CONFIG_CACHE', 'BUN_INSTALL_CACHE_DIR',
+      'BUN_RUNTIME_TRANSPILER_CACHE_PATH', 'TEMP', 'TMP'
+    )) {
       $value = $originalBuildEnvironment[$name]
       if ($null -eq $value) {
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue

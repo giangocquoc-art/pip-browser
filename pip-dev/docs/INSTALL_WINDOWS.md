@@ -24,15 +24,23 @@ The Windows development launcher requires a Windows Pip Dev/Chromium `.exe`. Fro
 .\run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\PipDev.exe" -InstallDependencies
 ```
 
-The launcher keeps Cargo's registry/cache in the project-level `.cargo-home`, puts Cargo build output in `packages/browseros-agent/.cargo-target`, and directs build temporary files to `packages/browseros-agent/.data/windows-dev/temp`. It restores the caller's `CARGO_HOME`, `TEMP`, and `TMP` values when it exits. Cargo builds use one job by default to reduce concurrent disk activity on an HDD; pass `-BuildJobs 2` if you prefer a faster build and can accept more disk activity. The job limit applies only while Cargo runs, and the previous `CARGO_BUILD_JOBS` value is restored even if the build fails. This isolated Cargo home does not inherit the Windows user's Cargo configuration, private registry credentials, or installed Cargo utilities; configure any private registry access in `.cargo-home` on the project drive before launching. Git ignores this cache directory. The launcher also uses the repository's pinned Bun version through npm when Bun is not already installed, starts the server on `127.0.0.1:9200` by default, and launches the browser extension with an isolated development profile. Omit `-InstallDependencies` after the first successful dependency install. To use another MCP port, pass `-ServerPort <port>` and configure the agent to the same port.
+The launcher keeps Cargo's registry/cache in the project-level `.cargo-home`, puts intermediate Cargo build artifacts in `packages/browseros-agent/.cargo-target`, and keeps Bun, npm, and temporary files in `packages/browseros-agent/.data/windows-dev`. It restores the caller's `CARGO_HOME`, `NPM_CONFIG_CACHE`, Bun cache variables, `TEMP`, and `TMP` when it exits. This isolated Cargo home does not inherit the Windows user's Cargo configuration, private registry credentials, or installed Cargo utilities; configure any private registry access in `.cargo-home` on the project drive before launching. Git ignores these local caches. The launcher also uses the repository's pinned Bun version through npm when Bun is not already installed, starts the server on `127.0.0.1:9200` by default, and launches the browser extension with an isolated development profile. Omit `-InstallDependencies` after the first successful dependency install. To use another MCP port, pass `-ServerPort <port>` and configure the agent to the same port.
 
-After a successful full launch has created the required artifacts, you can skip dependency installation and Cargo compilation on later runs:
+The launcher limits Cargo to one parallel job by default to reduce disk contention during a first or incremental build on an HDD. Pass `-BuildJobs 2` only if you prefer a faster build and can accept more disk activity. The limit applies only to this Cargo build and the caller's `CARGO_BUILD_JOBS` value is restored afterward, including if the build fails. Existing Cargo caches and build artifacts remain under the project on the selected drive.
+
+When the required artifacts already exist, skip Cargo and dependency installation:
 
 ```powershell
 .\run-pip-dev-windows.ps1 -BrowserBinary "D:\path\to\PipDev.exe" -UseExistingArtifacts
 ```
 
-This opt-in mode requires Bun 1.4.2 already on PATH, the existing `node_modules` directory, the server executable at `packages/browseros-agent/target/debug/browseros-claw-server-rs.exe`, and the selected browser `.exe`. It checks that these files exist, but cannot verify that the server binary matches the current Rust source. Rebuild with the default launcher after changing Rust code or dependencies to avoid running a stale server. Do not combine `-UseExistingArtifacts` with `-InstallDependencies`. The mode still writes the WXT build/cache, browser profile, runtime state, temporary files, configuration and logs to the project; it only skips dependency installation and Cargo build.
+This mode requires Bun 1.4.2 on PATH, existing `node_modules`, a prebuilt MCP server at
+`packages/browseros-agent/target/debug/browseros-claw-server-rs.exe`, and the browser executable.
+It checks those prerequisites, then skips `bun install` and Cargo build. It cannot confirm that
+the server matches the current Rust source; use the normal launcher after changing Rust code or
+dependencies. It still starts WXT, so extension compilation, cache/profile/runtime files and logs
+may be written under the project. It is a lower-I/O smoke path, not a no-write mode. Do not combine
+`-UseExistingArtifacts` with `-InstallDependencies`.
 
 This launcher does not build the Chromium browser executable or produce a distributable installer. Those are separate release-build steps. See [Pip Dev implementation status](../PIP_DEV_STATUS.md) for the current Windows build status and [agent connection setup](PIP_DEV_AGENT_SETUP.md) to connect Codex or another MCP client.
 
