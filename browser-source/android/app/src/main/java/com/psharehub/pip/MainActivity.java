@@ -3,11 +3,14 @@ package com.psharehub.pip;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DownloadManager;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.net.Uri;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Message;
 import android.view.Gravity;
 import android.view.View;
@@ -27,6 +30,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.URLUtil;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -283,9 +287,7 @@ public final class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
         view.setDownloadListener((url, agent, disposition, mime, length) -> {
-            if (isCurrentView(tab, view)) {
-                Toast.makeText(this, R.string.download_unavailable, Toast.LENGTH_LONG).show();
-            }
+            if (isCurrentView(tab, view)) enqueueDownload(url, disposition, mime);
         });
         view.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(
@@ -396,6 +398,43 @@ public final class MainActivity extends Activity {
             }
         });
         return view;
+    }
+
+    private void enqueueDownload(String rawUrl, String disposition, String mime) {
+        if (!DownloadSupport.isAllowedUrl(rawUrl)) {
+            Toast.makeText(this, R.string.download_blocked, Toast.LENGTH_LONG).show();
+            return;
+        }
+        String filename = DownloadSupport.safeFilename(URLUtil.guessFileName(rawUrl, disposition, mime));
+        if (filename.isEmpty()) filename = "pip-download";
+        final String confirmedFilename = filename;
+        String host = Uri.parse(rawUrl).getHost();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.download_confirm_title)
+                .setMessage(getString(R.string.download_confirm_message, confirmedFilename, host))
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.download_save, (dialog, which) ->
+                        startDownload(rawUrl, mime, confirmedFilename))
+                .show();
+    }
+
+    private void startDownload(String rawUrl, String mime, String filename) {
+        try {
+            Uri uri = Uri.parse(rawUrl);
+            DownloadManager manager = getSystemService(DownloadManager.class);
+            if (manager == null) throw new IllegalStateException("Download service unavailable");
+            DownloadManager.Request request = new DownloadManager.Request(uri)
+                    .setTitle(filename)
+                    .setDescription(getString(R.string.download_in_progress))
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename)
+                    .setMimeType(mime == null || mime.trim().isEmpty()
+                            ? "application/octet-stream" : mime);
+            manager.enqueue(request);
+            Toast.makeText(this, getString(R.string.download_started, filename), Toast.LENGTH_LONG).show();
+        } catch (RuntimeException failure) {
+            Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showTabs() {

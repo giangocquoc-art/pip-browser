@@ -72,8 +72,13 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
 
 Đây là nền Android ban đầu, chưa ngang chức năng Pip Windows:
 
-- Chưa tích hợp Google DNS, Pip Sync, tải tệp,
+- Chưa tích hợp Google DNS, Pip Sync, tải lên tệp,
   dịch trang, quản lý mật khẩu, file chooser, camera/mic hoặc quy trình default browser.
+- Tải tệp cơ bản được gửi qua Android DownloadManager vào thư mục Downloads sau khi người dùng
+  xác nhận. URL phải là HTTPS; cookie/credential từ Pip không được chuyển cho trình tải hệ thống,
+  nên nội dung yêu cầu đăng nhập có thể không tải được. DownloadManager dùng mạng hệ thống,
+  không đi qua WebView hoặc bộ lọc request trong Pip. Không hỗ trợ resume trong giao diện Pip,
+  upload hay chọn vị trí lưu tùy ý.
 - Không có chế độ ẩn danh hoặc nhiều hồ sơ: các tab dùng chung kho cookie WebView của app.
   Không thể gọi một tab không ghi lịch sử là hồ sơ riêng tư.
 - Chỉ mở HTTPS; HTTP và localhost HTTP chưa hỗ trợ. Không có nút bỏ qua lỗi TLS.
