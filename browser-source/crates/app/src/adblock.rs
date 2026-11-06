@@ -492,9 +492,9 @@ impl Blocker {
             },
         );
         // adblock-rust does not implement ABP popup/popunder resource types.
-        // Translate those options into a dedicated engine queried only for
-        // WebView2 popup destinations. Use bundled popup rules, the dedicated
-        // HaGeZi popup ads domain list, and reviewed Pip overrides.
+        // Translate those options into a dedicated engine for popup, redirect,
+        // and popup-frame checks. The domain-only HaGeZi list has a lazy suffix
+        // lookup in those paths, so it is not compiled a second time here.
         let popup_engine = popup_engine_from_sources([
             easylist,
             updated_lists
@@ -515,7 +515,6 @@ impl Blocker {
                 .unwrap_or(include_str!(
                     "../filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
                 )),
-            include_str!("../filters/popupads-hagezi.txt"),
             include_str!("../filters/popup-overrides.txt"),
         ]);
         // Only pinned, reviewed upstream lists can invoke trusted scriptlets.
