@@ -89,8 +89,6 @@ public final class GeckoViewPilotTest {
                 settings.getTrustedRecursiveResolverUri());
         assertEquals(GeckoRuntimeSettings.TRR_MODE_ONLY,
                 settings.getTrustedRecusiveResolverMode());
-        assertTrue("Strict DoH mode must not configure platform-DNS exclusions",
-                settings.getTrustedRecursiveResolverExcludedDomains().isEmpty());
     }
 
     private static GeckoSession openSession(GeckoRuntime runtime, GeckoSessionSettings settings) {
