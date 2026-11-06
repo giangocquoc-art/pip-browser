@@ -1,6 +1,6 @@
 # Pip Dev implementation status
 
-> Status snapshot: 2026-11-06, reviewed against `main` commit `6352abb7279dd4fd83bae9587c9326190c1e4b65`. PR #54 (API/lease hardening), #64 (low-I/O Windows launcher) and #65 (Android history/bookmarks/session) are merged. Pip Dev source tests and launcher checks do not build or launch a Pip Dev Chromium binary. This document records repository and CI evidence; dated D-drive observations below are historical snapshots, not statements about current local storage.
+> Status snapshot: 2026-11-06, browser code reviewed at `6352abb7279dd4fd83bae9587c9326190c1e4b65`; PR #66 records the status refresh at `e0326a1db60bcda0a812bbeb87593542d149878f`. PR #54 (API/lease hardening), #64 (low-I/O Windows launcher) and #65 (Android history/bookmarks/session) are merged. Pip Dev source tests and launcher checks do not build or launch a Pip Dev Chromium binary. This document records repository and CI evidence; dated D-drive observations below are historical snapshots, not statements about current local storage.
 
 Pip Dev is developed beside the original Pip browser. This directory vendors BrowserOS at
 commit `1cccd53b8be7b220ce1cf793f20bf42274a38ba0` (2026-10-19). The upstream source is
