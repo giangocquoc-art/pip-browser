@@ -388,7 +388,7 @@ impl Check {
             }
             4=>{
                 self.privacy_test_tab=self.app.windows[&id].tab_manager.active_tab_id();
-                self.query(id,false,"(()=>{if(document.title!=='Pip native test')return null;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';if(!window.__privacySeedStarted){window.__privacySeedStarted=true;window.__privacySeedReady=false;window.__privacySeedError=null;(async()=>{await new Promise((resolve,reject)=>{const request=indexedDB.open('pip-privacy-isolation',1);request.onupgradeneeded=()=>request.result.createObjectStore('marker');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,tx=db.transaction('marker','readwrite');tx.objectStore('marker').put('normal','context');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error)}});const cache=await caches.open('pip-privacy-isolation');await cache.put('/pip-privacy-marker',new Response('normal'));await navigator.serviceWorker.register('/privacy-isolation-sw.js');await navigator.serviceWorker.ready;window.__privacySeedReady=true})().catch(error=>window.__privacySeedError=String(error))}if(window.__privacySeedError)return JSON.stringify({seedError:window.__privacySeedError});if(!window.__privacySeedReady)return null;return typeof window.__pipSend==='undefined'?true:JSON.stringify({pipSend:typeof window.__pipSend})})()")
+                self.query(id,false,"(()=>{if(document.title!=='Pip native test')return null;localStorage.setItem('pip-secret','normal');document.cookie='pip_secret=normal; SameSite=Lax';if(!window.__privacySeedStarted){window.__privacySeedStarted=true;window.__privacySeedReady=false;window.__privacySeedError=null;(async()=>{await new Promise((resolve,reject)=>{const request=indexedDB.open('pip-privacy-isolation',1);request.onupgradeneeded=()=>request.result.createObjectStore('marker');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,tx=db.transaction('marker','readwrite');tx.objectStore('marker').put('normal','context');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error)}});const cache=await caches.open('pip-privacy-isolation');await cache.put('/pip-privacy-marker',new Response('normal'));let registration;for(let attempt=0;attempt<3;attempt++){try{registration=await navigator.serviceWorker.register('/privacy-isolation-sw.js');break}catch(error){if(attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)))}}await navigator.serviceWorker.ready;window.__privacySeedReady=true})().catch(error=>window.__privacySeedError=String(error))}if(window.__privacySeedError)return JSON.stringify({seedError:window.__privacySeedError});if(!window.__privacySeedReady)return null;return typeof window.__pipSend==='undefined'?true:JSON.stringify({pipSend:typeof window.__pipSend})})()")
             }
             5=>{
                 let path=self.app.library_path(id).ok_or("Library path missing")?;
@@ -1926,7 +1926,7 @@ pub fn run() {
             };
             let request = String::from_utf8_lossy(&bytes[..n]);
             let path = request.split_whitespace().nth(1).unwrap_or("");
-            if matches!(path, "/worker-test" | "/sw.js" | "/shared-worker.js") {
+            if matches!(path, "/worker-test" | "/sw.js" | "/shared-worker.js" | "/privacy-isolation-sw.js") {
                 eprintln!("[native-ui] fixture served {path}");
             }
             let (extra, body) = if path == "/download" {
