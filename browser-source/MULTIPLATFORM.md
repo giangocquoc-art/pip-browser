@@ -50,6 +50,13 @@ Android xem [android/README.md](android/README.md). Toolchain được pin: JDK 
 
 ## Bằng chứng kiểm thử nền hiện tại
 
+Run PR [42162964010](https://github.com/giangocquoc-art/pip-browser/actions/runs/42162964010) và
+[42162964065](https://github.com/giangocquoc-art/pip-browser/actions/runs/42162964065) trên PR #65
+đều xanh tại head `7d97ba8`. Windows browser/installer checks, Android APK/JNI, emulator Android 15,
+macOS Intel/ARM, Sync Worker và Download Worker đều qua. PR #65 đã gộp vào `main` tại `6352abb`.
+Các artifact CI là development builds; điều này không xác nhận thiết bị Android thật, ký phát hành,
+notarization macOS hoặc trạng thái website tải xuống.
+
 [Run 42090197137](https://github.com/giangocquoc-art/pip-browser/actions/runs/42090197137), commit `d10142868cb11dd7430e296a7e0158f0f6513000`, đã hoàn tất thành công cả bốn job:
 
 - Android: JVM tests, lint và build APK debug; emulator Android 15 chạy Activity/WebView thật để kiểm tra chọn/đóng tab, khôi phục URL qua recreation và bỏ callback của view cũ. Nhánh renderer exit được mô phỏng bằng callback; không chứng minh renderer crash thật hay truy cập Internet/video.
