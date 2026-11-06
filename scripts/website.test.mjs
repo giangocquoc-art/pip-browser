@@ -193,6 +193,7 @@ test("download version refreshes stale caches and rejects releases without a cur
     { name: "Pip-Android-0.1.18-universal.apk", size: 456 },
     { name: "Pip-macOS-arm64-0.1.18.zip", size: 789 },
     { name: "Pip-macOS-x64-0.1.18.zip", size: 789 },
+    { name: "SHA256SUMS.txt", size: 123 },
   ]));
   assert.equal(multiPlatform.nodes["#android-platform-link"].hidden, false);
   assert.equal(multiPlatform.nodes["#android-platform-link"].href, "https://download.pip.psharehub.com/android");
@@ -200,6 +201,12 @@ test("download version refreshes stale caches and rejects releases without a cur
   assert.equal(multiPlatform.nodes["#macos-intel-link"].hidden, false);
   assert.equal(multiPlatform.nodes["#android-status"].textContent, "Sẵn sàng · 0.1.18");
   assert.match(multiPlatform.nodes["#platform-release-note"].textContent, /Windows, Android và macOS/);
+  const incompleteManifest = await evaluate(null, metadata("0.1.18", [
+    { name: "PipSetup.exe", size: 123 },
+    { name: "Pip-Android-0.1.18-universal.apk", size: 456 },
+  ]));
+  assert.equal(incompleteManifest.nodes["#android-platform-link"].hidden, true,
+    "hide platform downloads until the release includes a checksum manifest");
 });
 
 test("homepage lists Windows, Android and macOS without exposing unavailable artifacts", async () => {

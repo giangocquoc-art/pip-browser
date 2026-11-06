@@ -76,7 +76,9 @@
   const isCurrentVersion = (version) => typeof version === 'string'
     && /^\d+\.\d+\.\d+$/.test(version) && compareVersions(version, pageVersion) >= 0;
   function renderPlatformDownloads(release) {
-    const assets = new Set(release?.assets || []);
+    const assets = new Map((release?.assets || [])
+      .filter((asset) => asset && typeof asset.name === 'string' && Number.isSafeInteger(asset.size) && asset.size > 0)
+      .map((asset) => [asset.name, asset.size]));
     const version = release?.version;
     if (!isCurrentVersion(version)) return;
     const windowsStatus = $('#windows-status');
@@ -85,7 +87,8 @@
     const androidStatus = $('#android-status');
     const androidLink = $('#android-platform-link');
     const androidCard = document.querySelector?.('[data-platform="android"]');
-    if (assets.has(androidAsset) && androidStatus && androidLink) {
+    const hasChecksums = assets.has('SHA256SUMS.txt');
+    if (hasChecksums && assets.has(androidAsset) && androidStatus && androidLink) {
       $('#android-status').textContent = `Sẵn sàng · ${version}`;
       androidLink.href = `https://download.pip.psharehub.com${platformAssetRoutes.android}`;
       androidLink.hidden = false;
@@ -97,23 +100,23 @@
     const macIntelLink = $('#macos-intel-link');
     const macStatus = $('#macos-status');
     const macCard = document.querySelector?.('[data-platform="macos"]');
-    if (assets.has(macArmAsset) && macArmLink) {
+    if (hasChecksums && assets.has(macArmAsset) && macArmLink) {
       $('#macos-arm-link').href = `https://download.pip.psharehub.com${platformAssetRoutes.macArm}`;
       $('#macos-arm-link').hidden = false;
     }
-    if (assets.has(macIntelAsset) && macIntelLink) {
+    if (hasChecksums && assets.has(macIntelAsset) && macIntelLink) {
       $('#macos-intel-link').href = `https://download.pip.psharehub.com${platformAssetRoutes.macIntel}`;
       $('#macos-intel-link').hidden = false;
     }
-    if ((assets.has(macArmAsset) || assets.has(macIntelAsset)) && macStatus) {
+    if (hasChecksums && (assets.has(macArmAsset) || assets.has(macIntelAsset)) && macStatus) {
       macStatus.textContent = `Sẵn sàng · ${version}`;
       if (macCard) macCard.dataset.available = 'true';
     }
     const releaseNote = $('#platform-release-note');
     if (!releaseNote) return;
-    if (assets.has(androidAsset) && assets.has(macArmAsset) && assets.has(macIntelAsset)) {
+    if (hasChecksums && assets.has(androidAsset) && assets.has(macArmAsset) && assets.has(macIntelAsset)) {
       releaseNote.textContent = `Windows, Android và macOS đều có bản Pip ${version}.`;
-    } else if (assets.has(androidAsset) || assets.has(macArmAsset) || assets.has(macIntelAsset)) {
+    } else if (hasChecksums && (assets.has(androidAsset) || assets.has(macArmAsset) || assets.has(macIntelAsset))) {
       releaseNote.textContent = `Một số gói của bản ${version} đã sẵn sàng; các nền tảng khác chỉ hiện nút tải khi có artifact phù hợp.`;
     }
   }
@@ -141,7 +144,9 @@
         version,
         downloadAvailable: true,
         url: directDownloadUrl,
-        assets: metadata.assets.map((asset) => asset.name).filter((name) => typeof name === 'string')
+        assets: metadata.assets
+          .filter((asset) => typeof asset.name === 'string' && Number.isSafeInteger(asset.size) && asset.size > 0)
+          .map(({ name, size }) => ({ name, size }))
       };
       try { localStorage.setItem(cacheKey, JSON.stringify({ checkedAt: Date.now(), release })); }
       catch { /* The current page still uses the release response. */ }

@@ -4,22 +4,27 @@ import worker from "./download-worker.mjs";
 
 const installer = {
   name: "Pip-Setup-0.1.1-Windows-x64.exe",
+  size: 12,
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Setup-0.1.1-Windows-x64.exe",
 };
 const checksums = {
   name: "SHA256SUMS.txt",
+  size: 64,
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/SHA256SUMS.txt",
 };
 const androidApk = {
   name: "Pip-Android-0.1.1-universal.apk",
+  size: 456,
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-Android-0.1.1-universal.apk",
 };
 const macArm = {
   name: "Pip-macOS-arm64-0.1.1.zip",
+  size: 789,
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-arm64-0.1.1.zip",
 };
 const macIntel = {
   name: "Pip-macOS-x64-0.1.1.zip",
+  size: 789,
   browser_download_url: "https://github.com/giangocquoc-art/pip-browser/releases/download/v0.1.1/Pip-macOS-x64-0.1.1.zip",
 };
 
@@ -90,6 +95,14 @@ test("streams only version-matched Android and macOS assets from the latest rele
   assert.ok(seenAssets.every((url) => url.includes("releases/download/v0.1.1/")));
 });
 
+test("does not serve a platform binary unless the release has a checksum manifest", async () => {
+  const response = await withMockedFetch(async (input) => {
+    if (String(input).includes("api.github.com")) return releaseResponse([installer, androidApk]);
+    throw new Error("A release without checksums must not serve platform binaries");
+  }, () => worker.fetch(new Request("https://download.pip.psharehub.com/android")));
+  assert.equal(response.status, 404);
+});
+
 test("rejects unsupported paths and methods", async () => {
   const seen = [];
   const responses = await withMockedFetch(async (input) => {
@@ -108,7 +121,10 @@ test("rejects unsupported paths and methods", async () => {
 test("rejects an asset URL outside the Pip GitHub repository", async () => {
   const response = await withMockedFetch(async (input) => {
     if (String(input).includes("api.github.com")) {
-      return releaseResponse([{ name: installer.name, browser_download_url: "https://attacker.example/setup.exe" }]);
+      return releaseResponse([
+        { name: installer.name, size: installer.size, browser_download_url: "https://attacker.example/setup.exe" },
+        checksums,
+      ]);
     }
     throw new Error("The invalid URL must not be fetched");
   }, () => worker.fetch(new Request("https://download.pip.psharehub.com/")));

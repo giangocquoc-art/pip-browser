@@ -32,23 +32,23 @@ async function getLatestRelease() {
 
 function getAsset(release, pathname) {
   const version = release.tag_name?.replace(/^v/, "");
+  const checksumAsset = release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
   if (pathname === "/checksums") {
-    return release.assets?.find((asset) => asset.name === "SHA256SUMS.txt");
+    return checksumAsset?.size > 0 ? checksumAsset : null;
   }
+  if (!checksumAsset?.size || checksumAsset.size <= 0) return null;
+  let asset;
   if (pathname === "/android") {
-    return release.assets?.find((asset) => asset.name === `Pip-Android-${version}-universal.apk`);
+    asset = release.assets?.find((item) => item.name === `Pip-Android-${version}-universal.apk`);
+  } else if (pathname === "/macos-arm64") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-arm64-${version}.zip`);
+  } else if (pathname === "/macos-x64") {
+    asset = release.assets?.find((item) => item.name === `Pip-macOS-x64-${version}.zip`);
+  } else if (pathname === "/" || pathname === "/installer") {
+    asset = release.assets?.find((item) => item.name === INSTALLER_NAME)
+      ?? release.assets?.find((item) => LEGACY_INSTALLER_NAME.test(item.name));
   }
-  if (pathname === "/macos-arm64") {
-    return release.assets?.find((asset) => asset.name === `Pip-macOS-arm64-${version}.zip`);
-  }
-  if (pathname === "/macos-x64") {
-    return release.assets?.find((asset) => asset.name === `Pip-macOS-x64-${version}.zip`);
-  }
-  if (pathname === "/" || pathname === "/installer") {
-    return release.assets?.find((asset) => asset.name === INSTALLER_NAME)
-      ?? release.assets?.find((asset) => LEGACY_INSTALLER_NAME.test(asset.name));
-  }
-  return null;
+  return asset?.size > 0 ? asset : null;
 }
 
 function copyDownloadHeaders(upstream, asset) {
