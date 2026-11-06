@@ -34,7 +34,7 @@ gh attestation verify .\Pip-source-<version>.zip --repo giangocquoc-art/pip-brow
 
 Attestation xác nhận repository, commit và workflow đã tạo file; nó không phải chữ ký Authenticode của Windows và không tự gỡ cảnh báo SmartScreen. Để Windows nhận diện nhà phát hành khi người dùng cài đặt, Pip vẫn cần phân phối MSIX qua Microsoft Store hoặc ký Authenticode bằng chứng thư được tin cậy.
 
-Website triển khai từ nhánh `main` trên Vercel. Sau khi cập nhật, kiểm tra trang chủ, trang phụ, ảnh OG, sitemap, liên kết tải và giao diện mobile.
+Website triển khai từ nhánh `main` trên Vercel. `scripts/vercel-build-policy.mjs` giới hạn build vào nội dung được phục vụ, manifest phát hành và cấu hình deploy; nếu thiếu dữ liệu commit hoặc không đọc được diff thì script vẫn cho build để tránh bỏ sót cập nhật. Sau khi cập nhật, kiểm tra trang chủ, trang phụ, ảnh OG, sitemap, liên kết tải và giao diện mobile.
 
 ## Thông tin cài đặt
 

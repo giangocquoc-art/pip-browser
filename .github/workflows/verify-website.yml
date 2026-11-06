@@ -8,6 +8,7 @@ on:
       - '*.css'
       - '*.js'
       - 'version.json'
+      - 'vercel.json'
       - '*.xml'
       - '*.txt'
       - 'assets/**'
@@ -17,6 +18,8 @@ on:
       - 'tin-cay/**'
       - 'tinh-nang/**'
       - 'scripts/website.test.mjs'
+      - 'scripts/vercel-build-policy.mjs'
+      - 'scripts/vercel-ignore-build.mjs'
       - '.github/workflows/verify-website.yml'
   pull_request:
     paths:
@@ -24,6 +27,7 @@ on:
       - '*.css'
       - '*.js'
       - 'version.json'
+      - 'vercel.json'
       - '*.xml'
       - '*.txt'
       - 'assets/**'
@@ -33,6 +37,8 @@ on:
       - 'tin-cay/**'
       - 'tinh-nang/**'
       - 'scripts/website.test.mjs'
+      - 'scripts/vercel-build-policy.mjs'
+      - 'scripts/vercel-ignore-build.mjs'
       - '.github/workflows/verify-website.yml'
   workflow_dispatch:
 
