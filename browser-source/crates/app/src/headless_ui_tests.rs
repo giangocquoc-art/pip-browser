@@ -941,14 +941,8 @@ impl Check {
             }
             74=>{
                 if self.app.windows[&id].tab_manager.active_tab().map(|tab|tab.url.as_str())!=Some(self.url.as_str()){return Ok(())}
-                let tab_id = self.app.windows[&id]
-                    .tab_manager
-                    .active_tab_id()
-                    .ok_or("No active tab for gambling redirect check")?;
-                self.app.windows[&id].tabs[&tab_id]
-                    .evaluate_script("location.href='https://ad88vip6.com/home/register?id=940814853'")
-                    .map_err(|error| error.to_string())?;
-                self.step=82;
+                // The tab model changes before WebView2 finishes navigation; wait for the fixture document before testing its redirect.
+                self.query(id,false,"location.hostname==='127.0.0.1'&&location.pathname==='/' ? true : null");
             }
             82=>self.query(id,false,"location.hostname==='127.0.0.1'&&location.pathname==='/' ? true : null"),
             83=>{
@@ -1324,6 +1318,27 @@ impl ApplicationHandler<BrowserEvent> for Check {
                 if reply != "true" {
                     self.error = Some(format!("UI step {} returned {reply}", self.step));
                     events.exit();
+                    return;
+                }
+                if self.step == 74 {
+                    let id = self.main.unwrap();
+                    let Some(tab_id) = self.app.windows[&id]
+                        .tab_manager
+                        .active_tab_id()
+                    else {
+                        self.error = Some("No active tab for gambling redirect check".into());
+                        events.exit();
+                        return;
+                    };
+                    if let Err(error) = self.app.windows[&id].tabs[&tab_id]
+                        .evaluate_script("location.href='https://ad88vip6.com/home/register?id=940814853'")
+                    {
+                        self.error = Some(error.to_string());
+                        events.exit();
+                        return;
+                    }
+                    self.step = 82;
+                    self.next = Instant::now() + Duration::from_millis(400);
                     return;
                 }
                 if self.step == 15 {
