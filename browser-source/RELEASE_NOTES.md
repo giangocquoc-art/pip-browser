@@ -1,3 +1,8 @@
+# Pip 0.1.19
+
+- Clarified that Pip Sync runs automatically for enabled data categories, while “Sync now” requests an immediate sync.
+- Reduced duplicate compilation of the bundled popup-domain list while keeping popup, redirect, and popup-frame checks.
+
 # Pip 0.1.18
 
 - Download folder and “ask where to save” preferences are now separate for each profile. Profiles without overrides keep their previous settings.
