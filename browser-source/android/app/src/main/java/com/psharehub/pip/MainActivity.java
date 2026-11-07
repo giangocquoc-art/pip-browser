@@ -1138,8 +1138,7 @@ public final class MainActivity extends Activity {
         if (filteringStatus == null) return;
         if (NativeAdblock.hasFailed()) {
             filteringStatus.setText(R.string.adblock_unavailable);
-            filteringStatus.setContentDescription(getString(R.string.adblock_unavailable)
-                    + ". " + getString(R.string.tap_for_details));
+            filteringStatus.setContentDescription(getString(R.string.adblock_unavailable));
         }
         else if (NativeAdblock.isReady()) {
             boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()

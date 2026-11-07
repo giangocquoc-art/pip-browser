@@ -39,6 +39,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.*;
 
@@ -134,6 +135,10 @@ public final class MainActivityTest {
             });
             onView(withText(R.string.adblock_details_title)).inRoot(isDialog())
                     .check(matches(isDisplayed()));
+            onView(withText(containsString("không phải số quảng cáo"))).inRoot(isDialog())
+                    .check(matches(isDisplayed()));
+            onView(withText(containsString("Một số quảng cáo YouTube vẫn có thể xuất hiện")))
+                    .inRoot(isDialog()).check(matches(isDisplayed()));
         }
         assertEquals("document-start script registration should match WebView capability",
                 supported, installed.get());
