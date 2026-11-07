@@ -856,10 +856,10 @@
 
       <!-- Zoom Badge & Dialog -->
       <button class="zoom-badge" id="zoomBadge" onclick="toggleZoomDialog(event)" style="display: none;">100%</button>
-      <div class="zoom-dialog" id="zoomDialog" style="display: none;" onclick="event.stopPropagation()">
-        <button class="zoom-dialog-btn" id="zoomOutBtn" onclick="zoomOut()" title="Thu nhỏ (Ctrl+-)">−</button>
-        <button class="zoom-dialog-reset" onclick="zoomReset()" id="zoomResetBtn" title="Khôi phục tỷ lệ (Ctrl+0)">100%</button>
-        <button class="zoom-dialog-btn" id="zoomInBtn" onclick="zoomIn()" title="Phóng to (Ctrl++)">+</button>
+      <div class="zoom-dialog" id="zoomDialog" role="group" aria-label="Thu phóng trang" style="display: none;" onclick="event.stopPropagation()">
+        <button class="zoom-dialog-btn" id="zoomOutBtn" onclick="zoomOut()" title="Thu nhỏ (Ctrl+-)" aria-label="Thu nhỏ trang">−</button>
+        <button class="zoom-dialog-reset" onclick="zoomReset()" id="zoomResetBtn" title="Khôi phục tỷ lệ (Ctrl+0)" aria-label="Đặt lại thu phóng trang">100%</button>
+        <button class="zoom-dialog-btn" id="zoomInBtn" onclick="zoomIn()" title="Phóng to (Ctrl++)" aria-label="Phóng to trang">+</button>
       </div>
     </div>
 
@@ -902,12 +902,12 @@
   </div>
 
   <!-- Find In Page Tray (Expandable 3rd Row) -->
-  <div class="find-bar" id="findBar" onclick="event.stopPropagation()">
-    <input type="text" id="findInput" class="find-input" placeholder="Tìm trong trang..." oninput="executeFind(false)" onkeydown="handleFindKey(event)"/>
+  <div class="find-bar" id="findBar" role="search" aria-label="Tìm trong trang" onclick="event.stopPropagation()">
+    <input type="text" id="findInput" class="find-input" aria-label="Văn bản cần tìm trong trang" placeholder="Tìm trong trang..." oninput="executeFind(false)" onkeydown="handleFindKey(event)"/>
     <span class="find-count" id="findCount">0/0</span>
-    <button class="find-btn" onclick="executeFind(false)" title="Kết quả trước (Shift+Enter)">▲</button>
-    <button class="find-btn" onclick="executeFind(true)" title="Kết quả tiếp (Enter)">▼</button>
-    <button class="find-btn" id="closeFindBarBtn" onclick="closeFindBar()" title="Đóng (Esc)">✕</button>
+    <button class="find-btn" onclick="executeFind(false)" title="Kết quả trước (Shift+Enter)" aria-label="Kết quả trước">▲</button>
+    <button class="find-btn" onclick="executeFind(true)" title="Kết quả tiếp (Enter)" aria-label="Kết quả tiếp theo">▼</button>
+    <button class="find-btn" id="closeFindBarBtn" onclick="closeFindBar()" title="Đóng (Esc)" aria-label="Đóng tìm trong trang">✕</button>
   </div>
 
   <!-- Permission Prompt Tray (Expandable 3rd Row) -->
@@ -923,7 +923,7 @@
     <div class="permission-actions">
       <button class="permission-btn allow" id="permissionAllowBtn" onclick="resolvePermission(true)">Cho phép</button>
       <button class="permission-btn block" id="permissionBlockBtn" onclick="resolvePermission(false)">Chặn</button>
-      <button class="permission-close" id="permissionDismissBtn" onclick="dismissPermission()">✕</button>
+      <button class="permission-close" id="permissionDismissBtn" onclick="dismissPermission()" aria-label="Đóng yêu cầu quyền">✕</button>
     </div>
   </div>
 
