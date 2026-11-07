@@ -129,7 +129,7 @@ public final class MainActivityTest {
                 supported, installed.get());
     }
 
-    @Test public void youtubePlayerFetchScriptletRemovesAdFieldsAndPreservesVideoData() throws Exception {
+    @Test public void mobileYoutubePlayerFetchScriptletRemovesAdFieldsAndPreservesVideoData() throws Exception {
         assertTrue("native filter and pinned scriptlets should initialize",
                 NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
         assertTrue("test requires WebView document-start support",
@@ -146,7 +146,7 @@ public final class MainActivityTest {
                 probe.setWebViewClient(new WebViewClient() {
                     @Override public WebResourceResponse shouldInterceptRequest(
                             WebView view, WebResourceRequest request) {
-                        if (!"www.youtube.com".equals(request.getUrl().getHost())
+                        if (!"m.youtube.com".equals(request.getUrl().getHost())
                                 || !"/youtubei/v1/player".equals(request.getUrl().getPath())) return null;
                         String body = "{\"adPlacements\":[{\"adSlotRenderer\":{}}],"
                                 + "\"adSlots\":[{}],\"videoDetails\":{\"title\":\"fixture\"}}";
@@ -165,7 +165,7 @@ public final class MainActivityTest {
                         + "fetch('/youtubei/v1/player?key=fixture',{method:'POST',body:'{}'})"
                         + ".then(r=>r.json()).then(x=>window.__pipScriptletResult=JSON.stringify(x))"
                         + ".catch(e=>window.__pipScriptletResult='ERROR:'+e)</script>";
-                probe.loadDataWithBaseURL("https://www.youtube.com/watch?v=fixture", html,
+                probe.loadDataWithBaseURL("https://m.youtube.com/watch?v=fixture", html,
                         "text/html", "UTF-8", null);
             });
             assertTrue("fixture player response did not finish", resultReady.await(15, TimeUnit.SECONDS));
