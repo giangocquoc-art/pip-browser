@@ -71,6 +71,7 @@ public final class MainActivity extends Activity {
     private Button forward;
     private Button reloadButton;
     private Button tabButton;
+    private Button menuButton;
     private FrameLayout content;
     private TextView status;
     private TextView filteringStatus;
@@ -141,6 +142,8 @@ public final class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        float fontScale = getResources().getConfiguration().fontScale;
+        int addressToolbarHeight = Math.max(dp(56), dp(Math.round(48 * fontScale)));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(255, 249, 243));
@@ -176,9 +179,9 @@ public final class MainActivity extends Activity {
             if (action == EditorInfo.IME_ACTION_GO) { openAddress(); return true; }
             return false;
         });
-        omnibox.addView(address, new LinearLayout.LayoutParams(0, dp(56), 1));
+        omnibox.addView(address, new LinearLayout.LayoutParams(0, addressToolbarHeight, 1));
         Button go = button(R.string.go, this::openAddress);
-        omnibox.addView(go, new LinearLayout.LayoutParams(dp(64), dp(56)));
+        omnibox.addView(go, new LinearLayout.LayoutParams(dp(64), addressToolbarHeight));
         root.addView(omnibox);
 
         LinearLayout controls = new LinearLayout(this);
@@ -211,7 +214,7 @@ public final class MainActivity extends Activity {
             else tab.view.reload();
         });
         tabButton = button(R.string.tabs, this::showTabs);
-        Button menu = button(R.string.menu, this::showBrowserMenu);
+        menuButton = button(R.string.menu, this::showBrowserMenu);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
@@ -268,11 +271,14 @@ public final class MainActivity extends Activity {
         updateFilteringStatus();
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        for (Button item : new Button[]{back, forward, reloadButton, tabButton, menu}) {
+        for (Button item : new Button[]{back, forward, reloadButton, tabButton, menuButton}) {
             item.setMinHeight(dp(48));
+            item.setMinWidth(0);
+            item.setPadding(dp(2), 0, dp(2), 0);
             controls.addView(item, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         }
+        updateControlLabels();
         root.addView(controls);
         browserRoot = root;
         setContentView(root);
@@ -292,6 +298,25 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(int size) { return Math.round(size * getResources().getDisplayMetrics().density); }
+
+    static boolean shouldUseCompactControls(float fontScale) { return fontScale >= 1.3f; }
+
+    private void updateControlLabels() {
+        boolean compact = shouldUseCompactControls(getResources().getConfiguration().fontScale);
+        back.setText(compact ? "←" : getString(R.string.back));
+        back.setContentDescription(getString(R.string.back));
+        forward.setText(compact ? "→" : getString(R.string.forward));
+        forward.setContentDescription(getString(R.string.forward));
+        boolean loading = selected >= 0 && selected < tabs.size() && tabs.get(selected).loading;
+        reloadButton.setText(compact ? (loading ? "×" : "↻")
+                : getString(loading ? R.string.stop : R.string.reload));
+        reloadButton.setContentDescription(getString(loading ? R.string.stop : R.string.reload));
+        tabButton.setText(compact ? Integer.toString(tabs.size())
+                : getString(R.string.tabs_count, tabs.size()));
+        tabButton.setContentDescription(getString(R.string.tabs_count, tabs.size()));
+        menuButton.setText(compact ? "⋮" : getString(R.string.menu));
+        menuButton.setContentDescription(getString(R.string.menu));
+    }
 
     private void openAddress() {
         String url = Address.resolve(address.getText().toString());
@@ -1110,12 +1135,7 @@ public final class MainActivity extends Activity {
         WebView view = activeView();
         back.setEnabled(view != null && view.canGoBack());
         forward.setEnabled(view != null && view.canGoForward());
-        tabButton.setText(getString(R.string.tabs_count, tabs.size()));
-        if (reloadButton != null) {
-            reloadButton.setText(tabs.get(selected).loading ? R.string.stop : R.string.reload);
-            reloadButton.setContentDescription(getString(tabs.get(selected).loading
-                    ? R.string.stop : R.string.reload));
-        }
+        updateControlLabels();
     }
 
     private void showStatus(int message) {
@@ -1154,7 +1174,7 @@ public final class MainActivity extends Activity {
             boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()
                     && tabs.get(selected).youtubeScriptletsInstalled;
             filteringStatus.setText(R.string.adblock_ready);
-            filteringStatus.setContentDescription(getString(R.string.adblock_ready)
+            filteringStatus.setContentDescription(getString(R.string.adblock_ready_accessible)
                     + ". " + getString(R.string.tap_for_details) + ". "
                     + getString(youtubeScriptletsInstalled
                             ? R.string.adblock_scriptlet_ready

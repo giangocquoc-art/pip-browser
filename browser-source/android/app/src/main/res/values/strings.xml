@@ -63,7 +63,8 @@
     <string name="permission_deny">Không cho phép</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
     <string name="adblock_loading">Đang nạp bộ lọc quảng cáo…</string>
-    <string name="adblock_ready">Bộ lọc quảng cáo đang bật · Chi tiết</string>
+    <string name="adblock_ready">Chặn quảng cáo · Chi tiết</string>
+    <string name="adblock_ready_accessible">Bộ lọc quảng cáo đang bật. Chạm để xem chi tiết.</string>
     <string name="adblock_unavailable">Bộ lọc chưa sẵn sàng · Chạm để tiếp tục không bảo vệ</string>
     <string name="adblock_details_title">Trạng thái bộ lọc quảng cáo</string>
     <string name="adblock_details">Đã chặn %1$d yêu cầu mạng kể từ khi mở Pip. Đây là tổng yêu cầu bị chặn, không phải số quảng cáo đã loại.\n\n%2$s\n\nMột số quảng cáo YouTube vẫn có thể xuất hiện vì YouTube thường thay đổi cách phân phối quảng cáo. Chặn toàn bộ googlevideo.com sẽ làm hỏng video thông thường.</string>

@@ -100,6 +100,14 @@ public final class MainActivityTest {
         assertEquals(0, MainActivity.androidPermissionsFor(new String[]{"unknown"}).length);
     }
 
+    @Test public void androidControlsSwitchToAccessibleCompactLabelsForLargeSystemText() {
+        assertFalse(MainActivity.shouldUseCompactControls(1.0f));
+        assertFalse(MainActivity.shouldUseCompactControls(1.2f));
+        assertTrue(MainActivity.shouldUseCompactControls(1.3f));
+        assertTrue(MainActivity.shouldUseCompactControls(1.5f));
+        assertTrue(MainActivity.shouldUseCompactControls(2.0f));
+    }
+
     @Test public void youtubeScriptletsRegisterOnlyForExactSecureYoutubeOrigins() throws Exception {
         assertTrue("native filter and pinned scriptlets should initialize",
                 NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
