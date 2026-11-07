@@ -407,14 +407,15 @@ impl App {
                         let name = destination
                             .file_name()
                             .unwrap_or_default()
-                            .to_string_lossy();
+                            .to_string_lossy()
+                            .into_owned();
                         let destination_key = destination.to_string_lossy().into_owned();
                         *path = destination;
                         let _ =
                             download_proxy.send_event(Event::Notice(format!("Đang tải: {name}")));
                         let _ = download_proxy.send_event(Event::DownloadStarted(
                             url.clone(),
-                            name.into_owned(),
+                            name,
                             destination_key,
                         ));
                         true
