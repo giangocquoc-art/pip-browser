@@ -162,8 +162,13 @@ public final class MainActivityTest {
                     }
                 });
                 String html = "<!doctype html><meta charset='utf-8'><script>"
-                        + "fetch('/youtubei/v1/player?key=fixture',{method:'POST',body:'{}'})"
-                        + ".then(r=>r.json()).then(x=>window.__pipScriptletResult=JSON.stringify(x))"
+                        + "const fromFetch=fetch('/youtubei/v1/player?key=fetch',{method:'POST',body:'{}'})"
+                        + ".then(r=>r.json());"
+                        + "const fromXhr=new Promise((resolve,reject)=>{const x=new XMLHttpRequest();"
+                        + "x.open('POST','/youtubei/v1/player?key=xhr');"
+                        + "x.onload=()=>{try{resolve(JSON.parse(x.responseText))}catch(e){reject(e)}};"
+                        + "x.onerror=()=>reject(new Error('XHR failed'));x.send('{}')});"
+                        + "Promise.all([fromFetch,fromXhr]).then(x=>window.__pipScriptletResult=JSON.stringify(x))"
                         + ".catch(e=>window.__pipScriptletResult='ERROR:'+e)</script>";
                 probe.loadDataWithBaseURL("https://m.youtube.com/watch?v=fixture", html,
                         "text/html", "UTF-8", null);
