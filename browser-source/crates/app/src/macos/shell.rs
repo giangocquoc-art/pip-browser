@@ -1124,6 +1124,10 @@ mod shell_tests {
             },
         ];
 
+        assert!(
+            matching_download_mut(&mut downloads, "https://example.test/file", None,).is_none()
+        );
+
         matching_download_mut(
             &mut downloads,
             "https://example.test/file",
@@ -1134,8 +1138,5 @@ mod shell_tests {
 
         assert_eq!(downloads[0].status, "Thất bại");
         assert_eq!(downloads[1].status, "Đang tải");
-        assert!(
-            matching_download_mut(&mut downloads, "https://example.test/file", None,).is_none()
-        );
     }
 }
