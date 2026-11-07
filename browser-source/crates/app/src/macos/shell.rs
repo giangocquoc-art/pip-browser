@@ -73,7 +73,7 @@ enum Event {
     VerifyTimeout,
     AdblockPrepared(Result<adblock::Prepared, String>),
     AdblockChanged,
-    DownloadFinished(String, String, bool),
+    DownloadFinished(String, Option<String>, bool),
     DownloadStarted(String, String, String),
 }
 
