@@ -66,8 +66,12 @@ public static class PipCiWindowCapture {
         if ($captureWidth -lt 700 -or $captureHeight -lt 480) {
             throw "Windows runner display is too small for UX review: ${screenWidth}x${screenHeight}."
         }
-        # SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        [void][PipCiWindowCapture]::SetWindowPos($handle, [IntPtr]::Zero, 0, 0, $captureWidth, $captureHeight, 0x0054)
+        # Put Pip above the runner terminal without stealing keyboard focus. The
+        # previous no-z-order capture showed the terminal covering the app.
+        # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW
+        if (-not [PipCiWindowCapture]::SetWindowPos($handle, [IntPtr](-1), 0, 0, $captureWidth, $captureHeight, 0x0050)) {
+            throw 'Could not place the Pip window above the runner terminal for visual capture.'
+        }
 
         # Give WebView2 time to paint the bundled Pip start page before sampling
         # the actual app window. The page itself performs no external navigation.
