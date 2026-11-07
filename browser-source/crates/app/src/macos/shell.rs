@@ -302,6 +302,7 @@ impl App {
                 "back": active.is_some_and(|tab| tab.can_go_back),
                 "forward": active.is_some_and(|tab| tab.can_go_forward),
                 "adblock": self.adblock.message(),
+                "adblockDetails": self.adblock.details(),
                 "adblockReady": self.adblock.ready(),
                 "bookmarked": active.is_some_and(|tab| self.data.bookmarks.iter().any(|item| item.url == tab.url)),
                 "history": self.data.history.iter().rev().take(100).cloned().collect::<Vec<_>>(),
@@ -954,9 +955,9 @@ impl ApplicationHandler<Event> for App {
                         }
                     }
                 } else {
-                    self.notice(&self.adblock.message());
+                    self.notice(&self.adblock.details());
                     if let Some(verification) = &mut self.verification {
-                        verification.failure = Some(self.adblock.message());
+                        verification.failure = Some(self.adblock.details());
                         event_loop.exit();
                     }
                 }

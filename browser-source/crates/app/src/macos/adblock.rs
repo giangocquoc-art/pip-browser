@@ -54,10 +54,22 @@ impl Blocker {
     pub fn message(&self) -> String {
         match &*self.0.borrow() {
             State::Preparing | State::Compiling => "Đang chuẩn bị chặn quảng cáo…".into(),
-            State::Ready(_, stats) => {
-                format!("Chặn quảng cáo · {} quy tắc WebKit", stats.native_rules)
-            }
-            State::Failed(error) => format!("Lỗi bộ lọc — chưa mở web: {error}"),
+            State::Ready(..) => "Chặn quảng cáo sẵn sàng".into(),
+            State::Failed(_) => "Bộ lọc quảng cáo chưa sẵn sàng".into(),
+        }
+    }
+
+    /// Keep the toolbar short while retaining useful diagnostics for assistive
+    /// technology, pointer hover, and troubleshooting notices.
+    pub fn details(&self) -> String {
+        match &*self.0.borrow() {
+            State::Preparing => "Đang chuẩn bị bộ lọc WebKit.".into(),
+            State::Compiling => "Đang biên dịch bộ lọc WebKit.".into(),
+            State::Ready(_, stats) => format!(
+                "Bộ lọc WebKit đang hoạt động với {} quy tắc đã biên dịch. macOS chưa hỗ trợ scriptlet YouTube.",
+                stats.native_rules
+            ),
+            State::Failed(error) => format!("Không thể chuẩn bị bộ lọc WebKit: {error}"),
         }
     }
 
