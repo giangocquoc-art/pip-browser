@@ -129,6 +129,15 @@ jobs:
             adb shell am start -n com.psharehub.pip/.MainActivity
             sleep 12
             adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-360x800dp.png
+            for scale in 1.5 2.0; do
+              adb shell settings put system font_scale "$scale"
+              adb shell am force-stop com.psharehub.pip
+              adb shell am start -n com.psharehub.pip/.MainActivity
+              sleep 10
+              if [ "$scale" = "1.5" ]; then name=150; else name=200; fi
+              adb exec-out screencap -p > "app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-${name}.png"
+            done
+            adb shell settings put system font_scale 1.0
             adb shell wm size reset
             adb shell wm density reset
       - name: Upload emulator test reports
