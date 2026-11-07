@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Message;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -231,6 +232,13 @@ public final class MainActivity extends Activity {
         root.addView(status);
         filteringStatus = new TextView(this);
         filteringStatus.setTextSize(14);
+        filteringStatus.setMinHeight(dp(48));
+        filteringStatus.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        TypedValue statusSelector = new TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, statusSelector, true)
+                && statusSelector.resourceId != 0) {
+            filteringStatus.setBackgroundResource(statusSelector.resourceId);
+        }
         filteringStatus.setPadding(dp(12), dp(3), dp(12), dp(3));
         filteringStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         filteringStatus.setClickable(true);

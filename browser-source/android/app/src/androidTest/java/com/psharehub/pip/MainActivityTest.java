@@ -124,6 +124,10 @@ public final class MainActivityTest {
                                 + describeTextViews(activity.findViewById(android.R.id.content)), status);
                 assertTrue("filter status must be operable by touch", status.isClickable());
                 assertTrue("filter status must be reachable by keyboard/accessibility", status.isFocusable());
+                assertTrue("filter status target must be at least 48dp high",
+                        status.getMinimumHeight() >= Math.round(48 * activity.getResources()
+                                .getDisplayMetrics().density));
+                assertNotNull("filter status needs visible pressed/focus feedback", status.getBackground());
                 assertTrue("accessible status must explain scriptlet availability",
                         status.getContentDescription().toString().contains(supported
                                 ? "Scriptlet YouTube đã được đăng ký"
