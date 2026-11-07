@@ -345,8 +345,10 @@ public final class MainActivityTest {
             EditText address = find(root, EditText.class);
             assertNotNull(address);
             assertEquals(url, address.getText().toString());
-            Button tabs = findButton(root, activity.getString(R.string.tabs));
+            String tabDescription = activity.getString(R.string.tabs_count, count);
+            Button tabs = findButton(root, tabDescription);
             assertNotNull(tabs);
+            assertEquals(tabDescription, tabs.getContentDescription().toString());
             assertEquals(activity.getString(R.string.tabs) + " " + count, tabs.getText().toString());
         });
     }
@@ -382,18 +384,18 @@ public final class MainActivityTest {
     }
 
     private static void selectTab(int position) {
-        onView(withContentDescription(R.string.tabs)).perform(click());
+        onView(withContentDescription(startsWith("Tab "))).perform(click());
         onView(withContentDescription(startsWith("Chuyển đến tab " + (position + 1) + ":")))
                 .inRoot(isDialog()).perform(click());
     }
 
     private static void openNewTab() {
-        onView(withContentDescription(R.string.tabs)).perform(click());
+        onView(withContentDescription(startsWith("Tab "))).perform(click());
         onView(withText(R.string.new_tab)).inRoot(isDialog()).perform(click());
     }
 
     private static void closeCurrentTab() {
-        onView(withContentDescription(R.string.tabs)).perform(click());
+        onView(withContentDescription(startsWith("Tab "))).perform(click());
         onView(withContentDescription(startsWith("Đóng tab đang chọn:")))
                 .inRoot(isDialog()).perform(click());
     }
