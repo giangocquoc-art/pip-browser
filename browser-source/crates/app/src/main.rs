@@ -4413,7 +4413,7 @@ impl BrowserApp {
         win_id: WindowId,
         logical_x: f64,
         logical_y: f64,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
     ) {
         use windows::core::w;
         use windows::Win32::Foundation::{HWND, POINT};
@@ -4469,8 +4469,8 @@ impl BrowserApp {
                             } else if let Some(shortcut) = native_menu_shortcut(cmd.0) {
                                 // Use the same command path as keyboard shortcuts so the menu
                                 // cannot drift from feature gates or browser action behavior.
-                                let _ = event_loop
-                                    .create_proxy()
+                                let _ = self
+                                    .proxy
                                     .send_event(BrowserEvent::Shortcut(win_id, shortcut.into()));
                             }
                         }
@@ -8141,7 +8141,7 @@ fn shortcut_library_target(shortcut: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "windows")]
-fn native_menu_shortcut(command: u32) -> Option<&'static str> {
+fn native_menu_shortcut(command: i32) -> Option<&'static str> {
     match command {
         1001 => Some("Ctrl+T"),
         1002 => Some("Ctrl+N"),

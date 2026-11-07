@@ -384,8 +384,8 @@ impl App {
                             .to_string_lossy();
                         let _ =
                             download_proxy.send_event(Event::Notice(format!("Đang tải: {name}")));
-                        let _ =
-                            download_proxy.send_event(Event::DownloadStarted(url.clone(), name));
+                        let _ = download_proxy
+                            .send_event(Event::DownloadStarted(url.clone(), name.into_owned()));
                         *path = destination;
                         true
                     }
@@ -764,7 +764,7 @@ impl ApplicationHandler<Event> for App {
                         .unwrap_or_default();
                     self.data.history.retain(|item| item.url != url);
                     self.data.history.push(HistoryItem {
-                        url,
+                        url: url.clone(),
                         title,
                         visited_at: now(),
                     });
