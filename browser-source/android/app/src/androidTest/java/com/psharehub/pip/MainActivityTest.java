@@ -127,7 +127,8 @@ public final class MainActivityTest {
             selectTab(0);
             scenario.onActivity(activity -> {
                 TextView status = findTextViewContaining(
-                        activity.findViewById(android.R.id.content), "Bộ lọc quảng cáo đang bật");
+                        activity.findViewById(android.R.id.content),
+                        activity.getString(R.string.adblock_ready));
                 assertNotNull("filter status must match the installed scriptlet state; views="
                                 + describeTextViews(activity.findViewById(android.R.id.content)), status);
                 assertTrue("filter status must expose native button semantics", status instanceof Button);
@@ -139,6 +140,9 @@ public final class MainActivityTest {
                                 + "px must be at least " + minimumTouchHeight + "px (48dp)",
                         status.getMinimumHeight() >= minimumTouchHeight);
                 assertNotNull("filter status needs visible pressed/focus feedback", status.getBackground());
+                assertTrue("accessible status needs a full screen-reader description",
+                        status.getContentDescription().toString().contains(
+                                activity.getString(R.string.adblock_ready_accessible)));
                 assertTrue("accessible status must explain scriptlet availability",
                         status.getContentDescription().toString().contains(supported
                                 ? "Scriptlet YouTube đã được đăng ký"
