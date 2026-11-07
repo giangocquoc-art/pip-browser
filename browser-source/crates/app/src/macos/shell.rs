@@ -22,13 +22,23 @@ use winit::{
 };
 use wry::{
     dpi::{LogicalPosition, LogicalSize},
-    NewWindowResponse, PageLoadEvent, PermissionResponse, Rect, WebView, WebViewBuilder,
+    NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse, Rect, WebView,
+    WebViewBuilder,
 };
 
 const BAR_HEIGHT: f64 = 146.0;
 const MAX_TABS: usize = 32;
 const LOGO: &str = include_str!("../../ui/logo.b64");
 const VERIFY_FIXTURE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Pip runtime verification</title></head><body><p id=\"pip-runtime-probe\">pending</p></body></html>";
+
+fn macos_permission_response(kind: PermissionKind) -> PermissionResponse {
+    match kind {
+        // Let WKWebView show its origin-aware media permission prompt. Never
+        // grant device access directly from Pip's synchronous callback.
+        PermissionKind::Camera | PermissionKind::Microphone => PermissionResponse::Default,
+        _ => PermissionResponse::Deny,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -320,9 +330,7 @@ impl App {
             .with_html(home)
             .with_back_forward_navigation_gestures(true)
             .with_devtools(cfg!(debug_assertions))
-            // The preview has no permission picker yet; never implicitly grant
-            // camera/microphone access or trigger missing macOS usage prompts.
-            .with_permission_handler(|_| PermissionResponse::Deny)
+            .with_permission_handler(macos_permission_response)
             .with_navigation_handler(move |url| {
                 if url == "about:blank" {
                     return true;
@@ -1039,4 +1047,30 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::macos_permission_response;
+    use wry::{PermissionKind, PermissionResponse};
+
+    #[test]
+    fn media_permissions_defer_to_the_webkit_origin_prompt() {
+        assert!(matches!(
+            macos_permission_response(PermissionKind::Camera),
+            PermissionResponse::Default
+        ));
+        assert!(matches!(
+            macos_permission_response(PermissionKind::Microphone),
+            PermissionResponse::Default
+        ));
+    }
+
+    #[test]
+    fn unrelated_permissions_remain_denied() {
+        assert!(matches!(
+            macos_permission_response(PermissionKind::Geolocation),
+            PermissionResponse::Deny
+        ));
+    }
 }
