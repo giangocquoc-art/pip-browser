@@ -63,9 +63,13 @@
     <string name="permission_deny">Không cho phép</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
     <string name="adblock_loading">Đang nạp bộ lọc quảng cáo…</string>
-    <string name="adblock_ready">Lọc mạng bật · %1$d yêu cầu bị chặn (tổng) · Scriptlet YouTube chưa sẵn sàng</string>
-    <string name="adblock_ready_youtube">Lọc mạng + scriptlet YouTube sẵn sàng · %1$d yêu cầu bị chặn (tổng) · quảng cáo vẫn có thể còn</string>
-    <string name="adblock_unavailable">Bộ lọc quảng cáo không hoạt động. Chạm để chọn tiếp tục không bảo vệ.</string>
+    <string name="adblock_ready">Bộ lọc quảng cáo đang bật · Chi tiết</string>
+    <string name="adblock_unavailable">Bộ lọc chưa sẵn sàng · Chạm để tiếp tục không bảo vệ</string>
+    <string name="adblock_details_title">Trạng thái bộ lọc quảng cáo</string>
+    <string name="adblock_details">Đã chặn %1$d yêu cầu mạng kể từ khi mở Pip. Đây là tổng yêu cầu bị chặn, không phải số quảng cáo đã loại.\n\n%2$s\n\nMột số quảng cáo YouTube vẫn có thể xuất hiện vì YouTube thường thay đổi cách phân phối quảng cáo. Chặn toàn bộ googlevideo.com sẽ làm hỏng video thông thường.</string>
+    <string name="adblock_scriptlet_ready">Scriptlet YouTube đã được đăng ký cho tab này.</string>
+    <string name="adblock_scriptlet_unavailable">Scriptlet YouTube chưa sẵn sàng cho tab này; bộ lọc mạng vẫn hoạt động.</string>
+    <string name="tap_for_details">Chạm để xem chi tiết.</string>
     <string name="adblock_failure_prompt">Không nạp được bộ lọc quảng cáo. Trang đang chờ; bạn có muốn duyệt không bảo vệ trong cửa sổ này?</string>
     <string name="continue_unprotected">Tiếp tục không bảo vệ</string>
     <string name="blocked_gambling_navigation">Pip đã chặn trang chuyển hướng cá cược. Bạn có thể nhập trực tiếp địa chỉ nếu muốn tự mở.</string>

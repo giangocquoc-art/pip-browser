@@ -233,14 +233,27 @@ public final class MainActivity extends Activity {
         filteringStatus.setTextSize(14);
         filteringStatus.setPadding(dp(12), dp(3), dp(12), dp(3));
         filteringStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        filteringStatus.setClickable(true);
+        filteringStatus.setFocusable(true);
         root.addView(filteringStatus);
         filteringStatus.setOnClickListener(v -> {
-            if (!NativeAdblock.hasFailed()) return;
-            new AlertDialog.Builder(this).setMessage(R.string.adblock_failure_prompt)
-                    .setPositiveButton(R.string.continue_unprotected, (dialog, which) -> {
-                        allowUnprotected = true;
-                        drainPendingLoads();
-                    }).setNegativeButton(R.string.cancel, null).show();
+            if (NativeAdblock.hasFailed()) {
+                new AlertDialog.Builder(this).setMessage(R.string.adblock_failure_prompt)
+                        .setPositiveButton(R.string.continue_unprotected, (dialog, which) -> {
+                            allowUnprotected = true;
+                            drainPendingLoads();
+                        }).setNegativeButton(R.string.cancel, null).show();
+            } else if (NativeAdblock.isReady()) {
+                long blocked = NativeAdblock.blockedCount();
+                boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()
+                        && tabs.get(selected).youtubeScriptletsInstalled;
+                new AlertDialog.Builder(this).setTitle(R.string.adblock_details_title)
+                        .setMessage(getString(R.string.adblock_details, blocked,
+                                getString(youtubeScriptletsInstalled
+                                        ? R.string.adblock_scriptlet_ready
+                                        : R.string.adblock_scriptlet_unavailable)))
+                        .setPositiveButton(R.string.cancel, null).show();
+            }
         });
         updateFilteringStatus();
         content = new FrameLayout(this);
@@ -1123,15 +1136,25 @@ public final class MainActivity extends Activity {
 
     private void updateFilteringStatus() {
         if (filteringStatus == null) return;
-        long blocked = NativeAdblock.blockedCount();
-        if (NativeAdblock.hasFailed()) filteringStatus.setText(R.string.adblock_unavailable);
+        if (NativeAdblock.hasFailed()) {
+            filteringStatus.setText(R.string.adblock_unavailable);
+            filteringStatus.setContentDescription(getString(R.string.adblock_unavailable)
+                    + ". " + getString(R.string.tap_for_details));
+        }
         else if (NativeAdblock.isReady()) {
             boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()
                     && tabs.get(selected).youtubeScriptletsInstalled;
-            filteringStatus.setText(getString(youtubeScriptletsInstalled
-                    ? R.string.adblock_ready_youtube : R.string.adblock_ready, blocked));
+            filteringStatus.setText(R.string.adblock_ready);
+            filteringStatus.setContentDescription(getString(R.string.adblock_ready)
+                    + ". " + getString(R.string.tap_for_details) + ". "
+                    + getString(youtubeScriptletsInstalled
+                            ? R.string.adblock_scriptlet_ready
+                            : R.string.adblock_scriptlet_unavailable));
         }
-        else filteringStatus.setText(R.string.adblock_loading);
+        else {
+            filteringStatus.setText(R.string.adblock_loading);
+            filteringStatus.setContentDescription(getString(R.string.adblock_loading));
+        }
     }
 
     // UI-thread queue stores only the latest requested URL per live tab. No UI waits.

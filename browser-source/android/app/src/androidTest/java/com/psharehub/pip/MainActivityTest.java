@@ -37,6 +37,8 @@ import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
+import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.*;
 
@@ -116,14 +118,22 @@ public final class MainActivityTest {
             selectTab(0);
             scenario.onActivity(activity -> {
                 TextView status = findTextViewContaining(
-                        activity.findViewById(android.R.id.content), supported
-                                ? "scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
+                        activity.findViewById(android.R.id.content), "Bộ lọc quảng cáo đang bật");
                 assertNotNull("filter status must match the installed scriptlet state; views="
                                 + describeTextViews(activity.findViewById(android.R.id.content)), status);
+                assertTrue("filter status must be operable by touch", status.isClickable());
+                assertTrue("filter status must be reachable by keyboard/accessibility", status.isFocusable());
+                assertTrue("accessible status must explain scriptlet availability",
+                        status.getContentDescription().toString().contains(supported
+                                ? "Scriptlet YouTube đã được đăng ký"
+                                : "Scriptlet YouTube chưa sẵn sàng"));
+                assertTrue("filter status click should open its details", status.performClick());
                 WebView probe = new WebView(activity);
                 installed.set(YoutubeScriptletInstaller.install(probe));
                 probe.destroy();
             });
+            onView(withText(R.string.adblock_details_title)).inRoot(isDialog())
+                    .check(matches(isDisplayed()));
         }
         assertEquals("document-start script registration should match WebView capability",
                 supported, installed.get());
