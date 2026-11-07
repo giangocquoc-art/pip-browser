@@ -108,6 +108,26 @@ public final class MainActivityTest {
         assertTrue(MainActivity.shouldUseCompactControls(2.0f));
     }
 
+    @Test public void nativeBrowserButtonsKeepAccessibleTouchTargets() {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                ArrayList<Button> buttons = new ArrayList<>();
+                collectButtons(activity.findViewById(android.R.id.content), buttons);
+                assertEquals("five navigation controls, address action, and filter status",
+                        7, buttons.size());
+                int minimumTouchSize = Math.round(48 * activity.getResources()
+                        .getDisplayMetrics().density);
+                for (Button button : buttons) {
+                    assertNotNull("every browser button needs an accessible name", button.getContentDescription());
+                    assertTrue(button.getContentDescription().toString(),
+                            button.getWidth() >= minimumTouchSize);
+                    assertTrue(button.getContentDescription().toString(),
+                            button.getHeight() >= minimumTouchSize);
+                }
+            });
+        }
+    }
+
     @Test public void youtubeScriptletsRegisterOnlyForExactSecureYoutubeOrigins() throws Exception {
         assertTrue("native filter and pinned scriptlets should initialize",
                 NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
@@ -433,6 +453,16 @@ public final class MainActivityTest {
             }
         }
         return null;
+    }
+
+    private static void collectButtons(View root, List<Button> result) {
+        if (root instanceof Button) result.add((Button) root);
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                collectButtons(group.getChildAt(index), result);
+            }
+        }
     }
 
     private static <T extends View> T find(View root, Class<T> type) {
