@@ -4,12 +4,13 @@ mod adblock;
 #[path = "download.rs"]
 mod download;
 use evergreen_core::tabs::{TabId, TabManager};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     cell::Cell,
     collections::HashMap,
     rc::Rc,
+    sync::{mpsc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use winit::{
@@ -24,7 +25,7 @@ use wry::{
     NewWindowResponse, PageLoadEvent, PermissionResponse, Rect, WebView, WebViewBuilder,
 };
 
-const BAR_HEIGHT: f64 = 110.0;
+const BAR_HEIGHT: f64 = 146.0;
 const MAX_TABS: usize = 32;
 const LOGO: &str = include_str!("../../ui/logo.b64");
 const VERIFY_FIXTURE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Pip runtime verification</title></head><body><p id=\"pip-runtime-probe\">pending</p></body></html>";
@@ -34,6 +35,15 @@ const VERIFY_FIXTURE: &str = "<!doctype html><html><head><meta charset=\"utf-8\"
 enum Command {
     Ready,
     NewTab,
+    Find,
+    FindNext,
+    FindPrevious,
+    FindText { query: String, backward: bool },
+    CloseFind,
+    ToggleBookmark,
+    OpenPanel { panel: String },
+    ClosePanel,
+    OpenUrl { url: String },
     Navigate { input: String },
     Select { id: u64 },
     Close { id: u64 },
@@ -54,6 +64,7 @@ enum Event {
     AdblockPrepared(Result<adblock::Prepared, String>),
     AdblockChanged,
     DownloadFinished(String, bool),
+    DownloadStarted(String, String),
 }
 
 #[derive(Default)]
@@ -120,6 +131,81 @@ struct App {
     verification: Option<Verification>,
     fixture: Option<adblock::Fixture>,
     download_fixture: Option<download::Fixture>,
+    data: BrowserData,
+    downloads: Vec<DownloadItem>,
+    toolbar_height: f64,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct BrowserData {
+    schema: u32,
+    history: Vec<HistoryItem>,
+    bookmarks: Vec<HistoryItem>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct HistoryItem {
+    url: String,
+    title: String,
+    visited_at: u64,
+}
+
+struct DownloadItem {
+    url: String,
+    name: String,
+    status: &'static str,
+}
+
+impl BrowserData {
+    fn writer() -> &'static mpsc::Sender<(std::path::PathBuf, BrowserData)> {
+        static WRITER: OnceLock<mpsc::Sender<(std::path::PathBuf, BrowserData)>> = OnceLock::new();
+        WRITER.get_or_init(|| {
+            let (sender, receiver) = mpsc::channel::<(std::path::PathBuf, BrowserData)>();
+            let _ = std::thread::Builder::new()
+                .name("pip-macos-data-writer".into())
+                .spawn(move || {
+                    while let Ok((path, data)) = receiver.recv() {
+                        let Some(parent) = path.parent() else {
+                            continue;
+                        };
+                        if std::fs::create_dir_all(parent).is_err() {
+                            continue;
+                        }
+                        let Ok(bytes) = serde_json::to_vec_pretty(&data) else {
+                            continue;
+                        };
+                        let temporary = path.with_extension("json.tmp");
+                        if std::fs::write(&temporary, bytes).is_ok() {
+                            let _ = std::fs::rename(temporary, path);
+                        }
+                    }
+                });
+            sender
+        })
+    }
+
+    fn path() -> Option<std::path::PathBuf> {
+        std::env::var_os("HOME").map(|home| {
+            std::path::PathBuf::from(home)
+                .join("Library/Application Support/Pip")
+                .join("macos-browser-data.json")
+        })
+    }
+
+    fn load() -> Self {
+        let mut data: Self = Self::path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        data.schema = 1;
+        data
+    }
+
+    fn save(&self) {
+        let Some(path) = Self::path() else { return };
+        let _ = Self::writer().send((path, self.clone()));
+    }
 }
 
 fn bounds(x: f64, y: f64, width: f64, height: f64) -> Rect {
@@ -137,13 +223,24 @@ fn now() -> u64 {
 }
 
 impl App {
+    fn toolbar_action(&self, action: &str) {
+        if let Some(toolbar) = &self.toolbar {
+            let _ = toolbar.evaluate_script(&format!("window.pipAction({});", json!(action)));
+        }
+    }
+
     fn content_bounds(&self) -> Rect {
         let window = self
             .window
             .as_ref()
             .expect("window initialized before views");
         let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-        bounds(0.0, BAR_HEIGHT, size.width, size.height - BAR_HEIGHT)
+        bounds(
+            0.0,
+            self.toolbar_height,
+            size.width,
+            size.height - self.toolbar_height,
+        )
     }
 
     fn notice(&self, message: &str) {
@@ -178,6 +275,10 @@ impl App {
                 "forward": active.is_some_and(|tab| tab.can_go_forward),
                 "adblock": self.adblock.message(),
                 "adblockReady": self.adblock.ready(),
+                "bookmarked": active.is_some_and(|tab| self.data.bookmarks.iter().any(|item| item.url == tab.url)),
+                "history": self.data.history.iter().rev().take(100).cloned().collect::<Vec<_>>(),
+                "bookmarks": self.data.bookmarks.clone(),
+                "downloads": self.downloads.iter().rev().take(50).map(|item| json!({"url":item.url,"name":item.name,"status":item.status})).collect::<Vec<_>>(),
             });
             let _ = toolbar.evaluate_script(&format!("window.pipState({state});"));
         }
@@ -283,6 +384,8 @@ impl App {
                             .to_string_lossy();
                         let _ =
                             download_proxy.send_event(Event::Notice(format!("Đang tải: {name}")));
+                        let _ =
+                            download_proxy.send_event(Event::DownloadStarted(url.clone(), name));
                         *path = destination;
                         true
                     }
@@ -325,6 +428,75 @@ impl App {
             }
             Command::VerifyToolbar { .. } => return,
             Command::NewTab => self.new_tab(),
+            Command::Find => {
+                self.set_toolbar_height(BAR_HEIGHT + 42.0);
+                self.toolbar_action("find");
+                return;
+            }
+            Command::FindNext => {
+                self.toolbar_action("findNext");
+                return;
+            }
+            Command::FindPrevious => {
+                self.toolbar_action("findPrevious");
+                return;
+            }
+            Command::FindText { query, backward } => {
+                if let Some(view) = active.and_then(|id| self.views.get(&id)) {
+                    let script = format!(
+                        "window.find({},false,{},true,false,false);",
+                        json!(query),
+                        backward
+                    );
+                    let _ = view.evaluate_script(&script);
+                }
+                return;
+            }
+            Command::CloseFind => {
+                self.set_toolbar_height(BAR_HEIGHT);
+                self.toolbar_action("closeFind");
+                return;
+            }
+            Command::ToggleBookmark => {
+                if let Some(tab) = self.tabs.active_tab() {
+                    let url = tab.url.clone();
+                    if let Some(index) = self.data.bookmarks.iter().position(|item| item.url == url)
+                    {
+                        self.data.bookmarks.remove(index);
+                        self.notice("Đã xóa dấu trang.");
+                    } else if allows_page_url(&url) {
+                        self.data.bookmarks.push(HistoryItem {
+                            url,
+                            title: tab.title.clone(),
+                            visited_at: now(),
+                        });
+                        self.notice("Đã thêm dấu trang.");
+                    }
+                    self.data.save();
+                    self.sync();
+                }
+                return;
+            }
+            Command::OpenPanel { panel } => {
+                if matches!(
+                    panel.as_str(),
+                    "history" | "bookmarks" | "downloads" | "about"
+                ) {
+                    self.set_toolbar_height(360.0);
+                    self.toolbar_action(&format!("openPanel:{}", panel));
+                    self.sync();
+                }
+                return;
+            }
+            Command::ClosePanel => {
+                self.set_toolbar_height(BAR_HEIGHT);
+                self.toolbar_action("closePanel");
+                return;
+            }
+            Command::OpenUrl { url } => {
+                self.execute(Command::Navigate { input: url });
+                return;
+            }
             Command::Navigate { input } => match destination(&input) {
                 Ok(url) => {
                     if let Some(id) = active {
@@ -470,6 +642,19 @@ impl App {
         }
     }
 
+    fn set_toolbar_height(&mut self, height: f64) {
+        self.toolbar_height = height;
+        if let Some(window) = &self.window {
+            let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+            if let Some(toolbar) = &self.toolbar {
+                let _ = toolbar.set_bounds(bounds(0.0, 0.0, size.width, height));
+            }
+            for view in self.views.values() {
+                let _ = view.set_bounds(bounds(0.0, height, size.width, size.height - height));
+            }
+        }
+    }
+
     fn finish_verification(&self, event_loop: &ActiveEventLoop) {
         if self
             .verification
@@ -495,7 +680,7 @@ impl ApplicationHandler<Event> for App {
             let proxy = self.proxy.clone();
             let html = include_str!("toolbar.html").replace("{{LOGO}}", LOGO.trim());
             let toolbar = WebViewBuilder::new()
-                .with_bounds(bounds(0.0, 0.0, size.width, BAR_HEIGHT))
+                .with_bounds(bounds(0.0, 0.0, size.width, self.toolbar_height))
                 .with_html(html)
                 .with_navigation_handler(|url| url == "about:blank")
                 .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
@@ -538,8 +723,28 @@ impl ApplicationHandler<Event> for App {
             }
             Event::Command(command) => self.execute(command),
             Event::Title(id, title) => {
-                self.tabs
-                    .update_title(id, title.chars().take(256).collect());
+                let title: String = title.chars().take(256).collect();
+                self.tabs.update_title(id, title.clone());
+                if let Some(tab) = self.tabs.tabs().iter().find(|tab| tab.id == id) {
+                    if let Some(item) = self
+                        .data
+                        .history
+                        .iter_mut()
+                        .rev()
+                        .find(|item| item.url == tab.url)
+                    {
+                        item.title = title.clone();
+                    }
+                    if let Some(item) = self
+                        .data
+                        .bookmarks
+                        .iter_mut()
+                        .find(|item| item.url == tab.url)
+                    {
+                        item.title = title;
+                    }
+                    self.data.save();
+                }
                 self.sync();
             }
             Event::Load(id, url, loading) => {
@@ -548,6 +753,23 @@ impl ApplicationHandler<Event> for App {
                     if allows_page_url(&url) && url != "about:blank" {
                         tab.url = url.clone();
                     }
+                }
+                if !loading && allows_page_url(&url) {
+                    let title = self
+                        .tabs
+                        .tabs()
+                        .iter()
+                        .find(|tab| tab.id == id)
+                        .map(|tab| tab.title.clone())
+                        .unwrap_or_default();
+                    self.data.history.retain(|item| item.url != url);
+                    self.data.history.push(HistoryItem {
+                        url,
+                        title,
+                        visited_at: now(),
+                    });
+                    self.data.history.truncate(2000);
+                    self.data.save();
                 }
                 self.sync();
                 if let Some(verification) = &mut self.verification {
@@ -566,6 +788,13 @@ impl ApplicationHandler<Event> for App {
             }
             Event::Notice(message) => self.notice(&message),
             Event::DownloadFinished(url, success) => {
+                if let Some(item) = self.downloads.iter_mut().rev().find(|item| item.url == url) {
+                    item.status = if success {
+                        "Hoàn tất"
+                    } else {
+                        "Thất bại"
+                    };
+                }
                 if let Some(verification) = &mut self.verification {
                     if let Some(fixture) = &self.download_fixture {
                         if fixture.url == url {
@@ -580,6 +809,16 @@ impl ApplicationHandler<Event> for App {
                         "Không tải được tệp. Hãy kiểm tra kết nối, dung lượng và thử lại."
                     });
                 }
+                self.sync();
+            }
+            Event::DownloadStarted(url, name) => {
+                self.downloads.push(DownloadItem {
+                    url,
+                    name,
+                    status: "Đang tải",
+                });
+                self.downloads.truncate(100);
+                self.sync();
             }
             Event::VerifyContent(result) => {
                 if let Some(verification) = &mut self.verification {
@@ -706,6 +945,19 @@ impl ApplicationHandler<Event> for App {
                             }
                         }
                         "r" => self.execute(Command::Reload),
+                        "f" => self.execute(Command::Find),
+                        "g" => self.execute(if self.modifiers.shift_key() {
+                            Command::FindPrevious
+                        } else {
+                            Command::FindNext
+                        }),
+                        "d" => self.execute(Command::ToggleBookmark),
+                        "h" => self.execute(Command::OpenPanel {
+                            panel: "history".into(),
+                        }),
+                        "j" => self.execute(Command::OpenPanel {
+                            panel: "downloads".into(),
+                        }),
                         "l" => {
                             if let Some(toolbar) = &self.toolbar {
                                 let _ = toolbar.focus();
@@ -721,14 +973,15 @@ impl ApplicationHandler<Event> for App {
                 if let Some(window) = &self.window {
                     let size = window.inner_size().to_logical::<f64>(window.scale_factor());
                     if let Some(toolbar) = &self.toolbar {
-                        let _ = toolbar.set_bounds(bounds(0.0, 0.0, size.width, BAR_HEIGHT));
+                        let _ =
+                            toolbar.set_bounds(bounds(0.0, 0.0, size.width, self.toolbar_height));
                     }
                     for view in self.views.values() {
                         let _ = view.set_bounds(bounds(
                             0.0,
-                            BAR_HEIGHT,
+                            self.toolbar_height,
                             size.width,
-                            size.height - BAR_HEIGHT,
+                            size.height - self.toolbar_height,
                         ));
                     }
                 }
@@ -762,6 +1015,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         },
+        data: BrowserData::load(),
+        downloads: Vec::new(),
+        toolbar_height: BAR_HEIGHT,
     };
     let adblock_proxy = app.proxy.clone();
     std::thread::spawn(move || {

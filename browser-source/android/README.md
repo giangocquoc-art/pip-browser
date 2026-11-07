@@ -92,8 +92,13 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
 - Chưa có engine Android của Pip Dev, MCP native lock, hay chức năng điều khiển agent.
 - GeckoView chỉ có trong debug pilot để đánh giá engine; chưa có parity chặn nội dung, tải tệp,
   quyền website, updater hay kiểm chứng tuyến DNS, và chưa được chọn làm engine mặc định.
-- Chặn mạng hiện chỉ xử lý network rules. Chưa có cosmetic filtering, scriptlets hay redirect
-  resource replacements; không bảo đảm chặn mọi quảng cáo YouTube. Danh sách cá cược chưa thể
+- Chặn mạng hiện chỉ xử lý network rules. JNI nạp các danh sách bằng `RuleTypes::NetworkOnly`
+  và adapter chỉ dùng kết quả `should_block()` để chặn request; các luật cosmetic/scriptlet trong
+  `youtube.txt` vì vậy không chạy trên Android. Android hiện cũng chưa đăng ký script document-start
+  hay biến đổi response của `/youtubei/v1/player`, nên không xử lý được dữ liệu quảng cáo mà player
+  nhận từ YouTube. Chặn rộng `googlevideo.com` sẽ chặn cả luồng video bình thường, nên không phải
+  cách sửa an toàn. Con số trong trạng thái Android chỉ là request mạng bị chặn, không phải số quảng
+  cáo/video ads đã loại. Danh sách cá cược chưa thể
   nhận diện mọi tên miền mới và không thay thế chính sách đầy đủ của bản Windows. URL main-frame do người
   dùng nhập/khôi phục được mở trực tiếp, subresource vẫn lọc. WebView không đưa đủ resource type;
   host suy ra từ request headers và path, nếu không biết dùng `other`.

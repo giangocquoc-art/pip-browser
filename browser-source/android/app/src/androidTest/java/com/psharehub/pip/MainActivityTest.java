@@ -11,7 +11,6 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ListView;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -24,14 +23,12 @@ import org.junit.runner.RunWith;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-import static androidx.test.espresso.Espresso.onData;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
-import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
-import static org.hamcrest.Matchers.anything;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.*;
 
 /** Device tests exercise real Activity/WebView lifetimes without requiring a network response. */
@@ -211,8 +208,8 @@ public final class MainActivityTest {
 
     private static void selectTab(int position) {
         onView(withContentDescription(R.string.tabs)).perform(click());
-        onData(anything()).inAdapterView(isAssignableFrom(ListView.class))
-                .inRoot(isDialog()).atPosition(position).perform(click());
+        onView(withContentDescription(startsWith("Chuyển đến tab " + (position + 1) + ":")))
+                .inRoot(isDialog()).perform(click());
     }
 
     private static void openNewTab() {
@@ -222,7 +219,8 @@ public final class MainActivityTest {
 
     private static void closeCurrentTab() {
         onView(withContentDescription(R.string.tabs)).perform(click());
-        onView(withText(R.string.close_tab)).inRoot(isDialog()).perform(click());
+        onView(withContentDescription(startsWith("Đóng tab đang chọn:")))
+                .inRoot(isDialog()).perform(click());
     }
 
     private static void deliverStaleCallbacks(

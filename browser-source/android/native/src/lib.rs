@@ -251,6 +251,25 @@ mod tests {
     }
 
     #[test]
+    fn youtube_video_stream_request_remains_allowed_by_network_only_engine() {
+        initialize();
+        let request = Request::new(
+            "https://rr1---sn.googlevideo.com/videoplayback?expire=9999999999&id=normal-fixture",
+            "https://m.youtube.com/watch?v=offline-fixture",
+            "media",
+            "GET",
+        )
+        .expect("valid video stream request");
+        // Blocking googlevideo broadly would also break ordinary playback. The Android
+        // adapter currently cannot inspect YouTube's player response or run scriptlets.
+        assert!(!ENGINE
+            .get()
+            .expect("native network engine initialized")
+            .check_network_request(&request)
+            .should_block());
+    }
+
+    #[test]
     fn native_engine_respects_network_exceptions_and_resource_types() {
         let engine = engine_from_rules("||ads.example^$script\n@@||ads.example/allowed.js$script");
         let source = "https://fixture.pip.invalid/";
