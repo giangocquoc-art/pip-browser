@@ -4,10 +4,15 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
@@ -24,6 +29,7 @@ import org.junit.runner.RunWith;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
@@ -112,6 +118,71 @@ public final class MainActivityTest {
         }
         assertEquals("document-start script registration should match WebView capability",
                 supported, installed.get());
+    }
+
+    @Test public void youtubePlayerFetchScriptletRemovesAdFieldsAndPreservesVideoData() throws Exception {
+        assertTrue("native filter and pinned scriptlets should initialize",
+                NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
+        assertTrue("test requires WebView document-start support",
+                YoutubeScriptletInstaller.isSupported());
+        CountDownLatch resultReady = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>();
+        AtomicReference<WebView> probeRef = new AtomicReference<>();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                WebView probe = new WebView(activity);
+                probeRef.set(probe);
+                probe.getSettings().setJavaScriptEnabled(true);
+                assertTrue(YoutubeScriptletInstaller.install(probe));
+                probe.setWebViewClient(new WebViewClient() {
+                    @Override public WebResourceResponse shouldInterceptRequest(
+                            WebView view, WebResourceRequest request) {
+                        if (!"www.youtube.com".equals(request.getUrl().getHost())
+                                || !"/youtubei/v1/player".equals(request.getUrl().getPath())) return null;
+                        String body = "{\"adPlacements\":[{\"adSlotRenderer\":{}}],"
+                                + "\"adSlots\":[{}],\"videoDetails\":{\"title\":\"fixture\"}}";
+                        return new WebResourceResponse("application/json", "UTF-8", 200, "OK",
+                                java.util.Collections.singletonMap("Cache-Control", "no-store"),
+                                new java.io.ByteArrayInputStream(body.getBytes(
+                                        java.nio.charset.StandardCharsets.UTF_8)));
+                    }
+
+                    @Override public void onPageFinished(WebView view, String url) {
+                        pollScriptletResult(view, result, resultReady,
+                                SystemClock.uptimeMillis() + TimeUnit.SECONDS.toMillis(10));
+                    }
+                });
+                String html = "<!doctype html><meta charset='utf-8'><script>"
+                        + "fetch('/youtubei/v1/player?key=fixture',{method:'POST',body:'{}'})"
+                        + ".then(r=>r.json()).then(x=>window.__pipScriptletResult=JSON.stringify(x))"
+                        + ".catch(e=>window.__pipScriptletResult='ERROR:'+e)</script>";
+                probe.loadDataWithBaseURL("https://www.youtube.com/watch?v=fixture", html,
+                        "text/html", "UTF-8", null);
+            });
+            assertTrue("fixture player response did not finish", resultReady.await(15, TimeUnit.SECONDS));
+        } finally {
+            WebView probe = probeRef.get();
+            if (probe != null) probe.post(probe::destroy);
+        }
+        assertNotNull("fixture page did not expose the player response", result.get());
+        assertTrue("non-ad video data must survive the scriptlet", result.get().contains("videoDetails"));
+        assertFalse("player ad placements should be pruned", result.get().contains("adPlacements"));
+        assertFalse("player ad slots should be pruned", result.get().contains("adSlots"));
+    }
+
+    private static void pollScriptletResult(WebView view, AtomicReference<String> result,
+            CountDownLatch ready, long deadlineUptime) {
+        view.evaluateJavascript("window.__pipScriptletResult || null", value -> {
+            if (value != null && !"null".equals(value)) {
+                result.set(value);
+                ready.countDown();
+            } else if (SystemClock.uptimeMillis() >= deadlineUptime) {
+                ready.countDown();
+            } else {
+                new Handler(Looper.getMainLooper()).postDelayed(
+                        () -> pollScriptletResult(view, result, ready, deadlineUptime), 100);
+            }
+        });
     }
 
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {
