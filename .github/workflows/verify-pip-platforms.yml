@@ -183,7 +183,7 @@ jobs:
           PIP_VERIFY_ARCH: ${{ matrix.arch }}
         run: |
           python3 - <<'PY'
-          import json, os, pathlib, subprocess, tempfile
+          import json, os, pathlib, subprocess, tempfile, time
           arch = os.environ['PIP_VERIFY_ARCH']
           archives = list(pathlib.Path('dist').glob(f'Pip-macOS-{arch}-*.zip'))
           assert len(archives) == 1, 'Expected exactly one packaged macOS app'
@@ -205,6 +205,13 @@ jobs:
               report = reports[0]
               pathlib.Path(f'dist/Pip-macOS-{arch}-native-ui.json').write_text(json.dumps(report, indent=2))
               assert result.returncode == 0 and report.get('ok') is True, 'Native UI verification failed'
+              app_bundle = pathlib.Path(directory) / 'Pip.app'
+              subprocess.run(['open', '-n', str(app_bundle)], check=True)
+              time.sleep(12)
+              screenshot = pathlib.Path(f'dist/Pip-macOS-{arch}-UX.png')
+              subprocess.run(['screencapture', '-x', str(screenshot)], check=True)
+              subprocess.run(['osascript', '-e', 'tell application "Pip" to quit'],
+                             check=False, capture_output=True, text=True)
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -213,5 +220,6 @@ jobs:
             browser-source/dist/Pip-macOS-*.zip
             browser-source/dist/Pip-macOS-*.sha256
             browser-source/dist/Pip-macOS-*-native-ui.json
+            browser-source/dist/Pip-macOS-*-UX.png
           if-no-files-found: error
           retention-days: 7
