@@ -92,13 +92,15 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
 - Chưa có engine Android của Pip Dev, MCP native lock, hay chức năng điều khiển agent.
 - GeckoView chỉ có trong debug pilot để đánh giá engine; chưa có parity chặn nội dung, tải tệp,
   quyền website, updater hay kiểm chứng tuyến DNS, và chưa được chọn làm engine mặc định.
-- Chặn mạng hiện chỉ xử lý network rules. JNI nạp các danh sách bằng `RuleTypes::NetworkOnly`
-  và adapter chỉ dùng kết quả `should_block()` để chặn request; các luật cosmetic/scriptlet trong
-  `youtube.txt` vì vậy không chạy trên Android. Android hiện cũng chưa đăng ký script document-start
-  hay biến đổi response của `/youtubei/v1/player`, nên không xử lý được dữ liệu quảng cáo mà player
-  nhận từ YouTube. Chặn rộng `googlevideo.com` sẽ chặn cả luồng video bình thường, nên không phải
-  cách sửa an toàn. Con số trong trạng thái Android chỉ là request mạng bị chặn, không phải số quảng
-  cáo/video ads đã loại. Danh sách cá cược chưa thể
+- Android lọc request mạng bằng `adblock-rust` và đăng ký scriptlet YouTube ở document-start qua
+  AndroidX WebKit khi WebView báo hỗ trợ `DOCUMENT_START_SCRIPT`. Chỉ các origin HTTPS YouTube
+  đã liệt kê tường minh được phép nhận scriptlet; nếu WebView cũ không hỗ trợ thì app giữ lọc mạng
+  và hoạt động theo chế độ dự phòng. Đây là tái sử dụng snapshot YouTube và scriptlet resources
+  đã ghim trong repo, không phải cam kết mọi quảng cáo YouTube sẽ biến mất: YouTube thường đổi
+  response/player và có thể vẫn phát quảng cáo. Chưa có bài kiểm tra phát YouTube thật xác nhận
+  quảng cáo đã hết trên thiết bị. Chặn rộng `googlevideo.com` sẽ chặn cả luồng video bình thường,
+  nên không phải cách sửa an toàn. Con số trong trạng thái Android chỉ là request mạng bị chặn,
+  không phải số quảng cáo/video ads đã loại. Danh sách cá cược chưa thể
   nhận diện mọi tên miền mới và không thay thế chính sách đầy đủ của bản Windows. URL main-frame do người
   dùng nhập/khôi phục được mở trực tiếp, subresource vẫn lọc. WebView không đưa đủ resource type;
   host suy ra từ request headers và path, nếu không biết dùng `other`.
