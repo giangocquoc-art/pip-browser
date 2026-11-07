@@ -112,6 +112,9 @@ public final class MainActivityTest {
         AtomicReference<Boolean> installed = new AtomicReference<>();
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             scenario.onActivity(activity -> {
+                // ActivityScenario may enter before the posted native-init callback and
+                // initial tab selection have both refreshed the status view.
+                activity.selectTab(activity.selected);
                 TextView status = findTextViewContaining(
                         activity.findViewById(android.R.id.content), supported
                                 ? "Scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
