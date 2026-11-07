@@ -117,7 +117,7 @@ public final class MainActivityTest {
             scenario.onActivity(activity -> {
                 TextView status = findTextViewContaining(
                         activity.findViewById(android.R.id.content), supported
-                                ? "Scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
+                                ? "scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
                 assertNotNull("filter status must match the installed scriptlet state; views="
                                 + describeTextViews(activity.findViewById(android.R.id.content)), status);
                 WebView probe = new WebView(activity);
