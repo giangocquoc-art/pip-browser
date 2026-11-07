@@ -111,10 +111,10 @@ public final class MainActivityTest {
         boolean supported = YoutubeScriptletInstaller.isSupported();
         AtomicReference<Boolean> installed = new AtomicReference<>();
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            // Select through the same UI path users take so the displayed status is
+            // refreshed by normal tab-selection lifecycle callbacks.
+            selectTab(0);
             scenario.onActivity(activity -> {
-                // ActivityScenario may enter before the posted native-init callback and
-                // initial tab selection have both refreshed the status view.
-                activity.selectTab(activity.selected);
                 TextView status = findTextViewContaining(
                         activity.findViewById(android.R.id.content), supported
                                 ? "Scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
