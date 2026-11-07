@@ -171,12 +171,18 @@ struct DownloadItem {
 fn matching_download_mut<'a>(
     downloads: &'a mut [DownloadItem],
     url: &str,
-    destination: &str,
+    destination: Option<&str>,
 ) -> Option<&'a mut DownloadItem> {
-    downloads
-        .iter_mut()
-        .rev()
-        .find(|item| item.url == url && item.destination == destination)
+    let mut candidates = downloads.iter().enumerate().filter(|(_, item)| {
+        item.url == url
+            && item.status == "Đang tải"
+            && destination.map_or(true, |path| item.destination == path)
+    });
+    let index = candidates.next()?.0;
+    if destination.is_none() && candidates.next().is_some() {
+        return None;
+    }
+    downloads.get_mut(index)
 }
 
 impl BrowserData {
@@ -426,7 +432,7 @@ impl App {
             .with_download_completed_handler(move |url, destination, success| {
                 let _ = completed_download_proxy.send_event(Event::DownloadFinished(
                     url,
-                    destination.to_string_lossy().into_owned(),
+                    destination.map(|path| path.to_string_lossy().into_owned()),
                     success,
                 ));
             })
@@ -816,7 +822,10 @@ impl ApplicationHandler<Event> for App {
             }
             Event::Notice(message) => self.notice(&message),
             Event::DownloadFinished(url, destination, success) => {
-                if let Some(item) = matching_download_mut(&mut self.downloads, &url, &destination) {
+                let matched =
+                    matching_download_mut(&mut self.downloads, &url, destination.as_deref());
+                let download_found = matched.is_some();
+                if let Some(item) = matched {
                     item.status = if success {
                         "Hoàn tất"
                     } else {
@@ -831,7 +840,9 @@ impl ApplicationHandler<Event> for App {
                     }
                     self.finish_verification(event_loop);
                 } else {
-                    self.notice(if success {
+                    self.notice(if !download_found {
+                        "Không xác định được lượt tải tương ứng trong Pip. Hãy kiểm tra tệp đã lưu."
+                    } else if success {
                         "Tải xuống hoàn tất. Tệp đã được lưu tại vị trí bạn chọn."
                     } else {
                         "Không tải được tệp. Hãy kiểm tra kết nối, dung lượng và thử lại."
@@ -1115,12 +1126,15 @@ mod shell_tests {
         matching_download_mut(
             &mut downloads,
             "https://example.test/file",
-            "/tmp/a/file.zip",
+            Some("/tmp/a/file.zip"),
         )
         .expect("matching download should be present")
         .status = "Thất bại";
 
         assert_eq!(downloads[0].status, "Thất bại");
         assert_eq!(downloads[1].status, "Đang tải");
+        assert!(
+            matching_download_mut(&mut downloads, "https://example.test/file", None,).is_none()
+        );
     }
 }
