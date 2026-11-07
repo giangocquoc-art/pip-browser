@@ -122,11 +122,14 @@ public final class MainActivityTest {
                         activity.findViewById(android.R.id.content), "Bộ lọc quảng cáo đang bật");
                 assertNotNull("filter status must match the installed scriptlet state; views="
                                 + describeTextViews(activity.findViewById(android.R.id.content)), status);
+                assertTrue("filter status must expose native button semantics", status instanceof Button);
                 assertTrue("filter status must be operable by touch", status.isClickable());
                 assertTrue("filter status must be reachable by keyboard/accessibility", status.isFocusable());
-                assertTrue("filter status target must be at least 48dp high",
-                        status.getMinimumHeight() >= Math.round(48 * activity.getResources()
-                                .getDisplayMetrics().density));
+                int minimumTouchHeight = Math.round(48 * activity.getResources()
+                        .getDisplayMetrics().density);
+                assertTrue("filter status target height " + status.getMinimumHeight()
+                                + "px must be at least " + minimumTouchHeight + "px (48dp)",
+                        status.getMinimumHeight() >= minimumTouchHeight);
                 assertNotNull("filter status needs visible pressed/focus feedback", status.getBackground());
                 assertTrue("accessible status must explain scriptlet availability",
                         status.getContentDescription().toString().contains(supported

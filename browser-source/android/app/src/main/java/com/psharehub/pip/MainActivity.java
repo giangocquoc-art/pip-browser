@@ -230,15 +230,17 @@ public final class MainActivity extends Activity {
             else view.reload();
         });
         root.addView(status);
-        filteringStatus = new TextView(this);
+        Button filteringStatusButton = new Button(this);
+        filteringStatusButton.setAllCaps(false);
+        filteringStatus = filteringStatusButton;
         filteringStatus.setTextSize(14);
-        filteringStatus.setMinHeight(dp(48));
         filteringStatus.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         TypedValue statusSelector = new TypedValue();
         if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, statusSelector, true)
                 && statusSelector.resourceId != 0) {
             filteringStatus.setBackgroundResource(statusSelector.resourceId);
         }
+        filteringStatus.setMinHeight(dp(48));
         filteringStatus.setPadding(dp(12), dp(3), dp(12), dp(3));
         filteringStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         filteringStatus.setClickable(true);
