@@ -240,7 +240,8 @@ jobs:
           test -n "$PIP_ANDROID_SIGNING_PASSWORD"
           mkdir -p browser-source/dist
           printf '%s' "$PIP_ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pip-android-release.p12"
-          printf '%s\n' "$PIP_ANDROID_SIGNING_PASSWORD" > "$RUNNER_TEMP/pip-android-release-password.txt"
+          # apksigner reads one password line for --ks-pass and a second for --key-pass.
+          printf '%s\n%s\n' "$PIP_ANDROID_SIGNING_PASSWORD" "$PIP_ANDROID_SIGNING_PASSWORD" > "$RUNNER_TEMP/pip-android-release-password.txt"
           unset PIP_ANDROID_SIGNING_KEYSTORE_BASE64 PIP_ANDROID_SIGNING_PASSWORD
           input='browser-source/android/app/build/outputs/apk/release/app-release-unsigned.apk'
           aligned="$RUNNER_TEMP/app-release-aligned.apk"
