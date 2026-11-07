@@ -73,8 +73,8 @@ enum Event {
     VerifyTimeout,
     AdblockPrepared(Result<adblock::Prepared, String>),
     AdblockChanged,
-    DownloadFinished(String, bool),
-    DownloadStarted(String, String),
+    DownloadFinished(String, String, bool),
+    DownloadStarted(String, String, String),
 }
 
 #[derive(Default)]
@@ -164,7 +164,19 @@ struct HistoryItem {
 struct DownloadItem {
     url: String,
     name: String,
+    destination: String,
     status: &'static str,
+}
+
+fn matching_download_mut<'a>(
+    downloads: &'a mut [DownloadItem],
+    url: &str,
+    destination: &str,
+) -> Option<&'a mut DownloadItem> {
+    downloads
+        .iter_mut()
+        .rev()
+        .find(|item| item.url == url && item.destination == destination)
 }
 
 impl BrowserData {
@@ -390,11 +402,15 @@ impl App {
                             .file_name()
                             .unwrap_or_default()
                             .to_string_lossy();
+                        let destination_key = destination.to_string_lossy().into_owned();
+                        *path = destination;
                         let _ =
                             download_proxy.send_event(Event::Notice(format!("Đang tải: {name}")));
-                        let _ = download_proxy
-                            .send_event(Event::DownloadStarted(url.clone(), name.into_owned()));
-                        *path = destination;
+                        let _ = download_proxy.send_event(Event::DownloadStarted(
+                            url.clone(),
+                            name.into_owned(),
+                            destination_key,
+                        ));
                         true
                     }
                     Ok(None) => {
@@ -407,8 +423,12 @@ impl App {
                     }
                 }
             })
-            .with_download_completed_handler(move |url, _, success| {
-                let _ = completed_download_proxy.send_event(Event::DownloadFinished(url, success));
+            .with_download_completed_handler(move |url, destination, success| {
+                let _ = completed_download_proxy.send_event(Event::DownloadFinished(
+                    url,
+                    destination.to_string_lossy().into_owned(),
+                    success,
+                ));
             })
             // Remote pages deliberately get no native IPC handler.
             .build_as_child(self.window.as_ref().expect("window initialized"));
@@ -795,8 +815,8 @@ impl ApplicationHandler<Event> for App {
                 self.verify_if_ready(event_loop);
             }
             Event::Notice(message) => self.notice(&message),
-            Event::DownloadFinished(url, success) => {
-                if let Some(item) = self.downloads.iter_mut().rev().find(|item| item.url == url) {
+            Event::DownloadFinished(url, destination, success) => {
+                if let Some(item) = matching_download_mut(&mut self.downloads, &url, &destination) {
                     item.status = if success {
                         "Hoàn tất"
                     } else {
@@ -819,10 +839,11 @@ impl ApplicationHandler<Event> for App {
                 }
                 self.sync();
             }
-            Event::DownloadStarted(url, name) => {
+            Event::DownloadStarted(url, name, destination) => {
                 self.downloads.push(DownloadItem {
                     url,
                     name,
+                    destination,
                     status: "Đang tải",
                 });
                 self.downloads.truncate(100);
@@ -1050,8 +1071,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-mod permission_tests {
-    use super::macos_permission_response;
+mod shell_tests {
+    use super::{macos_permission_response, matching_download_mut, DownloadItem};
     use wry::{PermissionKind, PermissionResponse};
 
     #[test]
@@ -1072,5 +1093,34 @@ mod permission_tests {
             macos_permission_response(PermissionKind::Geolocation),
             PermissionResponse::Deny
         ));
+    }
+
+    #[test]
+    fn repeated_download_urls_update_only_the_matching_destination() {
+        let mut downloads = vec![
+            DownloadItem {
+                url: "https://example.test/file".into(),
+                name: "file-a.zip".into(),
+                destination: "/tmp/a/file.zip".into(),
+                status: "Đang tải",
+            },
+            DownloadItem {
+                url: "https://example.test/file".into(),
+                name: "file-b.zip".into(),
+                destination: "/tmp/b/file.zip".into(),
+                status: "Đang tải",
+            },
+        ];
+
+        matching_download_mut(
+            &mut downloads,
+            "https://example.test/file",
+            "/tmp/a/file.zip",
+        )
+        .expect("matching download should be present")
+        .status = "Thất bại";
+
+        assert_eq!(downloads[0].status, "Thất bại");
+        assert_eq!(downloads[1].status, "Đang tải");
     }
 }
