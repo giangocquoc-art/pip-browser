@@ -2728,26 +2728,6 @@ impl BrowserApp {
         }
     }
 
-    fn create_browser_window(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        initial_url: Option<String>,
-    ) -> Option<WindowId> {
-        let restore_slot = (initial_url.is_none()
-            && !self
-                .windows
-                .values()
-                .any(|window| !window.private && window.profile_id == "Default"))
-        .then_some(0);
-        self.create_profile_window(
-            event_loop,
-            initial_url,
-            "Default".into(),
-            false,
-            restore_slot,
-        )
-    }
-
     fn open_related_window(
         &mut self,
         event_loop: &ActiveEventLoop,
