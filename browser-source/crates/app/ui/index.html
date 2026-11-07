@@ -904,7 +904,7 @@
   <!-- Find In Page Tray (Expandable 3rd Row) -->
   <div class="find-bar" id="findBar" role="search" aria-label="Tìm trong trang" onclick="event.stopPropagation()">
     <input type="text" id="findInput" class="find-input" aria-label="Văn bản cần tìm trong trang" placeholder="Tìm trong trang..." oninput="executeFind(false)" onkeydown="handleFindKey(event)"/>
-    <span class="find-count" id="findCount">0/0</span>
+    <span class="find-count" id="findCount" role="status" aria-live="polite" aria-atomic="true">0/0</span>
     <button class="find-btn" onclick="executeFind(false)" title="Kết quả trước (Shift+Enter)" aria-label="Kết quả trước">▲</button>
     <button class="find-btn" onclick="executeFind(true)" title="Kết quả tiếp (Enter)" aria-label="Kết quả tiếp theo">▼</button>
     <button class="find-btn" id="closeFindBarBtn" onclick="closeFindBar()" title="Đóng (Esc)" aria-label="Đóng tìm trong trang">✕</button>
@@ -923,7 +923,7 @@
     <div class="permission-actions">
       <button class="permission-btn allow" id="permissionAllowBtn" onclick="resolvePermission(true)">Cho phép</button>
       <button class="permission-btn block" id="permissionBlockBtn" onclick="resolvePermission(false)">Chặn</button>
-      <button class="permission-close" id="permissionDismissBtn" onclick="dismissPermission()" aria-label="Đóng yêu cầu quyền">✕</button>
+      <button class="permission-close" id="permissionDismissBtn" onclick="dismissPermission()" aria-label="Từ chối yêu cầu quyền">✕</button>
     </div>
   </div>
 
