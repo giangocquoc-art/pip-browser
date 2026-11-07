@@ -30,13 +30,36 @@ function Capture-PipWindow {
         Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class PipCiWindowCapture {
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    public static IntPtr FindProcessWindow(uint expectedProcessId, string titlePrefix) {
+        IntPtr match = IntPtr.Zero;
+        EnumWindows((hWnd, _) => {
+            if (!IsWindowVisible(hWnd)) return true;
+            uint processId;
+            GetWindowThreadProcessId(hWnd, out processId);
+            if (processId != expectedProcessId) return true;
+            StringBuilder title = new StringBuilder(512);
+            GetWindowText(hWnd, title, title.Capacity);
+            if (title.ToString().StartsWith(titlePrefix, StringComparison.Ordinal)) {
+                match = hWnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return match;
+    }
 }
 '@
     }
@@ -50,11 +73,13 @@ public static class PipCiWindowCapture {
             Start-Sleep -Seconds 1
             $browser.Refresh()
             if ($browser.HasExited) { throw "Pip exited before its window appeared (exit code $($browser.ExitCode))." }
-            $handle = $browser.MainWindowHandle
+            # Pip.exe has a console subsystem, so Process.MainWindowHandle may
+            # return the runner's console host instead of Pip's native Winit window.
+            $handle = [PipCiWindowCapture]::FindProcessWindow([uint32]$browser.Id, 'Pip —')
             if ($handle -ne [IntPtr]::Zero -and [PipCiWindowCapture]::IsWindowVisible($handle)) { break }
         }
         if ($handle -eq [IntPtr]::Zero -or -not [PipCiWindowCapture]::IsWindowVisible($handle)) {
-            throw 'Pip did not create a visible top-level window within 35 seconds.'
+            throw 'Pip did not create a visible native window titled Pip — within 35 seconds.'
         }
 
         # Place the test window fully inside the runner's primary display so the
