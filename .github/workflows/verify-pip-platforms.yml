@@ -115,7 +115,21 @@ jobs:
           ram-size: 2048M
           working-directory: browser-source/android
           disable-animations: true
-          script: gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
+          script: |
+            gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
+            mkdir -p app/build/reports/androidTests/connected/debug/ux
+            adb shell pm clear com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 12
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-default.png
+            adb shell wm size 720x1600
+            adb shell wm density 320
+            adb shell am force-stop com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 12
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-360x800dp.png
+            adb shell wm size reset
+            adb shell wm density reset
       - name: Upload emulator test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
