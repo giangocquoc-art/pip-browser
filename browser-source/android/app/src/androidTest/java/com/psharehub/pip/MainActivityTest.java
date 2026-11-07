@@ -118,7 +118,8 @@ public final class MainActivityTest {
                 TextView status = findTextViewContaining(
                         activity.findViewById(android.R.id.content), supported
                                 ? "Scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
-                assertNotNull("filter status must match the installed scriptlet state", status);
+                assertNotNull("filter status must match the installed scriptlet state; views="
+                                + describeTextViews(activity.findViewById(android.R.id.content)), status);
                 WebView probe = new WebView(activity);
                 installed.set(YoutubeScriptletInstaller.install(probe));
                 probe.destroy();
@@ -324,6 +325,21 @@ public final class MainActivityTest {
             }
         }
         return null;
+    }
+
+    private static String describeTextViews(View root) {
+        if (root instanceof TextView) return ((TextView) root).getText().toString();
+        if (!(root instanceof ViewGroup)) return "";
+        StringBuilder result = new StringBuilder();
+        ViewGroup group = (ViewGroup) root;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            String child = describeTextViews(group.getChildAt(index));
+            if (!child.isEmpty()) {
+                if (result.length() > 0) result.append(" | ");
+                result.append(child);
+            }
+        }
+        return result.toString();
     }
 
     private static void selectTab(int position) {
