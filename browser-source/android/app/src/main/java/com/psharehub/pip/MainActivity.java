@@ -98,6 +98,7 @@ public final class MainActivity extends Activity {
         String pendingLoadUrl;
         boolean loading;
         boolean suppressProgress;
+        boolean youtubeScriptletsInstalled;
         Tab(String url) {
             this.url = url;
             this.documentUrl = url;
@@ -447,6 +448,7 @@ public final class MainActivity extends Activity {
                 cancelWebsitePermissionFor(webView);
                 boolean wasCurrent = isCurrentView(tab, webView);
                 tab.view = null;
+                tab.youtubeScriptletsInstalled = false;
                 if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
                 webView.destroy();
                 if (wasCurrent) {
@@ -1134,6 +1136,9 @@ public final class MainActivity extends Activity {
             tab.view.stopLoading();
             updateFilteringStatus();
             return;
+        }
+        if (!tab.youtubeScriptletsInstalled && NativeAdblock.isReady()) {
+            tab.youtubeScriptletsInstalled = YoutubeScriptletInstaller.install(tab.view);
         }
         String url = tab.pendingLoadUrl;
         tab.pendingLoadUrl = null;

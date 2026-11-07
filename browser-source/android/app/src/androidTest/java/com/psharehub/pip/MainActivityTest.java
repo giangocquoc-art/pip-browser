@@ -22,6 +22,8 @@ import org.junit.Before;
 import org.junit.runner.RunWith;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.TimeUnit;
+import java.util.Set;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
@@ -86,6 +88,30 @@ public final class MainActivityTest {
                         android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE,
                         android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE}));
         assertEquals(0, MainActivity.androidPermissionsFor(new String[]{"unknown"}).length);
+    }
+
+    @Test public void youtubeScriptletsRegisterOnlyForExactSecureYoutubeOrigins() throws Exception {
+        assertTrue("native filter and pinned scriptlets should initialize",
+                NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
+        Set<String> origins = YoutubeScriptletInstaller.allowedOrigins();
+        assertEquals(6, origins.size());
+        for (String origin : origins) {
+            assertTrue("scriptlet origin must be HTTPS", origin.startsWith("https://"));
+            assertFalse("scriptlet origin must not use a wildcard", origin.contains("*"));
+            assertTrue("scriptlet origin must be a known YouTube host",
+                    origin.endsWith("youtube.com") || origin.endsWith("youtube-nocookie.com"));
+        }
+        boolean supported = YoutubeScriptletInstaller.isSupported();
+        AtomicReference<Boolean> installed = new AtomicReference<>();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                WebView probe = new WebView(activity);
+                installed.set(YoutubeScriptletInstaller.install(probe));
+                probe.destroy();
+            });
+        }
+        assertEquals("document-start script registration should match WebView capability",
+                supported, installed.get());
     }
 
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {
