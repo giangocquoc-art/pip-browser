@@ -88,7 +88,16 @@ jobs:
 
       - name: Verify installer and packaged ad blocking under a standard user
         shell: pwsh
-        run: ./tools/check_installer_unelevated.ps1 -SetupPath dist/PipSetup.exe
+        run: ./tools/check_installer_unelevated.ps1 -SetupPath dist/PipSetup.exe -ScreenshotPath dist/Pip-Windows-UX.png
+
+      - name: Upload Windows Pip UI screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Pip-Windows-UX
+          path: browser-source/dist/Pip-Windows-UX.png
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Validate Store MSIX packaging
         shell: pwsh
