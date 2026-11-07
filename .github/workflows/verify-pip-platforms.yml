@@ -118,6 +118,7 @@ jobs:
           script: |
             gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
             mkdir -p app/build/reports/androidTests/connected/debug/ux
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell pm clear com.psharehub.pip
             adb shell am start -n com.psharehub.pip/.MainActivity
             sleep 12
