@@ -324,6 +324,7 @@ version = "0.1.0"
 dependencies = [
  "adblock",
  "jni",
+ "serde_json",
 ]
 
 [[package]]

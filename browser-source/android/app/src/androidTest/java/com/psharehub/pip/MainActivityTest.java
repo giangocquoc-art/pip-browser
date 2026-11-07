@@ -4,14 +4,19 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ListView;
+import android.widget.TextView;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -23,15 +28,16 @@ import org.junit.Before;
 import org.junit.runner.RunWith;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.TimeUnit;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 
-import static androidx.test.espresso.Espresso.onData;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
-import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
-import static org.hamcrest.Matchers.anything;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.*;
 
 /** Device tests exercise real Activity/WebView lifetimes without requiring a network response. */
@@ -89,6 +95,108 @@ public final class MainActivityTest {
                         android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE,
                         android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE}));
         assertEquals(0, MainActivity.androidPermissionsFor(new String[]{"unknown"}).length);
+    }
+
+    @Test public void youtubeScriptletsRegisterOnlyForExactSecureYoutubeOrigins() throws Exception {
+        assertTrue("native filter and pinned scriptlets should initialize",
+                NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
+        Set<String> origins = YoutubeScriptletInstaller.allowedOrigins();
+        assertEquals(6, origins.size());
+        for (String origin : origins) {
+            assertTrue("scriptlet origin must be HTTPS", origin.startsWith("https://"));
+            assertFalse("scriptlet origin must not use a wildcard", origin.contains("*"));
+            assertTrue("scriptlet origin must be a known YouTube host",
+                    origin.endsWith("youtube.com") || origin.endsWith("youtube-nocookie.com"));
+        }
+        boolean supported = YoutubeScriptletInstaller.isSupported();
+        AtomicReference<Boolean> installed = new AtomicReference<>();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            // Select through the same UI path users take so the displayed status is
+            // refreshed by normal tab-selection lifecycle callbacks.
+            selectTab(0);
+            scenario.onActivity(activity -> {
+                TextView status = findTextViewContaining(
+                        activity.findViewById(android.R.id.content), supported
+                                ? "scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
+                assertNotNull("filter status must match the installed scriptlet state; views="
+                                + describeTextViews(activity.findViewById(android.R.id.content)), status);
+                WebView probe = new WebView(activity);
+                installed.set(YoutubeScriptletInstaller.install(probe));
+                probe.destroy();
+            });
+        }
+        assertEquals("document-start script registration should match WebView capability",
+                supported, installed.get());
+    }
+
+    @Test public void mobileYoutubePlayerFetchScriptletRemovesAdFieldsAndPreservesVideoData() throws Exception {
+        assertTrue("native filter and pinned scriptlets should initialize",
+                NativeAdblock.initialize().get(90, TimeUnit.SECONDS));
+        assertTrue("test requires WebView document-start support",
+                YoutubeScriptletInstaller.isSupported());
+        CountDownLatch resultReady = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>();
+        AtomicReference<WebView> probeRef = new AtomicReference<>();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                WebView probe = new WebView(activity);
+                probeRef.set(probe);
+                probe.getSettings().setJavaScriptEnabled(true);
+                assertTrue(YoutubeScriptletInstaller.install(probe));
+                probe.setWebViewClient(new WebViewClient() {
+                    @Override public WebResourceResponse shouldInterceptRequest(
+                            WebView view, WebResourceRequest request) {
+                        if (!"m.youtube.com".equals(request.getUrl().getHost())
+                                || !"/youtubei/v1/player".equals(request.getUrl().getPath())) return null;
+                        String body = "{\"adPlacements\":[{\"adSlotRenderer\":{}}],"
+                                + "\"adSlots\":[{}],\"videoDetails\":{\"title\":\"fixture\"}}";
+                        return new WebResourceResponse("application/json", "UTF-8", 200, "OK",
+                                java.util.Collections.singletonMap("Cache-Control", "no-store"),
+                                new java.io.ByteArrayInputStream(body.getBytes(
+                                        java.nio.charset.StandardCharsets.UTF_8)));
+                    }
+
+                    @Override public void onPageFinished(WebView view, String url) {
+                        pollScriptletResult(view, result, resultReady,
+                                SystemClock.uptimeMillis() + TimeUnit.SECONDS.toMillis(10));
+                    }
+                });
+                String html = "<!doctype html><meta charset='utf-8'><script>"
+                        + "const fromFetch=fetch('/youtubei/v1/player?key=fetch',{method:'POST',body:'{}'})"
+                        + ".then(r=>r.json());"
+                        + "const fromXhr=new Promise((resolve,reject)=>{const x=new XMLHttpRequest();"
+                        + "x.open('POST','/youtubei/v1/player?key=xhr');"
+                        + "x.onload=()=>{try{resolve(JSON.parse(x.responseText))}catch(e){reject(e)}};"
+                        + "x.onerror=()=>reject(new Error('XHR failed'));x.send('{}')});"
+                        + "Promise.all([fromFetch,fromXhr]).then(x=>window.__pipScriptletResult=JSON.stringify(x))"
+                        + ".catch(e=>window.__pipScriptletResult='ERROR:'+e)</script>";
+                probe.loadDataWithBaseURL("https://m.youtube.com/watch?v=fixture", html,
+                        "text/html", "UTF-8", null);
+            });
+            assertTrue("fixture player response did not finish", resultReady.await(15, TimeUnit.SECONDS));
+        } finally {
+            WebView probe = probeRef.get();
+            if (probe != null) probe.post(probe::destroy);
+        }
+        assertNotNull("fixture page did not expose the player response", result.get());
+        assertTrue("non-ad video data must survive the scriptlet", result.get().contains("videoDetails"));
+        assertFalse("player ad placements should be pruned", result.get().contains("adPlacements"));
+        assertFalse("player ad slots should be pruned", result.get().contains("adSlots"));
+    }
+
+    private static void pollScriptletResult(WebView view, AtomicReference<String> result,
+            CountDownLatch ready, long deadlineUptime) {
+        view.evaluateJavascript("window.__pipScriptletResult || null", value -> {
+            if (value != null && !"null".equals(value)) {
+                result.set(value);
+                ready.countDown();
+            } else if (SystemClock.uptimeMillis() >= deadlineUptime) {
+                ready.countDown();
+            } else {
+                new Handler(Looper.getMainLooper()).postDelayed(
+                        () -> pollScriptletResult(view, result, ready, deadlineUptime), 100);
+            }
+        });
     }
 
     @Test public void selectedTabAndUrlsSurviveActivityRecreation() {
@@ -209,10 +317,40 @@ public final class MainActivityTest {
         });
     }
 
+    private static TextView findTextViewContaining(View root, String text) {
+        if (root instanceof TextView) {
+            TextView candidate = (TextView) root;
+            if (candidate.getText().toString().contains(text)) return candidate;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                TextView candidate = findTextViewContaining(group.getChildAt(index), text);
+                if (candidate != null) return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static String describeTextViews(View root) {
+        if (root instanceof TextView) return ((TextView) root).getText().toString();
+        if (!(root instanceof ViewGroup)) return "";
+        StringBuilder result = new StringBuilder();
+        ViewGroup group = (ViewGroup) root;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            String child = describeTextViews(group.getChildAt(index));
+            if (!child.isEmpty()) {
+                if (result.length() > 0) result.append(" | ");
+                result.append(child);
+            }
+        }
+        return result.toString();
+    }
+
     private static void selectTab(int position) {
         onView(withContentDescription(R.string.tabs)).perform(click());
-        onData(anything()).inAdapterView(isAssignableFrom(ListView.class))
-                .inRoot(isDialog()).atPosition(position).perform(click());
+        onView(withContentDescription(startsWith("Chuyển đến tab " + (position + 1) + ":")))
+                .inRoot(isDialog()).perform(click());
     }
 
     private static void openNewTab() {
@@ -222,7 +360,8 @@ public final class MainActivityTest {
 
     private static void closeCurrentTab() {
         onView(withContentDescription(R.string.tabs)).perform(click());
-        onView(withText(R.string.close_tab)).inRoot(isDialog()).perform(click());
+        onView(withContentDescription(startsWith("Đóng tab đang chọn:")))
+                .inRoot(isDialog()).perform(click());
     }
 
     private static void deliverStaleCallbacks(

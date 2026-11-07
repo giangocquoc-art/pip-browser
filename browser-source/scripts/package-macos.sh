@@ -37,6 +37,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 <key>CFBundleIconFile</key><string>Pip</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSCameraUsageDescription</key><string>Pip chỉ dùng camera sau khi bạn chấp thuận yêu cầu của website.</string>
+<key>NSMicrophoneUsageDescription</key><string>Pip chỉ dùng micrô sau khi bạn chấp thuận yêu cầu của website.</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoadsInWebContent</key><true/></dict>
 </dict></plist>
 EOF
@@ -49,6 +51,8 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/Pip.icns"
 plutil -lint "$app/Contents/Info.plist"
+plutil -extract NSCameraUsageDescription raw -o - "$app/Contents/Info.plist" >/dev/null
+plutil -extract NSMicrophoneUsageDescription raw -o - "$app/Contents/Info.plist" >/dev/null
 # Apple Silicon requires a valid code signature. Ad-hoc is not Developer ID or notarization.
 codesign --force --sign - --timestamp=none "$app"
 codesign --verify --deep --strict "$app"

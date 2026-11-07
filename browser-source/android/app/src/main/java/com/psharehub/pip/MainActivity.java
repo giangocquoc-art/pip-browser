@@ -41,6 +41,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -67,11 +68,16 @@ public final class MainActivity extends Activity {
     private EditText address;
     private Button back;
     private Button forward;
+    private Button reloadButton;
     private Button tabButton;
     private FrameLayout content;
     private TextView status;
     private TextView filteringStatus;
     private ProgressBar progress;
+    private View browserRoot;
+    private View fullscreenView;
+    private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private boolean retryAvailable;
     private boolean paused;
     private boolean destroying;
     private boolean allowUnprotected;
@@ -90,6 +96,9 @@ public final class MainActivity extends Activity {
         String title = "";
         WebView view;
         String pendingLoadUrl;
+        boolean loading;
+        boolean suppressProgress;
+        boolean youtubeScriptletsInstalled;
         Tab(String url) {
             this.url = url;
             this.documentUrl = url;
@@ -186,18 +195,22 @@ public final class MainActivity extends Activity {
                 view.goForward();
             }
         });
-        Button reload = button(R.string.reload, () -> {
+        reloadButton = button(R.string.reload, () -> {
             Tab tab = tabs.get(selected);
-            if (tab.view == null) selectTab(selected);
+            if (tab.loading && tab.view != null) {
+                tab.view.stopLoading();
+                tab.loading = false;
+                tab.suppressProgress = true;
+                retryAvailable = false;
+                status.setVisibility(View.GONE);
+                progress.setVisibility(View.INVISIBLE);
+                updateControls();
+            } else if (tab.view == null) selectTab(selected);
             else if (tab.pendingLoadUrl != null || !NativeAdblock.isReady()) loadWhenProtected(tab);
             else tab.view.reload();
         });
         tabButton = button(R.string.tabs, this::showTabs);
         Button menu = button(R.string.menu, this::showBrowserMenu);
-        for (Button item : new Button[]{back, forward, reload, tabButton, menu}) {
-            controls.addView(item, new LinearLayout.LayoutParams(0, dp(56), 1));
-        }
-        root.addView(controls);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         root.addView(progress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)));
@@ -206,6 +219,15 @@ public final class MainActivity extends Activity {
         status.setPadding(dp(12), dp(6), dp(12), dp(6));
         status.setVisibility(View.GONE);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        status.setOnClickListener(v -> {
+            if (!retryAvailable) return;
+            retryAvailable = false;
+            status.setVisibility(View.GONE);
+            WebView view = activeView();
+            if (view == null) selectTab(selected);
+            else if (tabs.get(selected).pendingLoadUrl != null) loadWhenProtected(tabs.get(selected));
+            else view.reload();
+        });
         root.addView(status);
         filteringStatus = new TextView(this);
         filteringStatus.setTextSize(14);
@@ -223,6 +245,13 @@ public final class MainActivity extends Activity {
         updateFilteringStatus();
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        for (Button item : new Button[]{back, forward, reloadButton, tabButton, menu}) {
+            item.setMinHeight(dp(48));
+            controls.addView(item, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        root.addView(controls);
+        browserRoot = root;
         setContentView(root);
         root.requestApplyInsets();
     }
@@ -230,10 +259,11 @@ public final class MainActivity extends Activity {
     private Button button(int text, Runnable action) {
         Button button = new Button(this);
         button.setText(text);
-        button.setTextSize(12);
+        button.setTextSize(13);
         button.setAllCaps(false);
         button.setPadding(0, 0, 0, 0);
         button.setContentDescription(getString(text));
+        button.setMinHeight(dp(48));
         button.setOnClickListener(v -> action.run());
         return button;
     }
@@ -248,6 +278,11 @@ public final class MainActivity extends Activity {
         tab.url = url;
         tab.documentUrl = url;
         tab.explicitNavigationUrl = url;
+        tab.loading = false;
+        tab.suppressProgress = false;
+        retryAvailable = false;
+        status.setVisibility(View.GONE);
+        progress.setVisibility(View.INVISIBLE);
         persistSession();
         if (tab.view == null) selectTab(selected);
         else loadWhenProtected(tab);
@@ -282,10 +317,15 @@ public final class MainActivity extends Activity {
         content.addView(tab.view, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         if (!paused) tab.view.onResume();
+        progress.setProgress(tab.view.getProgress());
+        progress.setVisibility(tab.loading && tab.view.getProgress() < 100
+                ? View.VISIBLE : View.INVISIBLE);
         status.setVisibility(View.GONE);
+        retryAvailable = false;
         address.setText(tab.url);
         if (created && load) loadWhenProtected(tab);
         updateControls();
+        updateFilteringStatus();
     }
 
     @SuppressLint("SetJavaScriptEnabled") // Browser pages need JS; no host JS interface is exposed.
@@ -353,6 +393,9 @@ public final class MainActivity extends Activity {
                     persistSession();
                 }
                 if (isCurrentView(tab, webView)) {
+                    tab.loading = true;
+                    tab.suppressProgress = false;
+                    retryAvailable = false;
                     status.setVisibility(View.GONE);
                     if (!address.hasFocus()) address.setText(tab.url);
                     updateControls();
@@ -362,6 +405,10 @@ public final class MainActivity extends Activity {
 
             @Override public void onPageFinished(WebView webView, String url) {
                 if (!isLiveView(tab, webView)) return;
+                if (!Address.sameNavigationUrl(url, tab.documentUrl)
+                        && !Address.sameNavigationUrl(url, tab.explicitNavigationUrl)) return;
+                tab.loading = false;
+                tab.suppressProgress = false;
                 String visitedUrl = Address.isWebUrl(url) ? url : tab.url;
                 String visitedTitle = tab.title;
                 storageExecutor.execute(() -> dataStore.recordVisit(visitedUrl, visitedTitle));
@@ -372,12 +419,28 @@ public final class MainActivity extends Activity {
             }
 
             @Override public void onReceivedError(WebView webView, WebResourceRequest request, WebResourceError error) {
-                if (request.isForMainFrame() && isCurrentView(tab, webView)) showStatus(R.string.load_error);
+                if (request.isForMainFrame() && isCurrentView(tab, webView)
+                        && (Address.sameNavigationUrl(request.getUrl().toString(), tab.documentUrl)
+                        || Address.sameNavigationUrl(request.getUrl().toString(), tab.explicitNavigationUrl))) {
+                    tab.loading = false;
+                    tab.suppressProgress = true;
+                    retryAvailable = true;
+                    showMainFrameError(request.getUrl().toString(), error.getErrorCode());
+                    updateControls();
+                }
             }
 
             @Override public void onReceivedSslError(WebView webView, SslErrorHandler handler, SslError error) {
                 handler.cancel();
-                if (isCurrentView(tab, webView)) showStatus(R.string.ssl_error);
+                if (isCurrentView(tab, webView)
+                        && (Address.sameNavigationUrl(error.getUrl(), tab.documentUrl)
+                        || Address.sameNavigationUrl(error.getUrl(), tab.explicitNavigationUrl))) {
+                    tab.loading = false;
+                    tab.suppressProgress = true;
+                    retryAvailable = false;
+                    showStatus(R.string.ssl_error);
+                    updateControls();
+                }
             }
 
             @Override public boolean onRenderProcessGone(WebView webView, RenderProcessGoneDetail detail) {
@@ -386,11 +449,15 @@ public final class MainActivity extends Activity {
                 cancelWebsitePermissionFor(webView);
                 boolean wasCurrent = isCurrentView(tab, webView);
                 tab.view = null;
+                tab.youtubeScriptletsInstalled = false;
                 if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
                 webView.destroy();
                 if (wasCurrent) {
+                    tab.loading = false;
+                    retryAvailable = true;
                     showStatus(R.string.render_error);
                     updateControls();
+                    updateFilteringStatus();
                 }
                 return true;
             }
@@ -398,14 +465,33 @@ public final class MainActivity extends Activity {
         view.setWebChromeClient(new WebChromeClient() {
             @Override public void onProgressChanged(WebView webView, int value) {
                 if (isCurrentView(tab, webView)) {
+                    if (tab.suppressProgress) return;
                     progress.setProgress(value);
                     progress.setVisibility(value == 100 ? View.INVISIBLE : View.VISIBLE);
+                    if (value > 0 && value < 100) tab.loading = true;
+                    updateControls();
                 }
             }
 
             @Override public void onReceivedTitle(WebView webView, String title) {
                 if (isLiveView(tab, webView)) tab.title = title == null ? "" : title;
             }
+
+            @Override public void onShowCustomView(View customView, CustomViewCallback callback) {
+                if (!isCurrentView(tab, view) || fullscreenView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                fullscreenView = customView;
+                fullscreenCallback = callback;
+                setContentView(customView);
+                if (Build.VERSION.SDK_INT >= 19) customView.setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            }
+
+            @Override public void onHideCustomView() { hideFullscreenView(); }
 
             @Override public void onPermissionRequest(PermissionRequest request) {
                 requestWebsiteMediaPermission(view, request);
@@ -535,19 +621,68 @@ public final class MainActivity extends Activity {
     }
 
     private void showTabs() {
-        String[] labels = new String[tabs.size()];
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(16), dp(8), dp(16), dp(8));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
         for (int i = 0; i < tabs.size(); i++) {
+            final int index = i;
             Tab tab = tabs.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = new TextView(this);
             String title = tab.title.isEmpty() ? tab.url : tab.title;
-            labels[i] = (i == selected ? "✓ " : "") + title;
+            label.setText((i == selected ? "●  " : "") + title + "\n" + tab.url);
+            label.setTextSize(14);
+            label.setMaxLines(2);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            label.setPadding(dp(8), dp(8), dp(8), dp(8));
+            label.setMinHeight(dp(56));
+            label.setGravity(Gravity.CENTER_VERTICAL);
+            label.setSelected(i == selected);
+            label.setContentDescription(getString(R.string.select_tab, i + 1, title));
+            label.setOnClickListener(v -> {
+                selectTab(index);
+                if (dialogRef[0] != null) dialogRef[0].dismiss();
+            });
+            row.addView(label, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            Button close = button(R.string.close_tab, () -> {
+                closeTabAt(index);
+                if (dialogRef[0] != null) dialogRef[0].dismiss();
+                showTabs();
+            });
+            close.setContentDescription(getString(i == selected
+                    ? R.string.close_selected_tab_number : R.string.close_tab_number, index + 1));
+            close.setText("×");
+            close.setTextSize(20);
+            row.addView(close, new LinearLayout.LayoutParams(dp(56), dp(52)));
+            rows.addView(row);
+            View divider = new View(this);
+            divider.setBackgroundColor(Color.rgb(237, 224, 211));
+            rows.addView(divider, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
         }
-        new AlertDialog.Builder(this)
+        scroll.addView(rows);
+        panel.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        Button create = button(R.string.new_tab, () -> {
+            if (dialogRef[0] != null) dialogRef[0].dismiss();
+            addTab(Address.HOME, true);
+        });
+        panel.addView(create, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(getString(R.string.tabs) + " (" + tabs.size() + ")")
-                .setItems(labels, (dialog, index) -> selectTab(index))
-                .setPositiveButton(R.string.new_tab, (dialog, which) -> addTab(Address.HOME, true))
-                .setNeutralButton(R.string.close_tab, (dialog, which) -> closeTab())
-                .setNegativeButton(R.string.cancel, null)
-                .show();
+                .setView(panel).setNegativeButton(R.string.cancel, null).create();
+        dialogRef[0] = dialog;
+        dialog.show();
+        if (dialog.getWindow() != null) dialog.getWindow().setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Math.max(dp(240), Math.min(getResources().getDisplayMetrics().heightPixels - dp(96), dp(560))));
     }
 
     private void showBrowserMenu() {
@@ -559,14 +694,81 @@ public final class MainActivity extends Activity {
                 if (destroying) return;
                 String bookmarkAction = getString(bookmarked
                         ? R.string.remove_bookmark : R.string.add_bookmark);
-                String[] items = {bookmarkAction, getString(R.string.bookmarks), getString(R.string.history)};
+                String[] items = {bookmarkAction, getString(R.string.bookmarks),
+                        getString(R.string.history), getString(R.string.find_in_page),
+                        getString(R.string.share_page), getString(R.string.downloads)};
                 new AlertDialog.Builder(this).setTitle(R.string.menu).setItems(items, (dialog, which) -> {
                     if (which == 0) toggleBookmark();
                     else if (which == 1) showBookmarks();
-                    else showHistory();
+                    else if (which == 2) showHistory();
+                    else if (which == 3) showFindInPage();
+                    else if (which == 4) shareCurrentPage();
+                    else showDownloads();
                 }).setNegativeButton(R.string.cancel, null).show();
             });
         });
+    }
+
+    private void shareCurrentPage() {
+        String url = tabs.get(selected).url;
+        if (!Address.isWebUrl(url)) return;
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_TEXT, url);
+        try {
+            startActivity(Intent.createChooser(share, getString(R.string.share_page)));
+        } catch (ActivityNotFoundException ignored) {
+            Toast.makeText(this, R.string.share_unavailable, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showDownloads() {
+        Intent downloads = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
+        try {
+            startActivity(downloads);
+        } catch (ActivityNotFoundException ignored) {
+            Toast.makeText(this, R.string.downloads_unavailable, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showFindInPage() {
+        WebView view = activeView();
+        if (view == null) return;
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setHint(R.string.find_hint);
+        query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setGravity(Gravity.CENTER_VERTICAL);
+        panel.setPadding(dp(16), 0, dp(16), 0);
+        panel.addView(query, new LinearLayout.LayoutParams(0, dp(56), 1));
+        TextView count = new TextView(this);
+        count.setPadding(dp(8), 0, dp(8), 0);
+        panel.addView(count);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.find_in_page)
+                .setView(panel).setNegativeButton(R.string.cancel, (d, which) -> view.clearMatches())
+                .create();
+        view.setFindListener((activeMatchOrdinal, numberOfMatches, isDoneCounting) -> {
+            if (isDoneCounting && numberOfMatches > 0) {
+                count.setText(getString(R.string.find_count, activeMatchOrdinal + 1, numberOfMatches));
+            } else if (isDoneCounting) count.setText(R.string.find_no_matches);
+        });
+        query.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (isCurrentView(view)) view.findAllAsync(s.toString());
+            }
+            @Override public void afterTextChanged(android.text.Editable s) { }
+        });
+        query.setOnEditorActionListener((v, action, event) -> {
+            if (action == EditorInfo.IME_ACTION_SEARCH) { view.findNext(true); return true; }
+            return false;
+        });
+        dialog.setOnDismissListener(d -> view.setFindListener(null));
+        dialog.show();
+        query.requestFocus();
+        query.postDelayed(() -> ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                .showSoftInput(query, InputMethodManager.SHOW_IMPLICIT), 120);
     }
 
     private void toggleBookmark() {
@@ -642,18 +844,27 @@ public final class MainActivity extends Activity {
         tab.url = url;
         tab.documentUrl = url;
         tab.explicitNavigationUrl = url;
+        tab.loading = false;
+        tab.suppressProgress = false;
+        retryAvailable = false;
+        status.setVisibility(View.GONE);
+        progress.setVisibility(View.INVISIBLE);
         address.setText(url);
         persistSession();
         if (tab.view == null) selectTab(selected);
         else loadWhenProtected(tab);
     }
 
-    private void closeTab() {
-        Tab removed = tabs.remove(selected);
+    private void closeTabAt(int index) {
+        if (index < 0 || index >= tabs.size()) return;
+        int previousSelection = selected;
+        Tab removed = tabs.remove(index);
         WebView removedView = removed.view;
         removed.view = null;
         if (tabs.isEmpty()) tabs.add(new Tab(Address.HOME));
-        selected = Math.min(selected, tabs.size() - 1);
+        if (index < previousSelection) selected = previousSelection - 1;
+        else if (index == previousSelection) selected = Math.min(index, tabs.size() - 1);
+        else selected = previousSelection;
         persistSession();
         // Repair selection and revoke the old view identity before WebView teardown
         // can deliver queued navigation/progress/renderer callbacks.
@@ -877,10 +1088,35 @@ public final class MainActivity extends Activity {
         back.setEnabled(view != null && view.canGoBack());
         forward.setEnabled(view != null && view.canGoForward());
         tabButton.setText(getString(R.string.tabs_count, tabs.size()));
+        if (reloadButton != null) {
+            reloadButton.setText(tabs.get(selected).loading ? R.string.stop : R.string.reload);
+            reloadButton.setContentDescription(getString(tabs.get(selected).loading
+                    ? R.string.stop : R.string.reload));
+        }
     }
 
     private void showStatus(int message) {
         status.setText(message);
+        status.setClickable(retryAvailable);
+        status.setFocusable(retryAvailable);
+        status.setContentDescription(getString(message) + (retryAvailable
+                ? " " + getString(R.string.tap_to_retry) : ""));
+        status.setVisibility(View.VISIBLE);
+        progress.setVisibility(View.INVISIBLE);
+    }
+
+    private void showMainFrameError(String failedUrl, int errorCode) {
+        String reason;
+        if (errorCode == WebViewClient.ERROR_HOST_LOOKUP) reason = getString(R.string.network_host_error);
+        else if (errorCode == WebViewClient.ERROR_CONNECT) reason = getString(R.string.network_connect_error);
+        else if (errorCode == WebViewClient.ERROR_TIMEOUT) reason = getString(R.string.network_timeout_error);
+        else if (errorCode == WebViewClient.ERROR_IO) reason = getString(R.string.network_io_error);
+        else reason = getString(R.string.network_generic_error);
+        String message = getString(R.string.load_error_detail, failedUrl, reason);
+        status.setText(message);
+        status.setClickable(true);
+        status.setFocusable(true);
+        status.setContentDescription(message);
         status.setVisibility(View.VISIBLE);
         progress.setVisibility(View.INVISIBLE);
     }
@@ -889,8 +1125,12 @@ public final class MainActivity extends Activity {
         if (filteringStatus == null) return;
         long blocked = NativeAdblock.blockedCount();
         if (NativeAdblock.hasFailed()) filteringStatus.setText(R.string.adblock_unavailable);
-        else if (NativeAdblock.isReady()) filteringStatus.setText(
-                getString(R.string.adblock_ready, blocked));
+        else if (NativeAdblock.isReady()) {
+            boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()
+                    && tabs.get(selected).youtubeScriptletsInstalled;
+            filteringStatus.setText(getString(youtubeScriptletsInstalled
+                    ? R.string.adblock_ready_youtube : R.string.adblock_ready, blocked));
+        }
         else filteringStatus.setText(R.string.adblock_loading);
     }
 
@@ -902,6 +1142,10 @@ public final class MainActivity extends Activity {
             tab.view.stopLoading();
             updateFilteringStatus();
             return;
+        }
+        if (!tab.youtubeScriptletsInstalled && NativeAdblock.isReady()) {
+            tab.youtubeScriptletsInstalled = YoutubeScriptletInstaller.install(tab.view);
+            if (isCurrentView(tab, tab.view)) updateFilteringStatus();
         }
         String url = tab.pendingLoadUrl;
         tab.pendingLoadUrl = null;
@@ -916,6 +1160,13 @@ public final class MainActivity extends Activity {
     }
 
     private void navigateBack() {
+        if (fullscreenView != null) { hideFullscreenView(); return; }
+        if (address != null && address.hasFocus()) {
+            address.clearFocus();
+            ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+                    .hideSoftInputFromWindow(address.getWindowToken(), 0);
+            return;
+        }
         WebView view = activeView();
         if (view != null && view.canGoBack()) {
             Tab tab = tabs.get(selected);
@@ -928,6 +1179,18 @@ public final class MainActivity extends Activity {
             view.goBack();
         }
         else finish();
+    }
+
+    private void hideFullscreenView() {
+        View view = fullscreenView;
+        WebChromeClient.CustomViewCallback callback = fullscreenCallback;
+        fullscreenView = null;
+        fullscreenCallback = null;
+        if (view != null) {
+            view.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            setContentView(browserRoot);
+        }
+        if (callback != null) callback.onCustomViewHidden();
     }
 
     private ArrayList<String> loadPersistedSession() {
@@ -994,6 +1257,12 @@ public final class MainActivity extends Activity {
         // without a useful save-state callback. Persist the latest tab URLs explicitly.
         persistSession();
         destroying = true;
+        if (fullscreenCallback != null) {
+            WebChromeClient.CustomViewCallback callback = fullscreenCallback;
+            fullscreenCallback = null;
+            fullscreenView = null;
+            callback.onCustomViewHidden();
+        }
         cancelPendingFileChooser();
         cancelPendingWebsitePermission();
         content.removeAllViews();
