@@ -96,8 +96,8 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
   AndroidX WebKit khi WebView báo hỗ trợ `DOCUMENT_START_SCRIPT`. Chỉ các origin HTTPS YouTube
   đã liệt kê tường minh được phép nhận scriptlet; nếu WebView cũ không hỗ trợ thì app giữ lọc mạng
   và hoạt động theo chế độ dự phòng. Bộ lọc player response có rule riêng cho `m.youtube.com`;
-  regression test Android 15 xác nhận phản hồi player mobile bỏ marker quảng cáo nhưng giữ dữ liệu
-  video. Đây là tái sử dụng snapshot YouTube và scriptlet resources
+  regression test Android 15 xác nhận phản hồi player `fetch` và XHR mobile bỏ marker quảng cáo
+  nhưng giữ dữ liệu video. Đây là tái sử dụng snapshot YouTube và scriptlet resources
   đã ghim trong repo, không phải cam kết mọi quảng cáo YouTube sẽ biến mất: YouTube thường đổi
   response/player và có thể vẫn phát quảng cáo. Chưa có bài kiểm tra phát YouTube thật xác nhận
   quảng cáo đã hết trên thiết bị. Chặn rộng `googlevideo.com` sẽ chặn cả luồng video bình thường,
