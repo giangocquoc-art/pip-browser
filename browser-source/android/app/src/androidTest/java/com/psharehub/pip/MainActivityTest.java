@@ -16,6 +16,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.TextView;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -111,6 +112,10 @@ public final class MainActivityTest {
         AtomicReference<Boolean> installed = new AtomicReference<>();
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             scenario.onActivity(activity -> {
+                TextView status = findTextViewContaining(
+                        activity.findViewById(android.R.id.content), supported
+                                ? "Scriptlet YouTube sẵn sàng" : "Scriptlet YouTube chưa sẵn sàng");
+                assertNotNull("filter status must match the installed scriptlet state", status);
                 WebView probe = new WebView(activity);
                 installed.set(YoutubeScriptletInstaller.install(probe));
                 probe.destroy();
@@ -301,6 +306,21 @@ public final class MainActivityTest {
             assertNotNull(tabs);
             assertEquals(activity.getString(R.string.tabs) + " " + count, tabs.getText().toString());
         });
+    }
+
+    private static TextView findTextViewContaining(View root, String text) {
+        if (root instanceof TextView) {
+            TextView candidate = (TextView) root;
+            if (candidate.getText().toString().contains(text)) return candidate;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                TextView candidate = findTextViewContaining(group.getChildAt(index), text);
+                if (candidate != null) return candidate;
+            }
+        }
+        return null;
     }
 
     private static void selectTab(int position) {

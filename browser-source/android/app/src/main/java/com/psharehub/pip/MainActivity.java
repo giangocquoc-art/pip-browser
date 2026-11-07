@@ -325,6 +325,7 @@ public final class MainActivity extends Activity {
         address.setText(tab.url);
         if (created && load) loadWhenProtected(tab);
         updateControls();
+        updateFilteringStatus();
     }
 
     @SuppressLint("SetJavaScriptEnabled") // Browser pages need JS; no host JS interface is exposed.
@@ -456,6 +457,7 @@ public final class MainActivity extends Activity {
                     retryAvailable = true;
                     showStatus(R.string.render_error);
                     updateControls();
+                    updateFilteringStatus();
                 }
                 return true;
             }
@@ -1123,8 +1125,12 @@ public final class MainActivity extends Activity {
         if (filteringStatus == null) return;
         long blocked = NativeAdblock.blockedCount();
         if (NativeAdblock.hasFailed()) filteringStatus.setText(R.string.adblock_unavailable);
-        else if (NativeAdblock.isReady()) filteringStatus.setText(
-                getString(R.string.adblock_ready, blocked));
+        else if (NativeAdblock.isReady()) {
+            boolean youtubeScriptletsInstalled = selected >= 0 && selected < tabs.size()
+                    && tabs.get(selected).youtubeScriptletsInstalled;
+            filteringStatus.setText(getString(youtubeScriptletsInstalled
+                    ? R.string.adblock_ready_youtube : R.string.adblock_ready, blocked));
+        }
         else filteringStatus.setText(R.string.adblock_loading);
     }
 
@@ -1139,6 +1145,7 @@ public final class MainActivity extends Activity {
         }
         if (!tab.youtubeScriptletsInstalled && NativeAdblock.isReady()) {
             tab.youtubeScriptletsInstalled = YoutubeScriptletInstaller.install(tab.view);
+            if (isCurrentView(tab, tab.view)) updateFilteringStatus();
         }
         String url = tab.pendingLoadUrl;
         tab.pendingLoadUrl = null;

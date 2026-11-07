@@ -63,7 +63,8 @@
     <string name="permission_deny">Không cho phép</string>
     <string name="render_error">Tab đã dừng để bảo vệ ứng dụng. Bấm Tải lại để mở lại trang.</string>
     <string name="adblock_loading">Đang nạp bộ lọc quảng cáo…</string>
-    <string name="adblock_ready">Lọc mạng: bật · %1$d yêu cầu bị chặn (tổng) · YouTube có thể còn quảng cáo</string>
+    <string name="adblock_ready">Lọc mạng bật · %1$d yêu cầu bị chặn (tổng) · Scriptlet YouTube chưa sẵn sàng</string>
+    <string name="adblock_ready_youtube">Lọc mạng + scriptlet YouTube sẵn sàng · %1$d yêu cầu bị chặn (tổng) · quảng cáo vẫn có thể còn</string>
     <string name="adblock_unavailable">Bộ lọc quảng cáo không hoạt động. Chạm để chọn tiếp tục không bảo vệ.</string>
     <string name="adblock_failure_prompt">Không nạp được bộ lọc quảng cáo. Trang đang chờ; bạn có muốn duyệt không bảo vệ trong cửa sổ này?</string>
     <string name="continue_unprotected">Tiếp tục không bảo vệ</string>
