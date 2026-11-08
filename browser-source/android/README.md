@@ -99,8 +99,10 @@ chứng request Internet của engine đi qua Google DoH: cần capture/trace m�
   regression test Android 15 xác nhận phản hồi player `fetch` và XHR mobile bỏ marker quảng cáo
   nhưng giữ dữ liệu video. Đây là tái sử dụng snapshot YouTube và scriptlet resources
   đã ghim trong repo, không phải cam kết mọi quảng cáo YouTube sẽ biến mất: YouTube thường đổi
-  response/player và có thể vẫn phát quảng cáo. Chưa có bài kiểm tra phát YouTube thật xác nhận
-  quảng cáo đã hết trên thiết bị. Chặn rộng `googlevideo.com` sẽ chặn cả luồng video bình thường,
+  response/player và có thể vẫn phát quảng cáo. Probe live opt-in trên emulator Android 15 tại
+  CI run 42434181460 xác nhận video tải, scriptlet được đăng ký, nhưng YouTube không phân phối quảng
+  cáo trong lượt đó; kết quả được xem là chưa kết luận được hiệu quả chặn. Chặn rộng
+  `googlevideo.com` sẽ chặn cả luồng video bình thường,
   nên không phải cách sửa an toàn. Con số trong trạng thái Android chỉ là request mạng bị chặn,
   không phải số quảng cáo/video ads đã loại. Danh sách cá cược chưa thể
   nhận diện mọi tên miền mới và không thay thế chính sách đầy đủ của bản Windows. URL main-frame do người
