@@ -124,7 +124,7 @@ public final class LiveYoutubeProbeTest {
     private static boolean scenarioScriptletState(ActivityScenario<MainActivity> scenario) {
         AtomicReference<Boolean> registered = new AtomicReference<>(false);
         scenario.onActivity(activity -> {
-            TextView status = findText(activity.findViewById(android.R.id.content),
+            TextView status = find(activity.findViewById(android.R.id.content),
                     TextView.class, activity.getString(R.string.adblock_ready));
             CharSequence description = status == null ? null : status.getContentDescription();
             registered.set(description != null && description.toString()
