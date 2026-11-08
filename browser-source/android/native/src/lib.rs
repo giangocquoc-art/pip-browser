@@ -4,6 +4,7 @@
 use adblock::{
     lists::{FilterSet, ParseOptions, RuleTypes},
     request::Request,
+    resources::{PermissionMask, Resource},
     Engine,
 };
 use std::sync::{
@@ -13,10 +14,14 @@ use std::sync::{
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 static BLOCKED: AtomicU64 = AtomicU64::new(0);
+static YOUTUBE_SCRIPT: OnceLock<Option<String>> = OnceLock::new();
 const NAVIGATION_DOMAINS: &str = include_str!(concat!(env!("OUT_DIR"), "/navigation-domains.txt"));
 include!(concat!(env!("OUT_DIR"), "/navigation-offsets.rs"));
 
 const EASYLIST: &str = include_str!("../../../crates/app/filters/easylist.txt");
+const YOUTUBE_RULES: &str = include_str!("../../../crates/app/filters/youtube.txt");
+const SCRIPTLET_RESOURCES: &str =
+    include_str!("../../../crates/app/filters/scriptlet-resources.json");
 
 #[cfg(test)]
 fn engine_from_rules(rules: &str) -> Engine {
@@ -46,7 +51,6 @@ fn initialize() {
                 "../../../crates/app/filters/upstream/uBlockOrigin/uAssets/filters/unbreak.txt"
             ),
             include_str!("../../../crates/app/filters/popup-overrides.txt"),
-            include_str!("../../../crates/app/filters/youtube.txt"),
         ] {
             filters.add_filter_list(
                 rules.to_owned(),
@@ -56,8 +60,58 @@ fn initialize() {
                 },
             );
         }
-        Engine::new_with_filter_set(filters)
+        filters.add_filter_list(
+            YOUTUBE_RULES.to_owned(),
+            ParseOptions {
+                permissions: PermissionMask::from_bits(1),
+                ..Default::default()
+            },
+        );
+        let mut engine = Engine::new_with_filter_set(filters);
+        if let Ok(resources) = serde_json::from_str::<Vec<Resource>>(SCRIPTLET_RESOURCES) {
+            engine.use_resources(resources);
+        }
+        engine
     });
+
+    // Scriptlet support is an enhancement over network filtering. If its pinned
+    // resources fail to parse, keep the working network engine available.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(engine) = ENGINE.get() {
+            YOUTUBE_SCRIPT.get_or_init(|| build_youtube_script(engine).ok());
+        }
+    }));
+}
+
+fn build_youtube_script(engine: &Engine) -> Result<String, String> {
+    let mut script = String::from("(()=>{if(window!==window.top)return;switch(location.hostname){");
+    for host in [
+        "www.youtube.com",
+        "youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "www.youtube-nocookie.com",
+        "youtube-nocookie.com",
+    ] {
+        let resources = engine.url_cosmetic_resources(&format!("https://{host}/"));
+        if !resources.injected_script.is_empty() {
+            script.push_str(&format!(
+                "case {}:{{const scriptletGlobals={{}};{}\nbreak;}}",
+                serde_json::to_string(host).map_err(|error| error.to_string())?,
+                resources.injected_script
+            ));
+        }
+    }
+    script.push_str("}})();");
+    if script.len() <= "(()=>{if(window!==window.top)return;switch(location.hostname){}})();".len()
+    {
+        return Err("no YouTube scriptlets were compiled".into());
+    }
+    Ok(script)
+}
+
+fn youtube_script() -> Option<&'static str> {
+    YOUTUBE_SCRIPT.get().and_then(Option::as_deref)
 }
 
 fn valid_host(host: &str) -> bool {
@@ -129,7 +183,7 @@ mod bridge {
     use super::*;
     use jni::{
         objects::{JClass, JString},
-        sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE},
+        sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE},
         JNIEnv,
     };
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -199,6 +253,22 @@ mod bridge {
     ) -> jlong {
         BLOCKED.load(Ordering::Relaxed).min(i64::MAX as u64) as jlong
     }
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_psharehub_pip_NativeAdblock_nativeYoutubeScript(
+        mut env: JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        catch_unwind(AssertUnwindSafe(|| {
+            let Some(script) = youtube_script() else {
+                return std::ptr::null_mut();
+            };
+            env.new_string(script)
+                .map(|value| value.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        }))
+        .unwrap_or(std::ptr::null_mut())
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +321,24 @@ mod tests {
     }
 
     #[test]
+    fn youtube_video_stream_request_remains_allowed_by_network_only_engine() {
+        initialize();
+        let request = Request::new(
+            "https://rr1---sn.googlevideo.com/videoplayback?expire=9999999999&id=normal-fixture",
+            "https://m.youtube.com/watch?v=offline-fixture",
+            "media",
+            "GET",
+        )
+        .expect("valid video stream request");
+        // Blocking googlevideo broadly would also break ordinary playback.
+        assert!(!ENGINE
+            .get()
+            .expect("native network engine initialized")
+            .check_network_request(&request)
+            .should_block());
+    }
+
+    #[test]
     fn native_engine_respects_network_exceptions_and_resource_types() {
         let engine = engine_from_rules("||ads.example^$script\n@@||ads.example/allowed.js$script");
         let source = "https://fixture.pip.invalid/";
@@ -264,5 +352,18 @@ mod tests {
         assert!(!engine
             .check_network_request(&request("https://ads.example/cover.jpg", "image"))
             .should_block());
+    }
+
+    #[test]
+    fn pinned_youtube_scriptlets_compile_for_youtube_hosts_only() {
+        initialize();
+        let script = youtube_script().expect("bundled YouTube scriptlets compile");
+        assert!(script.contains("case \"m.youtube.com\""));
+        assert!(script.contains("case \"www.youtube.com\""));
+        assert!(!script.contains("case \"example.com\""));
+        assert!(
+            script.len() > 1_000,
+            "scriptlet bundle unexpectedly incomplete"
+        );
     }
 }

@@ -70,6 +70,11 @@ if __name__ == '__main__':
             youtube = [d for d in domains if d in ('youtube.com','www.youtube.com','m.youtube.com','music.youtube.com','www.youtube-nocookie.com','youtube-nocookie.com')]
             if youtube:
                 rules.append(','.join(youtube)+separator+line.split(separator,1)[1])
+    # YouTube's mobile WebView origin needs the same player-response pruning as
+    # desktop www.youtube.com. Keep this Pip rule in the generator so refreshing
+    # the pinned upstream snapshot does not silently drop mobile ad filtering.
+    rules.append(r'm.youtube.com##+js(json-prune-fetch-response, adPlacements adSlots playerResponse.adPlacements playerResponse.adSlots [].playerResponse.adPlacements [].playerResponse.adSlots, , propsToMatch, /\/player(\?|$)/)')
+    rules.append(r'm.youtube.com##+js(json-prune-xhr-response, adPlacements adSlots playerResponse.adPlacements playerResponse.adSlots [].playerResponse.adPlacements [].playerResponse.adSlots, , propsToMatch, /\/player(?:\?.+)?$/)')
     (DEST/'youtube.txt').write_text('\n'.join(dict.fromkeys(rules))+'\n', encoding='utf-8')
     subprocess.run(['node', str(ROOT/'tools/build_scriptlet_resources.mjs')],check=True)
     hashes = {str(p.relative_to(DEST)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((DEST/'upstream').rglob('*')) if p.is_file()}

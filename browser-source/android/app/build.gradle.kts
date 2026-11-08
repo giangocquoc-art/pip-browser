@@ -37,6 +37,7 @@ android {
     }
 }
 dependencies {
+    implementation("androidx.webkit:webkit:1.9.0")
     // A debug-only GeckoView pilot keeps the production WebView APK unchanged while
     // validating isolated sessions, private mode, and Google DoH on Android 15 CI.
     debugImplementation("org.mozilla.geckoview:geckoview:153.0.20260810162159")

@@ -2728,26 +2728,6 @@ impl BrowserApp {
         }
     }
 
-    fn create_browser_window(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        initial_url: Option<String>,
-    ) -> Option<WindowId> {
-        let restore_slot = (initial_url.is_none()
-            && !self
-                .windows
-                .values()
-                .any(|window| !window.private && window.profile_id == "Default"))
-        .then_some(0);
-        self.create_profile_window(
-            event_loop,
-            initial_url,
-            "Default".into(),
-            false,
-            restore_slot,
-        )
-    }
-
     fn open_related_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -4413,7 +4393,7 @@ impl BrowserApp {
         win_id: WindowId,
         logical_x: f64,
         logical_y: f64,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
     ) {
         use windows::core::w;
         use windows::Win32::Foundation::{HWND, POINT};
@@ -4437,11 +4417,22 @@ impl BrowserApp {
                         let _ = ClientToScreen(hwnd, &mut pt);
 
                         if let Ok(hmenu) = CreatePopupMenu() {
-                            let _ = AppendMenuW(hmenu, MF_STRING, 1001, w!("New Tab"));
-                            let _ = AppendMenuW(hmenu, MF_STRING, 1002, w!("New Window"));
+                            let _ = AppendMenuW(hmenu, MF_STRING, 1001, w!("Tab mới\tCtrl+T"));
+                            let _ = AppendMenuW(hmenu, MF_STRING, 1002, w!("Cửa sổ mới\tCtrl+N"));
+                            let _ = AppendMenuW(hmenu, MF_STRING, 1005, w!("Tải xuống\tCtrl+J"));
+                            let _ = AppendMenuW(hmenu, MF_STRING, 1006, w!("Lịch sử\tCtrl+H"));
+                            let _ =
+                                AppendMenuW(hmenu, MF_STRING, 1007, w!("Dấu trang\tCtrl+Shift+O"));
+                            let _ =
+                                AppendMenuW(hmenu, MF_STRING, 1008, w!("Tìm trong trang\tCtrl+F"));
                             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, None);
-                            let _ = AppendMenuW(hmenu, MF_STRING, 1003, w!("DevTools"));
-                            let _ = AppendMenuW(hmenu, MF_STRING, 1004, w!("Settings"));
+                            let _ = AppendMenuW(
+                                hmenu,
+                                MF_STRING,
+                                1003,
+                                w!("Công cụ nhà phát triển\tF12"),
+                            );
+                            let _ = AppendMenuW(hmenu, MF_STRING, 1004, w!("Cài đặt"));
 
                             let cmd = TrackPopupMenuEx(
                                 hmenu,
@@ -4453,22 +4444,14 @@ impl BrowserApp {
                             );
                             let _ = DestroyMenu(hmenu);
 
-                            match cmd.0 {
-                                1001 => self.handle_create_tab(win_id, None),
-                                1002 => {
-                                    self.create_browser_window(event_loop, None);
-                                }
-                                1003 => {
-                                    if let Some(win) = self.windows.get(&win_id) {
-                                        if let Some(active) = win.tab_manager.active_tab() {
-                                            if let Some(wv) = win.tabs.get(&active.id) {
-                                                wv.open_devtools();
-                                            }
-                                        }
-                                    }
-                                }
-                                1004 => self.handle_open_settings(win_id),
-                                _ => {}
+                            if cmd.0 == 1004 {
+                                self.handle_open_settings(win_id);
+                            } else if let Some(shortcut) = native_menu_shortcut(cmd.0) {
+                                // Use the same command path as keyboard shortcuts so the menu
+                                // cannot drift from feature gates or browser action behavior.
+                                let _ = self
+                                    .proxy
+                                    .send_event(BrowserEvent::Shortcut(win_id, shortcut.into()));
                             }
                         }
                     }
@@ -8137,6 +8120,20 @@ fn shortcut_library_target(shortcut: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn native_menu_shortcut(command: i32) -> Option<&'static str> {
+    match command {
+        1001 => Some("Ctrl+T"),
+        1002 => Some("Ctrl+N"),
+        1003 => Some("F12"),
+        1005 => Some("Ctrl+J"),
+        1006 => Some("Ctrl+H"),
+        1007 => Some("Ctrl+Shift+O"),
+        1008 => Some("Ctrl+F"),
+        _ => None,
+    }
+}
+
 fn shortcut_enabled_by_feature(
     shortcut: &str,
     settings: &evergreen_core::settings::Settings,
@@ -8154,6 +8151,20 @@ fn shortcut_enabled_by_feature(
 #[cfg(test)]
 mod google_dns_preferences_tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_context_menu_routes_browser_actions_through_shortcut_dispatch() {
+        assert_eq!(native_menu_shortcut(1001), Some("Ctrl+T"));
+        assert_eq!(native_menu_shortcut(1002), Some("Ctrl+N"));
+        assert_eq!(native_menu_shortcut(1003), Some("F12"));
+        assert_eq!(native_menu_shortcut(1005), Some("Ctrl+J"));
+        assert_eq!(native_menu_shortcut(1006), Some("Ctrl+H"));
+        assert_eq!(native_menu_shortcut(1007), Some("Ctrl+Shift+O"));
+        assert_eq!(native_menu_shortcut(1008), Some("Ctrl+F"));
+        assert_eq!(native_menu_shortcut(1004), None);
+        assert_eq!(native_menu_shortcut(0), None);
+    }
 
     #[test]
     fn google_dns_manual_check_discloses_system_dns_fallback() {

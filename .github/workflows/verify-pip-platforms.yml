@@ -11,6 +11,12 @@ on:
       - 'browser-source/**'
       - '.github/workflows/verify-pip-platforms.yml'
   workflow_dispatch:
+    inputs:
+      live_youtube:
+        description: Run an opt-in live YouTube smoke probe on the Android emulator
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -107,6 +113,8 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Run lifecycle and real adblock WebView regressions on Android 15
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        env:
+          LIVE_YOUTUBE: ${{ inputs.live_youtube || false }}
         with:
           api-level: '35'
           target: google_apis
@@ -115,7 +123,37 @@ jobs:
           ram-size: 2048M
           working-directory: browser-source/android
           disable-animations: true
-          script: gradle --no-daemon --max-workers=2 connectedDebugAndroidTest
+          script: |
+            mkdir -p app/build/reports/androidTests/connected/debug/ux
+            gradle --no-daemon --max-workers=2 connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.liveYoutube=$LIVE_YOUTUBE
+            mkdir -p app/build/reports/androidTests/connected/debug/ux
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb shell pm clear com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 12
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-default.png
+            adb shell wm size 720x1600
+            adb shell wm density 320
+            adb shell am force-stop com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 12
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-360x800dp.png
+            adb shell settings put system font_scale 1.5
+            adb shell am force-stop com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 10
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-150.png
+            adb shell settings put system font_scale 2.0
+            adb shell am force-stop com.psharehub.pip
+            adb shell am start -n com.psharehub.pip/.MainActivity
+            sleep 10
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-200.png
+            adb shell input tap 300 120
+            sleep 2
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-200-address-focused.png
+            adb shell settings put system font_scale 1.0
+            adb shell wm size reset
+            adb shell wm density reset
       - name: Upload emulator test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -129,6 +167,7 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }} (development)
+    if: github.event_name != 'workflow_dispatch' || inputs.live_youtube != true
     env:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
     strategy:
@@ -168,7 +207,7 @@ jobs:
           PIP_VERIFY_ARCH: ${{ matrix.arch }}
         run: |
           python3 - <<'PY'
-          import json, os, pathlib, subprocess, tempfile
+          import json, os, pathlib, subprocess, tempfile, time
           arch = os.environ['PIP_VERIFY_ARCH']
           archives = list(pathlib.Path('dist').glob(f'Pip-macOS-{arch}-*.zip'))
           assert len(archives) == 1, 'Expected exactly one packaged macOS app'
@@ -190,6 +229,13 @@ jobs:
               report = reports[0]
               pathlib.Path(f'dist/Pip-macOS-{arch}-native-ui.json').write_text(json.dumps(report, indent=2))
               assert result.returncode == 0 and report.get('ok') is True, 'Native UI verification failed'
+              app_bundle = pathlib.Path(directory) / 'Pip.app'
+              subprocess.run(['open', '-n', str(app_bundle)], check=True)
+              time.sleep(12)
+              screenshot = pathlib.Path(f'dist/Pip-macOS-{arch}-UX.png')
+              subprocess.run(['screencapture', '-x', str(screenshot)], check=True)
+              subprocess.run(['osascript', '-e', 'tell application "Pip" to quit'],
+                             check=False, capture_output=True, text=True)
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -198,5 +244,6 @@ jobs:
             browser-source/dist/Pip-macOS-*.zip
             browser-source/dist/Pip-macOS-*.sha256
             browser-source/dist/Pip-macOS-*-native-ui.json
+            browser-source/dist/Pip-macOS-*-UX.png
           if-no-files-found: error
           retention-days: 7
