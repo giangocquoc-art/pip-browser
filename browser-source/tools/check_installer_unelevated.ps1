@@ -42,6 +42,8 @@ public static class PipCiWindowCapture {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 
     public static IntPtr FindProcessWindow(uint expectedProcessId, string titlePrefix) {
         IntPtr match = IntPtr.Zero;
@@ -91,11 +93,17 @@ public static class PipCiWindowCapture {
         if ($captureWidth -lt 700 -or $captureHeight -lt 480) {
             throw "Windows runner display is too small for UX review: ${screenWidth}x${screenHeight}."
         }
-        # Put Pip above the runner terminal without stealing keyboard focus. The
-        # previous no-z-order capture showed the terminal covering the app.
-        # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW
-        if (-not [PipCiWindowCapture]::SetWindowPos($handle, [IntPtr](-1), 0, 0, $captureWidth, $captureHeight, 0x0050)) {
+        # Bring Pip to the foreground before sampling the desktop. A no-activate
+        # topmost placement can leave the hosted runner terminal visible above
+        # the app in the captured pixels even when the correct HWND was found.
+        # HWND_TOPMOST, SWP_SHOWWINDOW
+        if (-not [PipCiWindowCapture]::SetWindowPos($handle, [IntPtr](-1), 0, 0, $captureWidth, $captureHeight, 0x0040)) {
             throw 'Could not place the Pip window above the runner terminal for visual capture.'
+        }
+        [void][PipCiWindowCapture]::SetForegroundWindow($handle)
+        Start-Sleep -Milliseconds 500
+        if ([PipCiWindowCapture]::GetForegroundWindow() -ne $handle) {
+            throw 'Pip could not be brought to the foreground; refusing to upload a screenshot of another window.'
         }
 
         # Give WebView2 time to paint the bundled Pip start page before sampling
