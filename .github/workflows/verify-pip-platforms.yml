@@ -139,6 +139,9 @@ jobs:
             adb shell am start -n com.psharehub.pip/.MainActivity
             sleep 10
             adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-200.png
+            adb shell input tap 300 120
+            sleep 2
+            adb exec-out screencap -p > app/build/reports/androidTests/connected/debug/ux/Pip-Android-UX-font-200-address-focused.png
             adb shell settings put system font_scale 1.0
             adb shell wm size reset
             adb shell wm density reset
