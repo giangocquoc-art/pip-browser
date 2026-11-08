@@ -125,9 +125,8 @@ jobs:
           disable-animations: true
           script: |
             mkdir -p app/build/reports/androidTests/connected/debug/ux
-            gradle --no-daemon --max-workers=2 connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.liveYoutube=$LIVE_YOUTUBE || { test_exit=$?; if [ "$LIVE_YOUTUBE" = "true" ] && adb shell run-as com.psharehub.pip test -f files/live-youtube-probe.json; then adb exec-out run-as com.psharehub.pip cat files/live-youtube-probe.json > app/build/reports/androidTests/connected/debug/ux/Pip-Android-live-YouTube-probe.json; fi; if [ "$LIVE_YOUTUBE" = "true" ] && adb shell run-as com.psharehub.pip test -f files/live-youtube-probe.png; then adb exec-out run-as com.psharehub.pip cat files/live-youtube-probe.png > app/build/reports/androidTests/connected/debug/ux/Pip-Android-live-YouTube-probe.png; fi; exit "$test_exit"; }
-            if [ "$LIVE_YOUTUBE" = "true" ] && adb shell run-as com.psharehub.pip test -f files/live-youtube-probe.json; then adb exec-out run-as com.psharehub.pip cat files/live-youtube-probe.json > app/build/reports/androidTests/connected/debug/ux/Pip-Android-live-YouTube-probe.json; fi
-            if [ "$LIVE_YOUTUBE" = "true" ] && adb shell run-as com.psharehub.pip test -f files/live-youtube-probe.png; then adb exec-out run-as com.psharehub.pip cat files/live-youtube-probe.png > app/build/reports/androidTests/connected/debug/ux/Pip-Android-live-YouTube-probe.png; fi
+            gradle --no-daemon --max-workers=2 connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.liveYoutube=$LIVE_YOUTUBE
+            mkdir -p app/build/reports/androidTests/connected/debug/ux
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell pm clear com.psharehub.pip
             adb shell am start -n com.psharehub.pip/.MainActivity

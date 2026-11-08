@@ -1,6 +1,7 @@
 package com.psharehub.pip;
 
 import android.graphics.Bitmap;
+import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -17,9 +18,7 @@ import org.junit.Assume;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -134,16 +133,21 @@ public final class LiveYoutubeProbeTest {
     }
 
     private static void saveEvidence(JSONObject state) throws Exception {
-        android.content.Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        File report = new File(context.getFilesDir(), "live-youtube-probe.json");
-        try (FileOutputStream output = new FileOutputStream(report)) {
-            output.write(state.toString(2).getBytes(StandardCharsets.UTF_8));
-        }
+        System.out.println("PIP_LIVE_YOUTUBE_RESULT=" + state);
         Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         if (screenshot == null) return;
-        try (FileOutputStream output = new FileOutputStream(
-                new File(context.getFilesDir(), "live-youtube-probe.png"))) {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             screenshot.compress(Bitmap.CompressFormat.PNG, 100, output);
+            String encoded = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            final int chunkSize = 3000;
+            int parts = (encoded.length() + chunkSize - 1) / chunkSize;
+            System.out.println("PIP_LIVE_YOUTUBE_SCREENSHOT_PARTS=" + parts);
+            for (int part = 0; part < parts; part++) {
+                int start = part * chunkSize;
+                int end = Math.min(encoded.length(), start + chunkSize);
+                System.out.println("PIP_LIVE_YOUTUBE_SCREENSHOT_" + part + "="
+                        + encoded.substring(start, end));
+            }
         } finally {
             screenshot.recycle();
         }
