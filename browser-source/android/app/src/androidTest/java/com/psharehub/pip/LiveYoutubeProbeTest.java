@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /** Opt-in network probe. It reports what YouTube served and never treats no ad as proof of blocking. */
@@ -52,6 +53,17 @@ public final class LiveYoutubeProbeTest {
             + "adFieldCounts:{playerAds:response.playerAds?.length||0,"
             + "adPlacements:response.adPlacements?.length||0,adSlots:response.adSlots?.length||0}}"
             + "})()";
+
+    @Test public void probeConclusionDistinguishesAdsFromUnavailableYoutube() throws Exception {
+        JSONObject state = new JSONObject();
+        assertEquals("inconclusive:bot-wall", classifyConclusion(state.put("botWall", true), false));
+        state = new JSONObject();
+        assertEquals("inconclusive:offline", classifyConclusion(state.put("offline", true), false));
+        assertEquals("inconclusive:no-watch-page", classifyConclusion(new JSONObject(), false));
+        state = new JSONObject().put("adShowing", true);
+        assertEquals("ad-visible", classifyConclusion(state, true));
+        assertEquals("no-ad-observed; blocking-inconclusive", classifyConclusion(new JSONObject(), true));
+    }
 
     @Test public void observeLiveYoutubeInPipWebViewWhenExplicitlyRequested() throws Exception {
         boolean requested = "true".equalsIgnoreCase(
@@ -100,12 +112,9 @@ public final class LiveYoutubeProbeTest {
 
             if (finalState == null) finalState = new JSONObject();
             boolean scriptletRegistered = scenarioScriptletState(scenario);
+            boolean visibleAd = hasVisibleAd(finalState);
             finalState.put("pipYoutubeScriptletRegistered", scriptletRegistered);
-            finalState.put("liveAdConclusion", finalState.optBoolean("adShowing")
-                    || finalState.optJSONArray("visibleAdMarkers") != null
-                    && finalState.optJSONArray("visibleAdMarkers").length() > 0
-                    || finalState.optInt("visibleSponsoredLabels") > 0
-                    ? "ad-visible" : "no-ad-observed; blocking-inconclusive");
+            finalState.put("liveAdConclusion", classifyConclusion(finalState, loadedYoutubePage));
             saveEvidence(finalState);
 
             if (finalState.optBoolean("offline") || finalState.optBoolean("botWall")
@@ -116,10 +125,6 @@ public final class LiveYoutubeProbeTest {
             }
             assertTrue("Pip did not register the document-start YouTube scriptlet on the live tab: "
                     + finalState, scriptletRegistered);
-            boolean visibleAd = finalState.optBoolean("adShowing")
-                    || finalState.optJSONArray("visibleAdMarkers") != null
-                    && finalState.optJSONArray("visibleAdMarkers").length() > 0
-                    || finalState.optInt("visibleSponsoredLabels") > 0;
             System.out.println("PIP_LIVE_YOUTUBE_RESULT=" + finalState);
             assertFalse("A visible YouTube ad marker remained in Pip's live WebView: " + finalState,
                     visibleAd);
@@ -136,6 +141,20 @@ public final class LiveYoutubeProbeTest {
                     .contains(activity.getString(R.string.adblock_scriptlet_ready)));
         });
         return Boolean.TRUE.equals(registered.get());
+    }
+
+    private static boolean hasVisibleAd(JSONObject state) {
+        return state.optBoolean("adShowing")
+                || state.optJSONArray("visibleAdMarkers") != null
+                && state.optJSONArray("visibleAdMarkers").length() > 0
+                || state.optInt("visibleSponsoredLabels") > 0;
+    }
+
+    private static String classifyConclusion(JSONObject state, boolean loadedYoutubePage) {
+        if (state.optBoolean("botWall")) return "inconclusive:bot-wall";
+        if (state.optBoolean("offline")) return "inconclusive:offline";
+        if (!loadedYoutubePage) return "inconclusive:no-watch-page";
+        return hasVisibleAd(state) ? "ad-visible" : "no-ad-observed; blocking-inconclusive";
     }
 
     private static void saveEvidence(JSONObject state) throws Exception {
