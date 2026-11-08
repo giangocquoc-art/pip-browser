@@ -35,7 +35,9 @@ public final class LiveYoutubeProbeTest {
             + "return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0};"
             + "const selectors=['.ytp-ad-player-overlay','.ytp-ad-text','.ytp-ad-skip-button',"
             + "'.ytp-ad-preview-container','.ytp-ad-overlay-container',"
-            + "'ytm-promoted-sparkles-web-renderer','ytd-ad-slot-renderer'];"
+            + "'ytm-promoted-sparkles-web-renderer','ytm-ad-slot-renderer',"
+            + "'ytm-companion-ad-renderer','ytm-display-ad-renderer','ytd-ad-slot-renderer',"
+            + "'.video-ads','#player-ads'];"
             + "const player=document.querySelector('#movie_player'),video=document.querySelector('video');"
             + "const response=window.ytInitialPlayerResponse||player?.getPlayerResponse?.()||{};"
             + "const body=(document.body?.innerText||'').slice(0,400);"
@@ -45,6 +47,8 @@ public final class LiveYoutubeProbeTest {
             + "player:!!player,video:!!video,videoReady:video?.readyState||0,"
             + "adShowing:!!player?.classList.contains('ad-showing'),"
             + "visibleAdMarkers:selectors.filter(q=>[...document.querySelectorAll(q)].some(visible)),"
+            + "visibleSponsoredLabels:[...document.querySelectorAll("
+            + "'[aria-label*=\"Sponsored\" i],[aria-label*=\"Được tài trợ\" i]')].filter(visible).length,"
             + "adFieldCounts:{playerAds:response.playerAds?.length||0,"
             + "adPlacements:response.adPlacements?.length||0,adSlots:response.adSlots?.length||0}}"
             + "})()";
@@ -100,6 +104,7 @@ public final class LiveYoutubeProbeTest {
             finalState.put("liveAdConclusion", finalState.optBoolean("adShowing")
                     || finalState.optJSONArray("visibleAdMarkers") != null
                     && finalState.optJSONArray("visibleAdMarkers").length() > 0
+                    || finalState.optInt("visibleSponsoredLabels") > 0
                     ? "ad-visible" : "no-ad-observed; blocking-inconclusive");
             saveEvidence(finalState);
 
@@ -113,7 +118,8 @@ public final class LiveYoutubeProbeTest {
                     + finalState, scriptletRegistered);
             boolean visibleAd = finalState.optBoolean("adShowing")
                     || finalState.optJSONArray("visibleAdMarkers") != null
-                    && finalState.optJSONArray("visibleAdMarkers").length() > 0;
+                    && finalState.optJSONArray("visibleAdMarkers").length() > 0
+                    || finalState.optInt("visibleSponsoredLabels") > 0;
             System.out.println("PIP_LIVE_YOUTUBE_RESULT=" + finalState);
             assertFalse("A visible YouTube ad marker remained in Pip's live WebView: " + finalState,
                     visibleAd);
